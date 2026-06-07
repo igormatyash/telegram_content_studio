@@ -1,0 +1,1136 @@
+from io import BytesIO
+from datetime import date, datetime, timezone
+import html
+from pathlib import Path
+from uuid import uuid4
+import re
+
+import uvicorn
+from fastapi import Cookie, Depends, FastAPI, File, Header, HTTPException, Response, UploadFile
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from PIL import Image
+from pydantic import BaseModel, Field
+from telegram import Bot
+from telegram.constants import ParseMode
+
+from voicerhub_bot.auth import AuthRepository, SESSION_DAYS
+from voicerhub_bot.config import Settings, get_settings
+from voicerhub_bot.content_tools import (
+    EditorialTools,
+    TONE_GUIDANCE,
+    closest_duplicate,
+    fetch_page_text,
+)
+from voicerhub_bot.ideas import IdeaGenerator
+from voicerhub_bot.images import ImageGenerator
+from voicerhub_bot.models import Product
+from voicerhub_bot.rendering import MAX_CAPTION_LENGTH, sanitize_telegram_html
+from voicerhub_bot.storage import DraftRepository
+from voicerhub_bot.visual_templates import DEFAULT_TEMPLATE_ID, VISUAL_TEMPLATES
+
+
+class IdeaRequest(BaseModel):
+    product: Product = Product.GENERAL
+    count: int = Field(default=6, ge=1, le=12)
+    focus: str = Field(default="", max_length=500)
+    text_model: str = "gpt-5.4-mini"
+    tone: str = "expert"
+
+
+class ContentPlanRequest(BaseModel):
+    product: Product = Product.GENERAL
+    period: str = Field(default="week", pattern=r"^(week|month)$")
+    posts: int = Field(default=5, ge=1, le=31)
+    start_date: date
+    focus: str = Field(default="", max_length=500)
+    text_model: str = "gpt-5.4-mini"
+
+
+class SeriesRequest(BaseModel):
+    product: Product
+    parts: int = Field(default=3, ge=3, le=5)
+    topic: str = Field(min_length=10, max_length=500)
+    tone: str = "expert"
+    text_model: str = "gpt-5.4-mini"
+
+
+class MaterialRequest(BaseModel):
+    url: str = Field(default="", max_length=1000)
+    text: str = Field(default="", max_length=18000)
+    product: Product = Product.GENERAL
+    count: int = Field(default=3, ge=1, le=8)
+    tone: str = "expert"
+    text_model: str = "gpt-5.4-mini"
+
+
+class GenerationRequest(BaseModel):
+    text_model: str = "gpt-5.4-mini"
+    image_model: str = "gpt-image-2"
+    reference_ids: list[int] = Field(default_factory=list, max_length=16)
+    template_id: str = DEFAULT_TEMPLATE_ID
+    logo_reference_id: int | None = None
+    company_logo_reference_id: int | None = None
+    link_url: str = Field(default="", max_length=500)
+    tone: str = "expert"
+
+
+TEXT_MODELS = {"gpt-5-mini", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5"}
+IMAGE_MODELS = {"gpt-image-1-mini", "gpt-image-1.5", "gpt-image-2"}
+
+
+def _validate_models(text_model: str, image_model: str | None = None) -> None:
+    if text_model not in TEXT_MODELS:
+        raise HTTPException(status_code=422, detail="Обрана модель тексту не підтримується")
+    if image_model is not None and image_model not in IMAGE_MODELS:
+        raise HTTPException(status_code=422, detail="Обрана модель зображень не підтримується")
+
+
+def _validate_tone(tone: str) -> None:
+    if tone not in TONE_GUIDANCE:
+        raise HTTPException(status_code=422, detail="Невідомий тон допису")
+
+
+def _validate_generation(payload: GenerationRequest, repository: DraftRepository) -> None:
+    _validate_models(payload.text_model, payload.image_model)
+    _validate_tone(payload.tone)
+    template_ids = {item["id"] for item in VISUAL_TEMPLATES}
+    template_ids.update(item["id"] for item in repository.list_custom_templates())
+    if payload.template_id not in template_ids:
+        raise HTTPException(status_code=422, detail="Невідомий візуальний шаблон")
+    repository.references_by_ids(payload.reference_ids)
+    if payload.logo_reference_id is not None:
+        repository.get_reference(payload.logo_reference_id)
+    if payload.company_logo_reference_id is not None:
+        repository.get_reference(payload.company_logo_reference_id)
+    if payload.link_url and not payload.link_url.startswith(("http://", "https://")):
+        raise HTTPException(
+            status_code=422,
+            detail="Посилання має починатися з http:// або https://",
+        )
+
+
+class DraftEditRequest(BaseModel):
+    title: str = Field(min_length=3, max_length=120)
+    caption_html: str = Field(min_length=20, max_length=MAX_CAPTION_LENGTH)
+    link_url: str = Field(default="", max_length=500)
+
+
+class FavoriteRequest(BaseModel):
+    favorite: bool
+
+
+class ProofreadRequest(BaseModel):
+    text_model: str = "gpt-5.4-mini"
+
+
+class CustomTemplateRequest(BaseModel):
+    name: str = Field(min_length=3, max_length=80)
+    description: str = Field(min_length=5, max_length=180)
+    prompt: str = Field(min_length=30, max_length=1600)
+    layout: str = Field(
+        default="top_left",
+        pattern=r"^(top_left|left_panel|bottom_left|top_band)$",
+    )
+    accent: str = Field(default="#18ecd6", pattern=r"^#[0-9A-Fa-f]{6}$")
+
+
+class ScheduleRequest(BaseModel):
+    scheduled_at: datetime
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=50)
+    password: str = Field(min_length=1, max_length=200)
+
+
+class UserCreateRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=50, pattern=r"^[A-Za-z0-9._-]+$")
+    password: str = Field(min_length=10, max_length=200)
+    is_admin: bool = False
+
+
+class UserUpdateRequest(BaseModel):
+    is_admin: bool | None = None
+    active: bool | None = None
+
+
+class PasswordRequest(BaseModel):
+    password: str = Field(min_length=10, max_length=200)
+
+
+def create_app(settings: Settings | None = None) -> FastAPI:
+    settings = settings or get_settings()
+    settings.prepare_directories()
+    repository = DraftRepository(settings.database_path)
+    auth = AuthRepository(settings.database_path)
+    auth.ensure_bootstrap_admin(settings.admin_username, settings.admin_password)
+    idea_generator = IdeaGenerator(settings)
+    editorial_tools = EditorialTools(settings)
+    image_generator = ImageGenerator(
+        settings.openai_api_key,
+        settings.openai_image_model,
+        settings.generated_dir,
+        settings.brand_logo_path,
+    )
+    telegram = Bot(settings.telegram_bot_token)
+    app = FastAPI(title="VoicerHub Content Studio", docs_url=None, redoc_url=None)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(_, exc: RequestValidationError) -> JSONResponse:
+        messages = []
+        for error in exc.errors():
+            field = ".".join(str(item) for item in error.get("loc", [])[1:])
+            message = error.get("msg", "Некоректне значення")
+            messages.append(f"{field}: {message}" if field else message)
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "Перевірте введені дані: " + "; ".join(messages)},
+        )
+
+    def authorize(
+        voicerhub_session: str | None = Cookie(default=None),
+    ) -> dict:
+        user = auth.session_user(voicerhub_session)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        return user
+
+    def authorize_write(
+        user: dict = Depends(authorize),
+        x_requested_with: str | None = Header(default=None),
+    ) -> dict:
+        if x_requested_with != "VoicerHubAdmin":
+            raise HTTPException(status_code=403, detail="Missing request guard")
+        return user
+
+    def authorize_admin(user: dict = Depends(authorize_write)) -> dict:
+        if not user["is_admin"]:
+            raise HTTPException(status_code=403, detail="Administrator access required")
+        return user
+
+    @app.get("/", response_class=HTMLResponse)
+    def dashboard(voicerhub_session: str | None = Cookie(default=None)) -> str:
+        return ADMIN_HTML if auth.session_user(voicerhub_session) else LOGIN_HTML
+
+    @app.post("/api/login")
+    def login(payload: LoginRequest, response: Response) -> dict:
+        user = auth.authenticate(payload.username, payload.password)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Невірний логін або пароль")
+        token = auth.create_session(user["id"])
+        response.set_cookie(
+            "voicerhub_session",
+            token,
+            max_age=SESSION_DAYS * 24 * 60 * 60,
+            httponly=True,
+            samesite="lax",
+            secure=settings.session_cookie_secure,
+        )
+        return {"user": user}
+
+    @app.post("/api/logout")
+    def logout(
+        response: Response,
+        voicerhub_session: str | None = Cookie(default=None),
+        _: dict = Depends(authorize_write),
+    ) -> dict:
+        auth.delete_session(voicerhub_session)
+        response.delete_cookie("voicerhub_session")
+        return {"ok": True}
+
+    @app.get("/api/me")
+    def current_user(user: dict = Depends(authorize)) -> dict:
+        return user
+
+    @app.get("/api/users")
+    def users(_: dict = Depends(authorize_admin)) -> list[dict]:
+        return auth.list_users()
+
+    @app.post("/api/users")
+    def create_user(
+        payload: UserCreateRequest,
+        _: dict = Depends(authorize_admin),
+    ) -> dict:
+        try:
+            return auth.create_user(
+                payload.username, payload.password, is_admin=payload.is_admin
+            )
+        except Exception as exc:
+            if "UNIQUE constraint failed" in str(exc):
+                raise HTTPException(status_code=409, detail="Такий логін вже існує") from exc
+            raise
+
+    @app.patch("/api/users/{user_id}")
+    def update_user(
+        user_id: int,
+        payload: UserUpdateRequest,
+        current: dict = Depends(authorize_admin),
+    ) -> dict:
+        if user_id == current["id"] and payload.active is False:
+            raise HTTPException(status_code=422, detail="Не можна заблокувати себе")
+        if user_id == current["id"] and payload.is_admin is False:
+            raise HTTPException(status_code=422, detail="Не можна забрати свою роль")
+        try:
+            return auth.update_user(
+                user_id, is_admin=payload.is_admin, active=payload.active
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.put("/api/users/{user_id}/password")
+    def admin_set_password(
+        user_id: int,
+        payload: PasswordRequest,
+        _: dict = Depends(authorize_admin),
+    ) -> dict:
+        try:
+            auth.get_user(user_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        auth.set_password(user_id, payload.password)
+        return {"ok": True}
+
+    @app.put("/api/account/password")
+    def change_password(
+        payload: PasswordRequest,
+        response: Response,
+        user: dict = Depends(authorize_write),
+    ) -> dict:
+        auth.set_password(user["id"], payload.password)
+        response.delete_cookie("voicerhub_session")
+        return {"ok": True}
+
+    @app.get("/api/dashboard")
+    def dashboard_data(_: dict = Depends(authorize)) -> dict:
+        data = repository.dashboard()
+        data["templates"] = [
+            {**item, "custom": False, "has_preview": True}
+            for item in VISUAL_TEMPLATES
+        ] + [
+            {**item, "custom": True, "has_preview": bool(item["preview_path"])}
+            for item in repository.list_custom_templates()
+        ]
+        return data
+
+    def record_text_usage(model: str, input_tokens: int, output_tokens: int) -> None:
+        cost = (
+            input_tokens * settings.text_standard_input_price_per_1m
+            + output_tokens * settings.text_standard_output_price_per_1m
+        ) / 1_000_000
+        repository.add_usage(
+            job_id=0,
+            kind="text",
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost=cost,
+        )
+
+    def save_ideas(
+        ideas,
+        *,
+        source_url: str = "",
+        plan_id: str | None = None,
+        series_id: str | None = None,
+        forced_tone: str | None = None,
+    ) -> list[dict]:
+        existing = repository.all_idea_signatures()
+        rows = []
+        for idea in ideas:
+            score, duplicate_of = closest_duplicate(idea.title, idea.angle, existing)
+            row = {
+                "product": idea.product.value,
+                "title": idea.title,
+                "angle": idea.angle,
+                "planned_for": idea.planned_for,
+                "tone": forced_tone or idea.tone.value,
+                "series_id": series_id if idea.series_part else None,
+                "series_title": idea.series_title,
+                "series_part": idea.series_part,
+                "source_url": source_url,
+                "duplicate_score": score,
+                "duplicate_of": duplicate_of if score >= 0.62 else None,
+                "plan_id": plan_id,
+            }
+            rows.append(row)
+            existing.append({"id": None, "title": idea.title, "angle": idea.angle})
+        return repository.add_ideas(rows)
+
+    @app.post("/api/ideas/generate")
+    async def generate_ideas(
+        payload: IdeaRequest,
+        _: str = Depends(authorize_write),
+    ) -> dict:
+        _validate_models(payload.text_model)
+        _validate_tone(payload.tone)
+        ideas, input_tokens, output_tokens = await idea_generator.generate(
+            payload.product,
+            payload.count,
+            payload.focus,
+            repository.recent_titles(),
+            payload.text_model,
+        )
+        record_text_usage(payload.text_model, input_tokens, output_tokens)
+        saved = save_ideas(ideas.ideas, forced_tone=payload.tone)
+        return {"ideas": saved}
+
+    @app.post("/api/content-plan/generate")
+    async def generate_content_plan(
+        payload: ContentPlanRequest,
+        _: str = Depends(authorize_write),
+    ) -> dict:
+        _validate_models(payload.text_model)
+        days = 7 if payload.period == "week" else 30
+        plan, input_tokens, output_tokens = await idea_generator.generate_plan(
+            product=payload.product,
+            days=days,
+            posts=payload.posts,
+            focus=payload.focus,
+            start_date=payload.start_date.isoformat(),
+            recent_titles=repository.recent_titles(100),
+            model=payload.text_model,
+        )
+        record_text_usage(payload.text_model, input_tokens, output_tokens)
+        plan_id = f"plan-{uuid4().hex[:10]}"
+        return {"plan_id": plan_id, "ideas": save_ideas(plan.ideas, plan_id=plan_id)}
+
+    @app.post("/api/series/generate")
+    async def generate_series(
+        payload: SeriesRequest,
+        _: str = Depends(authorize_write),
+    ) -> dict:
+        _validate_models(payload.text_model)
+        _validate_tone(payload.tone)
+        ideas, input_tokens, output_tokens = await idea_generator.generate_series(
+            product=payload.product,
+            parts=payload.parts,
+            topic=payload.topic,
+            tone=payload.tone,
+            recent_titles=repository.recent_titles(100),
+            model=payload.text_model,
+        )
+        record_text_usage(payload.text_model, input_tokens, output_tokens)
+        series_id = f"series-{uuid4().hex[:10]}"
+        return {
+            "series_id": series_id,
+            "ideas": save_ideas(
+                ideas.ideas,
+                series_id=series_id,
+                forced_tone=payload.tone,
+            ),
+        }
+
+    @app.post("/api/materials/import")
+    async def import_material(
+        payload: MaterialRequest,
+        _: str = Depends(authorize_write),
+    ) -> dict:
+        _validate_models(payload.text_model)
+        _validate_tone(payload.tone)
+        material = payload.text.strip()
+        if not material:
+            if not payload.url:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Додайте URL або вставте текст матеріалу",
+                )
+            try:
+                material = await fetch_page_text(payload.url)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Не вдалося прочитати сторінку: {exc}. "
+                        "Вставте текст матеріалу вручну."
+                    ),
+                ) from exc
+        ideas, input_tokens, output_tokens = await idea_generator.from_material(
+            material=material,
+            source_url=payload.url,
+            product=payload.product,
+            count=payload.count,
+            tone=payload.tone,
+            model=payload.text_model,
+        )
+        record_text_usage(payload.text_model, input_tokens, output_tokens)
+        return {
+            "ideas": save_ideas(
+                ideas.ideas,
+                source_url=payload.url,
+                forced_tone=payload.tone,
+            )
+        }
+
+    @app.post("/api/ideas/{idea_id}/generate")
+    def generate_from_idea(
+        idea_id: int,
+        payload: GenerationRequest,
+        _: str = Depends(authorize_write),
+    ) -> dict:
+        _validate_generation(payload, repository)
+        job = repository.select_idea(
+            idea_id,
+            text_model=payload.text_model,
+            image_model=payload.image_model,
+            reference_ids=payload.reference_ids,
+            template_id=payload.template_id,
+            logo_reference_id=payload.logo_reference_id,
+            company_logo_reference_id=payload.company_logo_reference_id,
+            link_url=payload.link_url.strip(),
+            tone=payload.tone,
+        )
+        return {"job_id": job.id}
+
+    @app.delete("/api/ideas/{idea_id}")
+    def delete_idea(idea_id: int, _: str = Depends(authorize_write)) -> dict:
+        try:
+            repository.delete_idea(idea_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Тему не знайдено") from exc
+        return {"deleted": idea_id}
+
+    @app.post("/api/templates")
+    def create_template(
+        payload: CustomTemplateRequest,
+        _: str = Depends(authorize_write),
+    ) -> dict:
+        slug = re.sub(r"[^a-z0-9]+", "-", payload.name.lower()).strip("-")[:45]
+        template_id = f"custom-{slug or 'style'}-{uuid4().hex[:6]}"
+        return repository.add_custom_template(
+            template_id=template_id,
+            name=payload.name.strip(),
+            description=payload.description.strip(),
+            prompt=payload.prompt.strip(),
+            layout=payload.layout,
+            accent=payload.accent.lower(),
+        )
+
+    @app.delete("/api/templates/{template_id}")
+    def delete_template(
+        template_id: str,
+        _: str = Depends(authorize_write),
+    ) -> dict:
+        try:
+            template = repository.delete_custom_template(template_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Шаблон не знайдено") from exc
+        if template.get("preview_path"):
+            Path(template["preview_path"]).unlink(missing_ok=True)
+        return {"deleted": template_id}
+
+    @app.get("/api/templates/{template_id}/preview")
+    def template_preview(
+        template_id: str,
+        _: str = Depends(authorize),
+    ) -> FileResponse:
+        built_in = next(
+            (item for item in VISUAL_TEMPLATES if item["id"] == template_id),
+            None,
+        )
+        if built_in:
+            path = (
+                Path(__file__).parent
+                / "assets"
+                / "template_previews"
+                / f"{template_id}.png"
+            )
+        else:
+            try:
+                template = repository.get_custom_template(template_id)
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail="Шаблон не знайдено") from exc
+            path = Path(template["preview_path"] or "")
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Прев’ю ще не згенеровано")
+        return FileResponse(path, media_type="image/png")
+
+    @app.post("/api/templates/{template_id}/generate-preview")
+    async def generate_template_preview(
+        template_id: str,
+        _: str = Depends(authorize_write),
+    ) -> dict:
+        try:
+            template = repository.get_custom_template(template_id)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Кастомний шаблон не знайдено",
+            ) from exc
+        path, response = await image_generator.generate(
+            "AI-аналітика клієнтського досвіду",
+            "A credible customer experience team using AI analytics, voice signals and structured business insights.",
+            model=settings.openai_image_model,
+            template_id=template_id,
+            template=template,
+        )
+        repository.set_template_preview(template_id, str(path))
+        usage = getattr(response, "usage", None)
+        repository.add_usage(
+            job_id=0,
+            kind="image",
+            model=settings.openai_image_model,
+            input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+            output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+            units=1,
+            cost=0.041,
+        )
+        return {"preview": f"api/templates/{template_id}/preview"}
+
+    @app.post("/api/references")
+    async def upload_reference(
+        file: UploadFile = File(...),
+        _: str = Depends(authorize_write),
+    ) -> dict:
+        media_type = file.content_type or ""
+        if media_type not in {"image/png", "image/jpeg", "image/webp"}:
+            raise HTTPException(status_code=422, detail="Use PNG, JPG or WebP")
+        content = await file.read()
+        if not content or len(content) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=422, detail="Image must be under 20 MB")
+        try:
+            image = Image.open(BytesIO(content))
+            image.verify()
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail="Invalid image file") from exc
+        suffix = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}[
+            media_type
+        ]
+        path = settings.reference_dir / f"{uuid4().hex}{suffix}"
+        path.write_bytes(content)
+        return repository.add_reference(
+            name=Path(file.filename or "reference").stem[:100],
+            filename=(file.filename or path.name)[:200],
+            path=str(path),
+            media_type=media_type,
+        )
+
+    @app.get("/api/references/{reference_id}/image")
+    def reference_image(
+        reference_id: int, _: str = Depends(authorize)
+    ) -> FileResponse:
+        try:
+            reference = repository.get_reference(reference_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        path = Path(reference["path"])
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Reference file is missing")
+        return FileResponse(path, media_type=reference["media_type"])
+
+    @app.delete("/api/references/{reference_id}")
+    def delete_reference(
+        reference_id: int, _: str = Depends(authorize_write)
+    ) -> dict:
+        try:
+            reference = repository.delete_reference(reference_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        Path(reference["path"]).unlink(missing_ok=True)
+        return {"deleted": reference_id}
+
+    @app.get("/api/drafts/{draft_id}")
+    def draft_detail(draft_id: int, _: str = Depends(authorize)) -> dict:
+        try:
+            return repository.draft_record(draft_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.put("/api/drafts/{draft_id}/favorite")
+    def favorite_draft(
+        draft_id: int,
+        payload: FavoriteRequest,
+        _: str = Depends(authorize_write),
+    ) -> dict:
+        try:
+            return repository.set_draft_favorite(draft_id, payload.favorite)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Чернетку не знайдено") from exc
+
+    @app.post("/api/drafts/{draft_id}/proofread")
+    async def proofread_draft(
+        draft_id: int,
+        payload: ProofreadRequest,
+        _: str = Depends(authorize_write),
+    ) -> dict:
+        _validate_models(payload.text_model)
+        try:
+            draft = repository.draft_record(draft_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Чернетку не знайдено") from exc
+        caption, input_tokens, output_tokens = await editorial_tools.proofread(
+            draft["caption_html"],
+            payload.text_model,
+        )
+        repository.update_draft(
+            draft_id,
+            title=draft["title"],
+            caption_html=caption,
+            link_url=draft["link_url"],
+        )
+        record_text_usage(payload.text_model, input_tokens, output_tokens)
+        return repository.draft_record(draft_id)
+
+    @app.get("/api/drafts/{draft_id}/image")
+    def draft_image(draft_id: int, _: str = Depends(authorize)) -> FileResponse:
+        try:
+            draft = repository.draft_record(draft_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        image_path = Path(draft["image_path"])
+        if not draft["image_path"] or not image_path.is_file():
+            raise HTTPException(status_code=404, detail="Image is not ready")
+        media_type = "image/jpeg" if image_path.suffix.lower() in {".jpg", ".jpeg"} else "image/png"
+        return FileResponse(image_path, media_type=media_type)
+
+    @app.get("/wave-cover")
+    def wave_cover(_: str = Depends(authorize)) -> FileResponse:
+        path = Path(__file__).parent / "assets" / "VoicerWave.jpg"
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Voicer Wave cover is missing")
+        return FileResponse(path, media_type="image/jpeg")
+
+    @app.put("/api/drafts/{draft_id}")
+    def edit_draft(
+        draft_id: int,
+        payload: DraftEditRequest,
+        _: str = Depends(authorize_write),
+    ) -> dict:
+        link_url = payload.link_url.strip()
+        if link_url and not link_url.startswith(("http://", "https://")):
+            raise HTTPException(
+                status_code=422,
+                detail="Посилання має починатися з http:// або https://",
+            )
+        caption_html = sanitize_telegram_html(payload.caption_html.strip())
+        if link_url and "<a " not in caption_html:
+            caption_html += (
+                f'\n\n<a href="{html.escape(link_url, quote=True)}">'
+                "Детальніше про продукт</a>"
+            )
+        repository.update_draft(
+            draft_id,
+            title=payload.title.strip(),
+            caption_html=caption_html,
+            link_url=link_url,
+        )
+        return repository.draft_record(draft_id)
+
+    @app.post("/api/drafts/{draft_id}/regenerate-image")
+    def regenerate_image(
+        draft_id: int,
+        payload: GenerationRequest,
+        _: str = Depends(authorize_write),
+    ) -> dict:
+        _validate_generation(payload, repository)
+        if repository.draft_record(draft_id)["product"] == Product.WAVE.value:
+            raise HTTPException(
+                status_code=409,
+                detail="Voicer Wave uses a fixed cover image",
+            )
+        job = repository.create_image_job(
+            draft_id,
+            image_model=payload.image_model,
+            reference_ids=payload.reference_ids,
+            template_id=payload.template_id,
+            logo_reference_id=payload.logo_reference_id,
+            company_logo_reference_id=payload.company_logo_reference_id,
+        )
+        return {"job_id": job.id}
+
+    @app.post("/api/drafts/{draft_id}/regenerate-text")
+    def regenerate_text(
+        draft_id: int,
+        payload: GenerationRequest,
+        _: str = Depends(authorize_write),
+    ) -> dict:
+        _validate_generation(payload, repository)
+        draft = repository.draft_record(draft_id)
+        job = repository.create_job(
+            f"{draft['topic']}. Створи нову редакційну версію з іншим вступом і структурою.",
+            draft["product"],
+            0,
+            text_model=payload.text_model,
+            image_model=payload.image_model,
+            reference_ids=payload.reference_ids,
+            template_id=payload.template_id,
+            logo_reference_id=payload.logo_reference_id,
+            company_logo_reference_id=payload.company_logo_reference_id,
+            link_url=payload.link_url.strip() or draft["link_url"],
+            tone=payload.tone or draft.get("tone") or "expert",
+        )
+        return {"job_id": job.id}
+
+    @app.post("/api/drafts/{draft_id}/publish")
+    async def publish_draft(
+        draft_id: int,
+        _: str = Depends(authorize_write),
+    ) -> dict:
+        draft = repository.draft_record(draft_id)
+        image_path = Path(draft["image_path"])
+        if not draft["image_path"] or not image_path.is_file():
+            raise HTTPException(status_code=409, detail="Image is not ready")
+        with image_path.open("rb") as image:
+            message = await telegram.send_photo(
+                chat_id=settings.telegram_channel,
+                photo=image,
+                caption=draft["caption_html"],
+                parse_mode=ParseMode.HTML,
+            )
+        repository.mark_published(draft_id)
+        repository.set_telegram_message_id(draft_id, message.message_id)
+        return {"message_id": message.message_id}
+
+    @app.post("/api/drafts/{draft_id}/schedule")
+    def schedule_draft(
+        draft_id: int,
+        payload: ScheduleRequest,
+        _: str = Depends(authorize_write),
+    ) -> dict:
+        scheduled_at = payload.scheduled_at
+        if scheduled_at.tzinfo is None:
+            scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+        scheduled_at = scheduled_at.astimezone(timezone.utc)
+        if scheduled_at <= datetime.now(timezone.utc):
+            raise HTTPException(status_code=422, detail="Schedule time must be in the future")
+        value = scheduled_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+        repository.schedule_draft(draft_id, value)
+        return {"scheduled_at": value}
+
+    @app.post("/api/drafts/{draft_id}/cancel-schedule")
+    def cancel_schedule(
+        draft_id: int,
+        _: str = Depends(authorize_write),
+    ) -> dict:
+        repository.cancel_schedule(draft_id)
+        return {"status": "draft"}
+
+    @app.get("/health")
+    def health() -> dict:
+        return {"status": "ok"}
+
+    return app
+
+
+LOGIN_HTML = r"""
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Вхід · VoicerHub Content Studio</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;background:#f4f7f9;color:#101827;font:15px/1.45 Inter,system-ui,sans-serif;letter-spacing:0}
+    main{min-height:100vh;display:grid;place-items:center;padding:20px}.login{width:min(400px,100%);background:#fff;border:1px solid #dce3ea;border-top:4px solid #18ecd6;padding:28px;border-radius:6px;box-shadow:0 18px 45px #10182712}
+    h1{font-size:21px;margin:0 0 5px}.sub{color:#647084;margin:0 0 22px}label{display:block;color:#647084;font-size:12px;font-weight:700;margin-top:13px}
+    input{width:100%;margin-top:5px;border:1px solid #c8d2dc;border-radius:5px;padding:11px;font:inherit}button{width:100%;margin-top:20px;border:0;border-radius:5px;padding:11px;background:#1765d8;color:#fff;font:inherit;font-weight:800;cursor:pointer}
+    .error{min-height:22px;margin-top:12px;color:#bd2c2c;font-size:13px}
+  </style>
+</head>
+<body><main><form class="login" id="loginForm">
+  <h1>VOICERHUB · CONTENT STUDIO</h1>
+  <p class="sub">Увійдіть до редакційної панелі</p>
+  <label>Логін<input id="username" autocomplete="username" required autofocus></label>
+  <label>Пароль<input id="password" type="password" autocomplete="current-password" required></label>
+  <button type="submit">Увійти</button><div class="error" id="error"></div>
+</form></main>
+<script>
+document.querySelector("#loginForm").onsubmit=async e=>{e.preventDefault();const error=document.querySelector("#error");error.textContent="";try{const r=await fetch("api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:document.querySelector("#username").value,password:document.querySelector("#password").value})});const d=await r.json();if(!r.ok)throw new Error(d.detail||"Помилка входу");location.reload()}catch(err){error.textContent=err.message}};
+</script></body></html>
+"""
+
+
+ADMIN_HTML = r"""
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VoicerHub Content Studio</title>
+  <style>
+    :root { --ink:#101827;--muted:#647084;--line:#dce3ea;--paper:#f6f8fa;--white:#fff;--cyan:#00a994;--blue:#1765d8;--amber:#a96200;--red:#bd2c2c; }
+    *{box-sizing:border-box} [hidden]{display:none!important} body{margin:0;color:var(--ink);background:var(--paper);font:14px/1.45 Inter,system-ui,sans-serif;letter-spacing:0}
+    header{min-height:64px;padding:0 28px;color:#fff;background:#111a2d;border-bottom:3px solid #18ecd6;display:flex;align-items:center;justify-content:space-between}.account{display:flex;align-items:center;gap:10px}.account button{padding:6px 9px;background:transparent;color:#fff;border-color:#43506a}
+    h1{margin:0;font-size:18px} h2{font-size:17px;margin:24px 0 10px} main{max-width:1500px;margin:auto;padding:22px 28px 50px}.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:22px}
+    button,.button{border:1px solid var(--line);background:#fff;color:var(--ink);padding:9px 13px;border-radius:5px;font:inherit;font-weight:700;cursor:pointer}
+    button:hover{border-color:var(--blue)} button.primary{background:var(--blue);border-color:var(--blue);color:#fff} button.success{background:var(--cyan);border-color:var(--cyan);color:#fff}
+    .spinner{display:inline-block;width:14px;height:14px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-right:6px}@keyframes spin{to{transform:rotate(360deg)}}.status.busy::before{content:"";display:inline-block;width:10px;height:10px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin .7s linear infinite;margin-right:6px}
+    button.danger{color:var(--red)} button:disabled{opacity:.45;cursor:not-allowed}.tab{border:0;border-radius:0;background:transparent;color:var(--muted);padding:12px 16px}
+    .tab.active{color:var(--ink);border-bottom:3px solid var(--cyan)}.view{display:none}.view.active{display:block}.toolbar{display:grid;grid-template-columns:150px 85px 150px minmax(220px,1fr) auto;gap:10px;align-items:end;background:#fff;border:1px solid var(--line);padding:16px;border-radius:6px}
+    .modelbar{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:12px;padding:14px 16px;background:#fff;border:1px solid var(--line);border-radius:6px}.modelbar small{display:block;color:var(--muted);margin-top:4px}
+    label{display:block;color:var(--muted);font-size:12px;font-weight:700}input,select,textarea{width:100%;margin-top:5px;border:1px solid #c8d2dc;border-radius:5px;padding:10px;background:#fff;color:var(--ink);font:inherit}
+    textarea{min-height:170px;resize:vertical}.ideas{margin-top:18px;border:1px solid var(--line);background:#fff}.idea{display:grid;grid-template-columns:26px 90px minmax(240px,1fr) auto;gap:12px;align-items:center;padding:14px;border-bottom:1px solid var(--line)}
+    .idea:last-child{border-bottom:0}.idea strong{display:block;margin-bottom:3px}.idea p{margin:0;color:var(--muted)}.badge{display:inline-block;padding:3px 7px;border-radius:4px;background:#edf3fa;color:var(--blue);font-size:11px;font-weight:800;text-transform:uppercase}
+    .drafts{display:grid;grid-template-columns:repeat(3,minmax(260px,1fr));gap:16px}.draft{background:#fff;border:1px solid var(--line);border-radius:6px;overflow:hidden}.draft img{display:block;width:100%;aspect-ratio:3/2;object-fit:cover;background:#e8edf2}
+    .draft-body{padding:14px}.draft h3{font-size:16px;margin:0 0 7px}.draft p{color:var(--muted);margin:0 0 12px;max-height:84px;overflow:hidden}.draft-meta{display:flex;gap:8px;align-items:center;justify-content:space-between}
+    .status{font-weight:800;color:var(--blue)}.status.ready,.status.draft,.status.completed{color:var(--cyan)}.status.failed{color:var(--red)}.status.scheduled,.status.in_progress,.status.text_batch,.status.image_batch{color:var(--amber)}
+    .metrics{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--line);gap:1px;margin-bottom:22px}.metric{background:#fff;padding:17px}.metric span{color:var(--muted);font-size:12px}.metric strong{display:block;font-size:24px;margin-top:5px}
+    table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line)}th,td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{background:#edf1f5;color:var(--muted);font-size:12px}
+    dialog{width:min(1050px,calc(100% - 24px));border:0;border-radius:7px;padding:0;box-shadow:0 24px 80px #10182755}dialog::backdrop{background:#0b1220aa}.editor-head{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line)}
+    .editor-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;padding:18px}.editor-grid img{width:100%;aspect-ratio:3/2;object-fit:cover;background:#e8edf2;border:1px solid var(--line)}.editor-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.schedule{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:12px}
+    .notice{position:fixed;right:18px;bottom:18px;max-width:380px;padding:12px 16px;border-radius:5px;background:#111a2d;color:#fff;display:none;z-index:10}.empty{padding:28px;text-align:center;color:var(--muted)}
+    .asset-head{display:flex;justify-content:space-between;align-items:center;gap:12px}.asset-upload input{display:none}.assets{display:grid;grid-template-columns:repeat(6,minmax(130px,1fr));gap:10px}.asset{position:relative;background:#fff;border:1px solid var(--line);border-radius:6px;overflow:hidden}.asset.selected{border:2px solid var(--cyan)}.asset img{display:block;width:100%;aspect-ratio:1;object-fit:contain;background:#eef2f5;padding:8px}.asset-info{display:flex;gap:5px;align-items:center;padding:8px}.asset-info span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:700;flex:1}.asset-delete{padding:4px 7px;color:var(--red)}.reference-note{color:var(--muted);margin:6px 0 12px}
+    .section-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.templates{display:grid;grid-template-columns:repeat(4,minmax(190px,1fr));gap:10px}.template{position:relative;min-height:210px;text-align:left;padding:0;border:1px solid var(--line);background:#fff;overflow:hidden}.template.selected{border:2px solid var(--cyan);box-shadow:inset 0 0 0 1px var(--cyan)}.template img{display:block;width:100%;aspect-ratio:3/2;object-fit:cover;background:#e8edf2}.template-copy{display:block;padding:11px}.template strong{display:block;margin-bottom:5px}.template span{display:block;color:var(--muted);font-weight:400;font-size:12px}.template-actions{display:flex;gap:6px;padding:0 10px 10px}.template-actions button{padding:5px 8px;font-size:11px}.brand-options{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin:12px 0;padding:14px 16px;background:#fff;border:1px solid var(--line);border-radius:6px}.custom-template{padding:16px;background:#fff;border:1px solid var(--line);display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}.custom-template .wide{grid-column:1/-1}.formatbar{display:flex;flex-wrap:wrap;gap:5px;margin:6px 0}.formatbar button{width:34px;height:32px;padding:0}.pagination{display:flex;justify-content:center;align-items:center;gap:8px;margin:16px 0}.pagination span{color:var(--muted);font-weight:700}
+    .calendar-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.calendar-nav{display:flex;align-items:center;gap:7px}.calendar{display:grid;grid-template-columns:repeat(7,minmax(140px,1fr));border-left:1px solid var(--line);border-top:1px solid var(--line);background:#fff}.weekday,.day{border-right:1px solid var(--line);border-bottom:1px solid var(--line)}.weekday{padding:8px;background:#edf1f5;color:var(--muted);font-size:12px;font-weight:800;text-align:center}.day{min-height:165px;padding:8px}.day.outside{background:#f7f8fa;color:#9aa5b2}.day.today{box-shadow:inset 0 0 0 2px var(--cyan)}.day-number{font-weight:800;margin-bottom:6px}.calendar-item{display:block;width:100%;margin:5px 0;padding:7px;border:0;border-left:4px solid var(--cyan);background:#eaf7f5;text-align:left;font-size:11px;font-weight:700}.calendar-item.published{border-color:var(--blue);background:#edf3fb}.calendar-item.planned{border-color:var(--amber);background:#fff6e7}.calendar-item time,.calendar-item small{display:block;color:var(--muted);font-size:10px}.calendar-item .cal-product{display:inline-block;margin:3px 0;color:var(--blue);text-transform:uppercase;font-size:9px}
+    .user-create{display:grid;grid-template-columns:1fr 1fr auto auto;gap:10px;align-items:end;background:#fff;border:1px solid var(--line);padding:16px;border-radius:6px;margin-bottom:16px}.check-label{display:flex;gap:8px;align-items:center;padding-bottom:10px}.check-label input{width:auto;margin:0}.user-actions{display:flex;gap:6px;flex-wrap:wrap}
+    .planning-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.planning-panel{background:#fff;border:1px solid var(--line);padding:16px;border-radius:6px}.planning-panel h2{margin:0 0 12px}.planning-panel .editor-actions button{flex:1}.idea-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}.meta-chip{padding:2px 6px;border-radius:3px;background:#edf1f5;color:var(--muted);font-size:10px;font-weight:800}.meta-chip.warn{background:#fff0dc;color:#914f00}.variants{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:10px 0}.variant-list{display:flex;gap:5px;flex-wrap:wrap}.variant-list button{font-size:11px;padding:5px 7px}.favorite{color:#a96200}
+    @media(max-width:950px){.drafts{grid-template-columns:repeat(2,1fr)}.editor-grid{grid-template-columns:1fr}.toolbar,.user-create,.planning-grid{grid-template-columns:1fr 1fr}.toolbar label:nth-child(4){grid-column:1/-1}.assets,.templates{grid-template-columns:repeat(3,1fr)}.calendar-wrap{overflow-x:auto}.calendar{min-width:900px}}
+    @media(max-width:620px){header,main{padding-left:14px;padding-right:14px}header{gap:8px}header h1{font-size:14px}.account{gap:6px}.account #updated{display:none}.tabs{overflow-x:auto}.tab{flex:0 0 auto;padding:11px 12px}.toolbar,.modelbar,.user-create,.brand-options,.custom-template,.planning-grid,.variants{grid-template-columns:1fr}.toolbar label:nth-child(4),.custom-template .wide{grid-column:auto}.drafts{grid-template-columns:1fr}.metrics{grid-template-columns:1fr 1fr}.idea{grid-template-columns:24px 70px minmax(0,1fr)}.idea .editor-actions{grid-column:2/-1}.assets,.templates{grid-template-columns:repeat(2,minmax(0,1fr))}.scroll{overflow-x:auto}.scroll table{min-width:780px}}
+  </style>
+</head>
+<body>
+<header><h1>VOICERHUB · CONTENT STUDIO</h1><div class="account"><span id="currentUser"></span><span id="updated">—</span><button id="logout" title="Вийти">Вийти</button></div></header>
+<main>
+  <nav class="tabs">
+    <button class="tab active" data-view="ideasView">Теми</button>
+    <button class="tab" data-view="planningView">Планування</button>
+    <button class="tab" data-view="draftsView">Редактор</button>
+    <button class="tab" data-view="calendarView">Календар</button>
+    <button class="tab" data-view="opsView">Черга та витрати</button>
+    <button class="tab" id="usersTab" data-view="usersView">Доступ</button>
+  </nav>
+
+  <section id="ideasView" class="view active">
+    <div class="toolbar">
+      <label>Рубрика<select id="ideaProduct"><option value="general">TONY + Voicer</option><option value="tony">TONY</option><option value="voicer">Voicer</option><option value="wave">Voicer Wave</option></select></label>
+      <label>Кількість<input id="ideaCount" type="number" min="1" max="12" value="6"></label>
+      <label>Тон<select id="ideaTone"><option value="expert">Експертний</option><option value="sales">Продаючий</option><option value="light">Легкий</option><option value="news">Новинний</option></select></label>
+      <label>Фокус або побажання<input id="ideaFocus" placeholder="Наприклад: практичні кейси для відділу продажів"></label>
+      <button class="primary" id="generateIdeas">Згенерувати теми</button>
+    </div>
+    <div class="modelbar">
+      <label>Модель тексту
+        <select id="textModel">
+          <option value="gpt-5-mini">GPT-5 mini · економна</option>
+          <option value="gpt-5.4-mini" selected>GPT-5.4 mini · баланс</option>
+          <option value="gpt-5.4">GPT-5.4 · сильна</option>
+          <option value="gpt-5.5">GPT-5.5 · максимальна</option>
+        </select>
+        <small>Застосовується до тем і текстів постів.</small>
+      </label>
+      <label id="imageModelField" class="image-setting">Модель зображень
+        <select id="imageModel">
+          <option value="gpt-image-1-mini">GPT Image 1 mini · економна</option>
+          <option value="gpt-image-1.5">GPT Image 1.5</option>
+          <option value="gpt-image-2" selected>GPT Image 2 · найкраща якість</option>
+        </select>
+        <small>GPT Image 2 краще зберігає деталі референсів.</small>
+      </label>
+    </div>
+    <div class="section-head image-setting"><h2>Візуальний шаблон</h2><button id="showCustomTemplate">＋ Власний шаблон</button></div>
+    <div id="customTemplateForm" class="custom-template image-setting" hidden>
+      <label>Назва<input id="customTemplateName" placeholder="Наприклад: Premium Retail"></label>
+      <label>Короткий опис<input id="customTemplateDescription" placeholder="Як виглядатиме зображення"></label>
+      <label class="wide">Промпт стилю<textarea id="customTemplatePrompt" placeholder="Опишіть композицію, світло, матеріали, палітру та настрій. Не описуйте тему конкретного поста."></textarea></label>
+      <label>Розташування заголовка<select id="customTemplateLayout"><option value="top_left">Зверху ліворуч</option><option value="left_panel">Ліва панель</option><option value="bottom_left">Знизу ліворуч</option><option value="top_band">Верхня смуга</option></select></label>
+      <label>Акцентний колір<input id="customTemplateAccent" type="color" value="#18ecd6"></label>
+      <div class="editor-actions wide"><button class="primary" id="createTemplate">Зберегти шаблон</button><button id="cancelCustomTemplate">Скасувати</button></div>
+    </div>
+    <div id="templates" class="templates image-setting"></div>
+    <div class="asset-head image-setting">
+      <div><h2>Бренд-матеріали</h2><p class="reference-note">Оберіть до 16 логотипів або прикладів. Вони будуть використані в новому зображенні.</p></div>
+      <label class="button asset-upload">＋ Додати файли<input id="referenceUpload" type="file" accept="image/png,image/jpeg,image/webp" multiple></label>
+    </div>
+    <div class="brand-options image-setting">
+      <label>Логотип продукту<select id="logoReference"><option value="">Без логотипа продукту</option></select><small>PNG/WebP з прозорістю накладається без фону.</small></label>
+      <label>Логотип компанії<select id="companyLogoReference"><option value="">Без логотипа компанії</option></select><small>Опціональний окремий логотип у верхньому куті.</small></label>
+      <div><strong>Як працюють файли</strong><p class="reference-note">Позначені картки використовуються як AI-референси. Логотип обирається окремо і може використовуватися без референсів.</p></div>
+    </div>
+    <label>Посилання для поста<input id="defaultLink" type="url" placeholder="https://voicerhub.com/ua/products/tony"><small>Буде додано як логічний клікабельний текст. Поле можна змінити в редакторі.</small></label>
+    <div id="assets" class="assets image-setting"></div>
+    <div id="waveCoverNotice" class="brand-options" hidden>
+      <div><strong>Постійна обкладинка Voicer Wave</strong><p class="reference-note">Для цієї рубрики завжди використовується затверджене зображення Voicer Wave. OpenAI не генерує нову картинку, тому витрат на зображення немає.</p></div>
+      <img src="wave-cover" alt="Voicer Wave" style="display:block;width:180px;max-width:100%;aspect-ratio:3/2;object-fit:cover;border:1px solid var(--line)">
+    </div>
+    <div class="editor-actions"><button class="success" id="generateSelected">Генерувати вибрані пости</button></div>
+    <div id="ideas" class="ideas"></div>
+    <div id="ideasPagination" class="pagination"></div>
+  </section>
+
+  <section id="planningView" class="view">
+    <div class="planning-grid">
+      <article class="planning-panel">
+        <h2>Контент-план</h2>
+        <label>Період<select id="planPeriod"><option value="week">Тиждень</option><option value="month">Місяць</option></select></label>
+        <label>Початок<input id="planStart" type="date"></label>
+        <label>Кількість постів<input id="planPosts" type="number" min="1" max="31" value="5"></label>
+        <label>Продукт<select id="planProduct"><option value="general">TONY + Voicer</option><option value="tony">TONY</option><option value="voicer">Voicer</option><option value="wave">Voicer Wave</option></select></label>
+        <label>Фокус<textarea id="planFocus" placeholder="Цілі, аудиторія або основні акценти"></textarea></label>
+        <div class="editor-actions"><button class="primary" id="generatePlan">Створити план</button></div>
+      </article>
+      <article class="planning-panel">
+        <h2>Серія постів</h2>
+        <label>Продукт<select id="seriesProduct"><option value="tony">TONY</option><option value="voicer">Voicer</option><option value="wave">Voicer Wave</option></select></label>
+        <label>Кількість частин<select id="seriesParts"><option>3</option><option>4</option><option>5</option></select></label>
+        <label>Тон<select id="seriesTone"><option value="expert">Експертний</option><option value="sales">Продаючий</option><option value="light">Легкий</option><option value="news">Новинний</option></select></label>
+        <label>Тема серії<textarea id="seriesTopic" placeholder="Наприклад: як побудувати контроль якості дзвінків"></textarea></label>
+        <div class="editor-actions"><button class="primary" id="generateSeries">Створити серію</button></div>
+      </article>
+      <article class="planning-panel">
+        <h2>Матеріал із сайту</h2>
+        <label>URL<input id="materialUrl" type="url" placeholder="https://voicerhub.com/ua/..."></label>
+        <label>Або текст матеріалу<textarea id="materialText" placeholder="Для сторінок, які не дозволяють автоматичне читання"></textarea></label>
+        <label>Продукт<select id="materialProduct"><option value="general">TONY + Voicer</option><option value="tony">TONY</option><option value="voicer">Voicer</option><option value="wave">Voicer Wave</option></select></label>
+        <label>Кількість тем<input id="materialCount" type="number" min="1" max="8" value="3"></label>
+        <label>Тон<select id="materialTone"><option value="expert">Експертний</option><option value="sales">Продаючий</option><option value="light">Легкий</option><option value="news">Новинний</option></select></label>
+        <div class="editor-actions"><button class="primary" id="importMaterial">Створити теми</button></div>
+      </article>
+    </div>
+    <p class="reference-note">Створені плани, серії та матеріали з сайту з’являються на сторінці «Теми» для перевірки й запуску.</p>
+  </section>
+
+  <section id="draftsView" class="view">
+    <div class="section-head"><h2>Чернетки та приклади</h2><button id="toggleFavorites">☆ Показати вдалі приклади</button></div>
+    <div id="drafts" class="drafts"></div>
+    <div id="draftsPagination" class="pagination"></div>
+  </section>
+
+  <section id="calendarView" class="view">
+    <div class="calendar-head"><h2 id="calendarTitle">Календар</h2><div class="calendar-nav"><button id="calendarPrev" title="Попередній місяць">←</button><button id="calendarToday">Сьогодні</button><button id="calendarNext" title="Наступний місяць">→</button></div></div>
+    <div class="calendar-wrap"><div id="calendar" class="calendar"></div></div>
+  </section>
+
+  <section id="opsView" class="view">
+    <div class="metrics">
+      <div class="metric"><span>Загальні витрати</span><strong id="total">$0.0000</strong></div>
+      <div class="metric"><span>Тексти</span><strong id="text">$0.0000</strong></div>
+      <div class="metric"><span>Зображення</span><strong id="image">$0.0000</strong></div>
+      <div class="metric"><span>Активні завдання</span><strong id="active">0</strong></div>
+    </div>
+    <h2>Генерація</h2><div class="scroll"><table><thead><tr><th>ID</th><th>Продукт</th><th>Тема</th><th>Моделі</th><th>Статус</th><th>Text Batch</th><th>Image Batch</th><th>Помилка</th></tr></thead><tbody id="jobs"></tbody></table></div>
+    <h2>OpenAI Batch</h2><div class="scroll"><table><thead><tr><th>ID</th><th>Тип</th><th>Статус</th><th>Виконано</th><th>Помилки</th><th>Токени</th><th>Вартість</th></tr></thead><tbody id="batches"></tbody></table></div>
+  </section>
+
+  <section id="usersView" class="view">
+    <div id="userAdmin" hidden>
+      <h2>Новий користувач</h2>
+      <div class="user-create">
+        <label>Логін<input id="newUsername" autocomplete="off" placeholder="name.surname"></label>
+        <label>Тимчасовий пароль<input id="newPassword" type="password" autocomplete="new-password" placeholder="Мінімум 10 символів"></label>
+        <label class="check-label"><input id="newIsAdmin" type="checkbox"> Адміністратор</label>
+        <button class="primary" id="createUser">Додати</button>
+      </div>
+      <div class="scroll"><table><thead><tr><th>Логін</th><th>Роль</th><th>Статус</th><th>Створено</th><th>Дії</th></tr></thead><tbody id="users"></tbody></table></div>
+    </div>
+    <h2>Мій пароль</h2>
+    <div class="user-create">
+      <label>Новий пароль<input id="ownPassword" type="password" autocomplete="new-password" placeholder="Мінімум 10 символів"></label>
+      <button id="changeOwnPassword">Змінити пароль</button>
+    </div>
+  </section>
+</main>
+
+<dialog id="editor">
+  <div class="editor-head"><strong>Редагування поста</strong><button id="closeEditor">✕</button></div>
+  <div class="editor-grid">
+    <div><img id="editorImage" alt="Зображення поста"><div class="editor-actions"><button id="regenImage">↻ Інша картинка</button></div></div>
+    <div>
+      <label>Заголовок<input id="editorTitle"></label>
+      <div class="variants">
+        <div><label>Варіанти заголовка</label><div id="titleVariants" class="variant-list"></div></div>
+        <div><label>Варіанти CTA</label><div id="ctaVariants" class="variant-list"></div></div>
+      </div>
+      <label>Текст Telegram<textarea id="editorCaption"></textarea></label>
+      <div class="formatbar" aria-label="Форматування"><button data-format="b" title="Жирний"><b>B</b></button><button data-format="i" title="Курсив"><i>I</i></button><button data-format="u" title="Підкреслений"><u>U</u></button><button data-format="s" title="Закреслений"><s>S</s></button><button data-format="blockquote" title="Цитата">❞</button><button data-format="code" title="Моноширинний">&lt;/&gt;</button><button data-format="tg-spoiler" title="Прихований">◫</button><button id="insertLink" title="Посилання">↗</button></div>
+      <label>Посилання<input id="editorLink" type="url" placeholder="https://voicerhub.com/ua/products/tony"></label>
+      <div class="modelbar" id="editorVisualSettings">
+        <label>Шаблон картинки<select id="editorTemplate"></select></label>
+        <label>Логотип продукту<select id="editorLogo"><option value="">Без логотипа</option></select></label>
+        <label>Логотип компанії<select id="editorCompanyLogo"><option value="">Без логотипа</option></select></label>
+      </div>
+      <div class="editor-actions">
+        <button class="primary" id="saveDraft">Зберегти</button>
+        <button id="regenText">↻ Інший текст</button>
+        <button id="proofreadDraft">✓ Перевірити українську</button>
+        <button id="favoriteDraft">☆ До прикладів</button>
+        <button class="success" id="publishNow">Опублікувати зараз</button>
+      </div>
+      <div class="schedule"><input id="scheduleAt" type="datetime-local"><button id="scheduleDraft">Запланувати</button></div>
+      <div class="editor-actions"><button class="danger" id="cancelSchedule">Скасувати розклад</button></div>
+    </div>
+  </div>
+</dialog>
+<div id="notice" class="notice"></div>
+
+<script>
+const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const money=v=>`$${Number(v||0).toFixed(4)}`; const short=v=>v?`${v.slice(0,14)}...`:"—";
+const rubricLabel=v=>({wave:"Voicer Wave",tony:"TONY",voicer:"Voicer",general:"TONY + Voicer"}[v]||v);
+const toneLabel=v=>({expert:"Експертний",sales:"Продаючий",light:"Легкий",news:"Новинний"}[v]||v);
+const statusLabels={suggested:"Запропоновано",selected:"У черзі",queued_text:"Очікує генерації тексту",text_batch:"Генерується текст",queued_image:"Очікує генерації зображення",image_batch:"Генерується зображення",ready:"Готово",draft:"Чернетка",scheduled:"Заплановано",published:"Опубліковано",failed:"Помилка",completed:"Завершено",in_progress:"Виконується",cancelled:"Скасовано",expired:"Термін минув"};
+const busyStatuses=new Set(["selected","queued_text","text_batch","queued_image","image_batch","in_progress"]);
+const state={data:null,me:null,draftId:null,currentDraft:null,referenceIds:new Set(),templateId:localStorage.getItem("templateId")||"editorial-dark",calendarDate:new Date(),ideaPage:1,draftPage:1,jobPage:1,pageSize:12,favoritesOnly:false}; const apiUrl=p=>{const u=new URL(p,location.href);u.username="";u.password="";return u};
+function errorText(detail){if(typeof detail==="string")return detail;if(Array.isArray(detail))return detail.map(x=>x.msg||x.message||JSON.stringify(x)).join("; ");if(detail&&typeof detail==="object")return detail.message||detail.detail||JSON.stringify(detail);return "Невідома помилка"}
+async function api(path,options={}){options.credentials="same-origin";options.headers={...(options.headers||{}),"X-Requested-With":"VoicerHubAdmin"};if(options.body&&!(options.body instanceof FormData))options.headers["Content-Type"]="application/json";const r=await fetch(apiUrl(path),options);if(!r.ok){let d={};try{d=await r.json()}catch{}const fallback={401:"Потрібно увійти знову",403:"Недостатньо прав",404:"Дані не знайдено",409:"Дію зараз неможливо виконати",422:"Перевірте введені дані",500:"Внутрішня помилка сервера"}[r.status]||`Помилка HTTP ${r.status}`;const detail=d.detail===undefined?fallback:errorText(d.detail);throw new Error(detail)}if(r.status===204)return {};return r.json()}
+function toast(text,error=false){const n=document.querySelector("#notice");n.textContent=errorText(text);n.style.background=error?"#8f1d1d":"#111a2d";n.style.display="block";clearTimeout(n.timer);n.timer=setTimeout(()=>n.style.display="none",5000)}
+async function loading(button,work,label="Виконується"){const old=button.innerHTML;button.disabled=true;button.innerHTML=`<span class="spinner"></span>${label}`;try{return await work()}catch(e){toast(e.message,true);return null}finally{button.disabled=false;button.innerHTML=old}}
+const inferredLink=product=>({tony:"https://voicerhub.com/ua/products/tony",voicer:"https://voicerhub.com/ua/products/voicer"}[product]||"");
+const generationPayload=(product="",tone="")=>{const modal=document.querySelector("#editor");const inEditor=modal.open;return {text_model:document.querySelector("#textModel").value,image_model:document.querySelector("#imageModel").value,reference_ids:[...state.referenceIds],template_id:inEditor?document.querySelector("#editorTemplate").value:state.templateId,logo_reference_id:Number(inEditor?document.querySelector("#editorLogo").value:document.querySelector("#logoReference").value)||null,company_logo_reference_id:Number(inEditor?document.querySelector("#editorCompanyLogo").value:document.querySelector("#companyLogoReference").value)||null,link_url:(inEditor?document.querySelector("#editorLink").value:document.querySelector("#defaultLink").value)||inferredLink(product),tone:tone||document.querySelector("#ideaTone").value}};
+for(const id of ["textModel","imageModel"]){const el=document.querySelector(`#${id}`);el.value=localStorage.getItem(id)||el.value;el.onchange=()=>localStorage.setItem(id,el.value)}
+document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{document.querySelectorAll(".tab,.view").forEach(x=>x.classList.remove("active"));b.classList.add("active");document.querySelector(`#${b.dataset.view}`).classList.add("active");renderActive(true)});
+const paginate=(items,page,size)=>items.slice((page-1)*size,page*size);
+function pagination(id,total,page,setter){const pages=Math.max(1,Math.ceil(total/state.pageSize));page=Math.min(page,pages);document.querySelector(`#${id}`).innerHTML=total>state.pageSize?`<button data-page-prev ${page<=1?"disabled":""}>←</button><span>Сторінка ${page} з ${pages}</span><button data-page-next ${page>=pages?"disabled":""}>→</button>`:"";document.querySelector(`#${id} [data-page-prev]`)?.addEventListener("click",()=>setter(page-1));document.querySelector(`#${id} [data-page-next]`)?.addEventListener("click",()=>setter(page+1))}
+function renderIdeas(ideas){const page=paginate(ideas,state.ideaPage,state.pageSize);document.querySelector("#ideas").innerHTML=page.length?page.map(i=>{const busy=busyStatuses.has(i.status);const done=["ready","draft","scheduled","published"].includes(i.status);const duplicate=Number(i.duplicate_score||0)>=.62;return `<div class="idea"><input class="ideaCheck" type="checkbox" value="${i.id}" ${i.status!=="suggested"?"disabled":""}><span class="badge">${esc(rubricLabel(i.product))}</span><div><strong>${esc(i.series_part?`${i.series_part}/${i.series_title} · ${i.title}`:i.title)}</strong><p>${esc(i.angle)}</p><div class="idea-meta"><span class="meta-chip">${esc(toneLabel(i.tone))}</span>${i.planned_for?`<span class="meta-chip">${esc(new Date(`${i.planned_for}T12:00:00`).toLocaleDateString("uk-UA"))}</span>`:""}${i.source_url?`<span class="meta-chip">Матеріал із сайту</span>`:""}${duplicate?`<span class="meta-chip warn">Схожість ${Math.round(i.duplicate_score*100)}%</span>`:""}</div><span class="status ${esc(i.status)} ${busy?"busy":""}">${esc(statusLabels[i.status]||i.status)}</span></div><div class="editor-actions">${done&&i.draft_id?`<button data-open-idea="${i.draft_id}">Відкрити пост</button>`:`<button data-idea="${i.id}" ${i.status!=="suggested"?"disabled":""}>${i.status==="suggested"?"Створити пост":esc(statusLabels[i.status]||i.status)}</button>`}<button class="danger" data-delete-idea="${i.id}" title="Видалити тему">✕</button></div></div>`}).join(""):`<div class="empty">Згенеруйте перший набір тем</div>`;pagination("ideasPagination",ideas.length,state.ideaPage,p=>{state.ideaPage=p;renderIdeas(ideas)});document.querySelectorAll("[data-idea]").forEach(b=>b.onclick=()=>generateIdea(Number(b.dataset.idea)));document.querySelectorAll("[data-open-idea]").forEach(b=>b.onclick=()=>openDraft(b.dataset.openIdea));document.querySelectorAll("[data-delete-idea]").forEach(b=>b.onclick=async()=>{if(!confirm("Видалити цю тему зі списку?"))return;try{await api(`api/ideas/${b.dataset.deleteIdea}`,{method:"DELETE"});await refresh()}catch(e){toast(e.message,true)}})}
+function renderTemplates(templates){document.querySelector("#templates").innerHTML=templates.map(t=>`<article class="template ${t.id===state.templateId?"selected":""}" data-template="${esc(t.id)}">${t.has_preview?`<img src="api/templates/${esc(t.id)}/preview?v=2" alt="${esc(t.name)}">`:`<div class="empty">Прев’ю ще немає</div>`}<span class="template-copy"><strong>${esc(t.name)}</strong><span>${esc(t.description)}</span></span>${t.custom?`<span class="template-actions">${!t.has_preview?`<button data-preview-template="${esc(t.id)}">Створити прев’ю</button>`:""}<button class="danger" data-delete-template="${esc(t.id)}">Видалити</button></span>`:""}</article>`).join("");const editorSelect=document.querySelector("#editorTemplate");const current=editorSelect.value;editorSelect.innerHTML=templates.map(t=>`<option value="${esc(t.id)}">${esc(t.name)}</option>`).join("");editorSelect.value=templates.some(t=>t.id===current)?current:state.templateId;document.querySelectorAll("[data-template]").forEach(card=>card.onclick=e=>{if(e.target.closest("[data-preview-template],[data-delete-template]"))return;state.templateId=card.dataset.template;localStorage.setItem("templateId",state.templateId);renderTemplates(templates)});document.querySelectorAll("[data-preview-template]").forEach(b=>b.onclick=()=>loading(b,async()=>{await api(`api/templates/${b.dataset.previewTemplate}/generate-preview`,{method:"POST"});await refresh()},"Генерується"));document.querySelectorAll("[data-delete-template]").forEach(b=>b.onclick=async()=>{if(!confirm("Видалити цей шаблон?"))return;try{await api(`api/templates/${b.dataset.deleteTemplate}`,{method:"DELETE"});if(state.templateId===b.dataset.deleteTemplate)state.templateId="editorial-dark";await refresh()}catch(e){toast(e.message,true)}})}
+function renderLogoOptions(assets){for(const id of ["logoReference","editorLogo","companyLogoReference","editorCompanyLogo"]){const select=document.querySelector(`#${id}`);const current=select.value;const company=id.toLowerCase().includes("company");select.innerHTML=`<option value="">${company?"Без логотипа компанії":"Без логотипа продукту"}</option>`+assets.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join("");if(assets.some(a=>String(a.id)===current))select.value=current}}
+function renderAssets(assets){const valid=new Set(assets.map(a=>a.id));for(const id of state.referenceIds)if(!valid.has(id))state.referenceIds.delete(id);document.querySelector("#assets").innerHTML=assets.length?assets.map(a=>`<article class="asset ${state.referenceIds.has(a.id)?"selected":""}" data-asset="${a.id}"><img src="api/references/${a.id}/image" alt="${esc(a.name)}"><div class="asset-info"><input type="checkbox" ${state.referenceIds.has(a.id)?"checked":""}><span title="${esc(a.name)}">${esc(a.name)}</span><button class="asset-delete" data-delete-asset="${a.id}" title="Видалити">✕</button></div></article>`).join(""):`<div class="empty">Додайте логотипи продуктів, скриншоти або приклади стилю</div>`;document.querySelectorAll("[data-asset]").forEach(card=>card.onclick=e=>{if(e.target.closest("[data-delete-asset]"))return;const id=Number(card.dataset.asset);if(state.referenceIds.has(id))state.referenceIds.delete(id);else if(state.referenceIds.size>=16)return toast("Можна обрати не більше 16 матеріалів");else state.referenceIds.add(id);renderAssets(state.data.references)});document.querySelectorAll("[data-delete-asset]").forEach(b=>b.onclick=async()=>{if(!confirm("Видалити цей бренд-матеріал?"))return;await api(`api/references/${b.dataset.deleteAsset}`,{method:"DELETE"});state.referenceIds.delete(Number(b.dataset.deleteAsset));refresh()})}
+function renderDrafts(drafts){const filtered=state.favoritesOnly?drafts.filter(d=>d.is_favorite):drafts;const page=paginate(filtered,state.draftPage,state.pageSize);document.querySelector("#drafts").innerHTML=page.length?page.map(d=>`<article class="draft" data-draft-card="${d.id}">${d.image_path?`<img src="api/drafts/${d.id}/image" alt="">`:`<div class="empty"><span class="spinner"></span>Зображення генерується</div>`}<div class="draft-body"><div class="draft-meta"><span class="badge">${esc(rubricLabel(d.product))}${d.is_favorite?" · ★":""}</span><span class="status ${esc(d.status)}">${esc(statusLabels[d.status]||d.status)}</span></div><h3>${esc(d.title)}</h3><p>${esc(d.caption_html.replace(/<[^>]+>/g,""))}</p><button data-draft="${d.id}">Відкрити редактор</button></div></article>`).join(""):`<div class="empty">${state.favoritesOnly?"Вдалих прикладів ще немає":"Готових чернеток поки немає"}</div>`;pagination("draftsPagination",filtered.length,state.draftPage,p=>{state.draftPage=p;renderDrafts(drafts)});document.querySelectorAll("[data-draft]").forEach(b=>b.onclick=()=>openDraft(b.dataset.draft))}
+function updateDraftStatuses(drafts){for(const d of drafts){const card=document.querySelector(`[data-draft-card="${d.id}"]`);if(card){const el=card.querySelector(".status");el.className=`status ${d.status}`;el.textContent=statusLabels[d.status]||d.status}}}
+function renderUsers(users){document.querySelector("#users").innerHTML=users.map(u=>`<tr><td><strong>${esc(u.username)}</strong></td><td>${u.is_admin?"Адміністратор":"Редактор"}</td><td class="status ${u.active?"ready":"failed"}">${u.active?"Активний":"Заблокований"}</td><td>${esc(new Date(`${u.created_at}Z`).toLocaleDateString("uk-UA"))}</td><td><div class="user-actions"><button data-role-user="${u.id}">${u.is_admin?"Зробити редактором":"Зробити адміністратором"}</button><button data-active-user="${u.id}" class="${u.active?"danger":""}">${u.active?"Заблокувати":"Активувати"}</button><button data-password-user="${u.id}">Новий пароль</button></div></td></tr>`).join("");document.querySelectorAll("[data-role-user]").forEach(b=>b.onclick=async()=>{const u=users.find(x=>x.id===Number(b.dataset.roleUser));await api(`api/users/${u.id}`,{method:"PATCH",body:JSON.stringify({is_admin:!u.is_admin})});refreshUsers()});document.querySelectorAll("[data-active-user]").forEach(b=>b.onclick=async()=>{const u=users.find(x=>x.id===Number(b.dataset.activeUser));await api(`api/users/${u.id}`,{method:"PATCH",body:JSON.stringify({active:!u.active})});refreshUsers()});document.querySelectorAll("[data-password-user]").forEach(b=>b.onclick=async()=>{const password=prompt("Новий пароль, мінімум 10 символів");if(!password)return;await api(`api/users/${b.dataset.passwordUser}/password`,{method:"PUT",body:JSON.stringify({password})});toast("Пароль змінено")})}
+function renderOps(d){document.querySelector("#total").textContent=money(d.totals.total_cost);document.querySelector("#text").textContent=money(d.totals.text_cost);document.querySelector("#image").textContent=money(d.totals.image_cost);const terminal=new Set(["ready","published","failed"]);document.querySelector("#active").textContent=Object.entries(d.job_counts).filter(([k])=>!terminal.has(k)).reduce((s,[,v])=>s+v,0);document.querySelector("#jobs").innerHTML=d.jobs.map(r=>`<tr><td>${r.id}</td><td>${esc(rubricLabel(r.product))}</td><td>${esc(r.topic)}</td><td>${esc(r.text_model||"—")}<br>${esc(r.image_model||"—")}</td><td class="status ${esc(r.status)} ${busyStatuses.has(r.status)?"busy":""}">${esc(statusLabels[r.status]||r.status)}</td><td>${esc(short(r.text_batch_id))}</td><td>${esc(short(r.image_batch_id))}</td><td>${esc(r.error||"—")}</td></tr>`).join("");document.querySelector("#batches").innerHTML=d.batches.map(r=>`<tr><td>${esc(short(r.id))}</td><td>${r.kind==="text"?"Текст":"Зображення"}</td><td class="status ${esc(r.status)} ${r.status==="in_progress"?"busy":""}">${esc(statusLabels[r.status]||r.status)}</td><td>${r.completed}/${r.total}</td><td>${r.failed}</td><td>${r.input_tokens}/${r.output_tokens}</td><td>${money(r.estimated_cost)}</td></tr>`).join("")}
+const localKey=date=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;
+const parseServerDate=raw=>new Date(raw.endsWith("Z")?raw:`${raw.replace(" ","T")}Z`);
+function renderCalendar(){if(!state.data)return;const month=new Date(state.calendarDate.getFullYear(),state.calendarDate.getMonth(),1);document.querySelector("#calendarTitle").textContent=month.toLocaleDateString("uk-UA",{month:"long",year:"numeric"});const monday=(month.getDay()+6)%7;const start=new Date(month);start.setDate(1-monday);const items=(state.data.drafts||[]).filter(d=>d.scheduled_at||d.published_at).map(d=>({...d,eventDate:parseServerDate(d.scheduled_at||d.published_at),kind:"draft"}));items.push(...(state.data.ideas||[]).filter(i=>i.planned_for&&!i.draft_id).map(i=>({...i,eventDate:new Date(`${i.planned_for}T12:00:00`),kind:"idea"})));let html=["Пн","Вт","Ср","Чт","Пт","Сб","Нд"].map(x=>`<div class="weekday">${x}</div>`).join("");for(let i=0;i<42;i++){const date=new Date(start);date.setDate(start.getDate()+i);const key=localKey(date);const dayItems=items.filter(d=>localKey(d.eventDate)===key);html+=`<div class="day ${date.getMonth()===month.getMonth()?"":"outside"} ${key===localKey(new Date())?"today":""}"><div class="day-number">${date.getDate()}</div>${dayItems.map(d=>d.kind==="idea"?`<button class="calendar-item planned" data-calendar-idea="${d.id}"><time>Контент-план · ${esc(toneLabel(d.tone))}</time><span class="cal-product">${esc(rubricLabel(d.product))}</span>${esc(d.title)}<small>${d.series_part?`Серія ${d.series_part}`:"Тема очікує генерації"}</small></button>`:`<button class="calendar-item ${d.status==="published"?"published":""}" data-calendar-draft="${d.id}"><time>${d.eventDate.toLocaleTimeString("uk-UA",{hour:"2-digit",minute:"2-digit"})} · ${esc(statusLabels[d.status]||d.status)}</time><span class="cal-product">${esc(rubricLabel(d.product))}</span>${esc(d.title)}<small>${d.link_url?"Є посилання":"Без посилання"}</small></button>`).join("")}</div>`}document.querySelector("#calendar").innerHTML=html;document.querySelectorAll("[data-calendar-draft]").forEach(b=>b.onclick=()=>openDraft(b.dataset.calendarDraft));document.querySelectorAll("[data-calendar-idea]").forEach(b=>b.onclick=()=>{document.querySelector('[data-view="ideasView"]').click();const idea=state.data.ideas.find(i=>i.id===Number(b.dataset.calendarIdea));if(idea)toast(`Тема: ${idea.title}`)})}
+async function refreshUsers(){if(!state.me?.is_admin)return;try{renderUsers(await api("api/users"))}catch(e){toast(e.message)}}
+function activeView(){return document.querySelector(".view.active")?.id}
+function renderActive(full=false){if(!state.data)return;const view=activeView();if(view==="ideasView"){renderIdeas(state.data.ideas);if(full){renderTemplates(state.data.templates||[]);renderLogoOptions(state.data.references||[]);renderAssets(state.data.references||[])}}else if(view==="draftsView"){if(full)renderDrafts(state.data.drafts);else updateDraftStatuses(state.data.drafts)}else if(view==="calendarView")renderCalendar();else if(view==="opsView")renderOps(state.data)}
+async function refresh(background=false){try{if(!state.me){state.me=await api("api/me");document.querySelector("#currentUser").textContent=state.me.username;if(state.me.is_admin){document.querySelector("#userAdmin").hidden=false;await refreshUsers()}}const d=await api("api/dashboard");state.data=d;renderActive(!background);document.querySelector("#updated").textContent=new Date().toLocaleTimeString("uk-UA")}catch(e){if(e.message.includes("увійти"))location.reload();else if(!background)toast(e.message,true)}}
+async function generateIdea(id){const idea=state.data.ideas.find(i=>i.id===id);const button=document.querySelector(`[data-idea="${id}"]`);await loading(button,async()=>{await api(`api/ideas/${id}/generate`,{method:"POST",body:JSON.stringify(generationPayload(idea?.product,idea?.tone))});toast("Пост поставлено в чергу генерації");await refresh()},"Додається")}
+function syncRubricControls(){const wave=document.querySelector("#ideaProduct").value==="wave";document.querySelectorAll(".image-setting:not(#customTemplateForm)").forEach(el=>el.hidden=wave);if(wave)document.querySelector("#customTemplateForm").hidden=true;document.querySelector("#waveCoverNotice").hidden=!wave}
+document.querySelector("#ideaProduct").onchange=syncRubricControls;
+document.querySelector("#generateIdeas").onclick=async()=>{const b=document.querySelector("#generateIdeas");await loading(b,async()=>{await api("api/ideas/generate",{method:"POST",body:JSON.stringify({product:document.querySelector("#ideaProduct").value,count:Number(document.querySelector("#ideaCount").value),focus:document.querySelector("#ideaFocus").value,text_model:document.querySelector("#textModel").value,tone:document.querySelector("#ideaTone").value})});state.ideaPage=1;toast("Нові теми готові");await refresh()},"Генерується")};
+document.querySelector("#planStart").value=new Date().toISOString().slice(0,10);
+document.querySelector("#generatePlan").onclick=async()=>{const b=document.querySelector("#generatePlan");await loading(b,async()=>{await api("api/content-plan/generate",{method:"POST",body:JSON.stringify({period:document.querySelector("#planPeriod").value,start_date:document.querySelector("#planStart").value,posts:Number(document.querySelector("#planPosts").value),product:document.querySelector("#planProduct").value,focus:document.querySelector("#planFocus").value,text_model:document.querySelector("#textModel").value})});toast("Контент-план додано до тем");await refresh();document.querySelector('[data-view="ideasView"]').click()},"Планується")};
+document.querySelector("#generateSeries").onclick=async()=>{const b=document.querySelector("#generateSeries");await loading(b,async()=>{await api("api/series/generate",{method:"POST",body:JSON.stringify({product:document.querySelector("#seriesProduct").value,parts:Number(document.querySelector("#seriesParts").value),topic:document.querySelector("#seriesTopic").value,tone:document.querySelector("#seriesTone").value,text_model:document.querySelector("#textModel").value})});toast("Серію додано до тем");await refresh();document.querySelector('[data-view="ideasView"]').click()},"Створюється")};
+document.querySelector("#importMaterial").onclick=async()=>{const b=document.querySelector("#importMaterial");await loading(b,async()=>{await api("api/materials/import",{method:"POST",body:JSON.stringify({url:document.querySelector("#materialUrl").value,text:document.querySelector("#materialText").value,product:document.querySelector("#materialProduct").value,count:Number(document.querySelector("#materialCount").value),tone:document.querySelector("#materialTone").value,text_model:document.querySelector("#textModel").value})});toast("Матеріал перетворено на теми");await refresh();document.querySelector('[data-view="ideasView"]').click()},"Читається")};
+document.querySelector("#referenceUpload").onchange=async e=>{const files=[...e.target.files];if(!files.length)return;try{for(const file of files){const form=new FormData();form.append("file",file);await api("api/references",{method:"POST",body:form})}toast(`Додано матеріалів: ${files.length}`);await refresh()}catch(err){toast(err.message)}finally{e.target.value=""}};
+document.querySelector("#toggleFavorites").onclick=()=>{state.favoritesOnly=!state.favoritesOnly;state.draftPage=1;document.querySelector("#toggleFavorites").textContent=state.favoritesOnly?"← Усі чернетки":"☆ Показати вдалі приклади";renderDrafts(state.data.drafts)};
+document.querySelector("#generateSelected").onclick=async()=>{const ids=[...document.querySelectorAll(".ideaCheck:checked")].map(x=>x.value);for(const id of ids)await generateIdea(id);if(!ids.length)toast("Оберіть хоча б одну тему")};
+const jsonList=value=>{try{return JSON.parse(value||"[]")}catch{return[]}};
+async function openDraft(id){try{const d=await api(`api/drafts/${id}`);const wave=d.product==="wave";state.draftId=id;state.currentDraft=d;document.querySelector("#editorTitle").value=d.title;document.querySelector("#editorCaption").value=d.caption_html;document.querySelector("#editorLink").value=d.link_url||"";document.querySelector("#titleVariants").innerHTML=jsonList(d.title_options).map(x=>`<button data-title-option="${esc(x)}">${esc(x)}</button>`).join("");document.querySelector("#ctaVariants").innerHTML=jsonList(d.cta_options).map(x=>`<button data-cta-option="${esc(x)}">${esc(x)}</button>`).join("");document.querySelectorAll("[data-title-option]").forEach(b=>b.onclick=()=>document.querySelector("#editorTitle").value=b.dataset.titleOption);document.querySelectorAll("[data-cta-option]").forEach(b=>b.onclick=()=>{const area=document.querySelector("#editorCaption");area.value=`${area.value.trim()}\\n\\n${b.dataset.ctaOption}`});const favorite=document.querySelector("#favoriteDraft");favorite.textContent=d.is_favorite?"★ У прикладах":"☆ До прикладів";favorite.classList.toggle("favorite",!!d.is_favorite);document.querySelector("#editorTemplate").value=state.templateId;document.querySelector("#editorLogo").value=document.querySelector("#logoReference").value;document.querySelector("#editorCompanyLogo").value=document.querySelector("#companyLogoReference").value;document.querySelector("#editorImage").src=`api/drafts/${id}/image`;document.querySelector("#regenImage").hidden=wave;document.querySelector("#editorVisualSettings").hidden=wave;document.querySelector("#cancelSchedule").style.display=d.status==="scheduled"?"inline-block":"none";document.querySelector("#editor").showModal()}catch(e){toast(e.message,true)}}
+document.querySelector("#closeEditor").onclick=()=>document.querySelector("#editor").close();
+document.querySelector("#saveDraft").onclick=async()=>{const b=document.querySelector("#saveDraft");await loading(b,async()=>{await api(`api/drafts/${state.draftId}`,{method:"PUT",body:JSON.stringify({title:document.querySelector("#editorTitle").value,caption_html:document.querySelector("#editorCaption").value,link_url:document.querySelector("#editorLink").value})});toast("Зміни збережено");await refresh(true)},"Збереження")};
+document.querySelector("#regenImage").onclick=async()=>{const b=document.querySelector("#regenImage");await loading(b,async()=>{await api(`api/drafts/${state.draftId}/regenerate-image`,{method:"POST",body:JSON.stringify(generationPayload())});document.querySelector("#editor").close();toast("Нова картинка поставлена в чергу");await refresh(true)},"Додається")};
+document.querySelector("#regenText").onclick=async()=>{const b=document.querySelector("#regenText");await loading(b,async()=>{await api(`api/drafts/${state.draftId}/regenerate-text`,{method:"POST",body:JSON.stringify(generationPayload())});document.querySelector("#editor").close();toast("Нова версія тексту поставлена в чергу");await refresh(true)},"Додається")};
+document.querySelector("#proofreadDraft").onclick=async()=>{const b=document.querySelector("#proofreadDraft");await loading(b,async()=>{const d=await api(`api/drafts/${state.draftId}/proofread`,{method:"POST",body:JSON.stringify({text_model:document.querySelector("#textModel").value})});document.querySelector("#editorCaption").value=d.caption_html;toast("Українську та термінологію перевірено")},"Перевіряється")};
+document.querySelector("#favoriteDraft").onclick=async()=>{const b=document.querySelector("#favoriteDraft");const next=!state.currentDraft?.is_favorite;await loading(b,async()=>{const d=await api(`api/drafts/${state.draftId}/favorite`,{method:"PUT",body:JSON.stringify({favorite:next})});state.currentDraft=d;b.textContent=d.is_favorite?"★ У прикладах":"☆ До прикладів";b.classList.toggle("favorite",!!d.is_favorite);toast(d.is_favorite?"Пост додано до прикладів":"Пост прибрано з прикладів");await refresh(true)},"Зберігається")};
+document.querySelector("#publishNow").onclick=async()=>{if(!confirm("Опублікувати цей пост у @voicerhub зараз?"))return;const b=document.querySelector("#publishNow");await loading(b,async()=>{await api(`api/drafts/${state.draftId}/publish`,{method:"POST"});document.querySelector("#editor").close();toast("Пост опубліковано");await refresh()},"Публікується")};
+document.querySelector("#scheduleDraft").onclick=async()=>{const value=document.querySelector("#scheduleAt").value;if(!value)return toast("Оберіть дату і час");const b=document.querySelector("#scheduleDraft");await loading(b,async()=>{await api(`api/drafts/${state.draftId}/schedule`,{method:"POST",body:JSON.stringify({scheduled_at:new Date(value).toISOString()})});document.querySelector("#editor").close();toast("Публікацію заплановано");await refresh()},"Планується")};
+document.querySelector("#cancelSchedule").onclick=async()=>{const b=document.querySelector("#cancelSchedule");await loading(b,async()=>{await api(`api/drafts/${state.draftId}/cancel-schedule`,{method:"POST"});document.querySelector("#editor").close();toast("Розклад скасовано");await refresh()},"Скасовується")};
+document.querySelector("#calendarPrev").onclick=()=>{state.calendarDate=new Date(state.calendarDate.getFullYear(),state.calendarDate.getMonth()-1,1);renderCalendar()};
+document.querySelector("#calendarNext").onclick=()=>{state.calendarDate=new Date(state.calendarDate.getFullYear(),state.calendarDate.getMonth()+1,1);renderCalendar()};
+document.querySelector("#calendarToday").onclick=()=>{state.calendarDate=new Date();renderCalendar()};
+document.querySelector("#logout").onclick=async()=>{await api("api/logout",{method:"POST"});location.reload()};
+document.querySelector("#createUser").onclick=async()=>{const username=document.querySelector("#newUsername").value;const password=document.querySelector("#newPassword").value;try{await api("api/users",{method:"POST",body:JSON.stringify({username,password,is_admin:document.querySelector("#newIsAdmin").checked})});document.querySelector("#newUsername").value="";document.querySelector("#newPassword").value="";document.querySelector("#newIsAdmin").checked=false;toast("Користувача додано");refreshUsers()}catch(e){toast(e.message)}};
+document.querySelector("#changeOwnPassword").onclick=async()=>{const password=document.querySelector("#ownPassword").value;if(!password)return toast("Введіть новий пароль");try{await api("api/account/password",{method:"PUT",body:JSON.stringify({password})});location.reload()}catch(e){toast(e.message)}};
+document.querySelector("#showCustomTemplate").onclick=()=>document.querySelector("#customTemplateForm").hidden=false;
+document.querySelector("#cancelCustomTemplate").onclick=()=>document.querySelector("#customTemplateForm").hidden=true;
+document.querySelector("#createTemplate").onclick=async()=>{const b=document.querySelector("#createTemplate");await loading(b,async()=>{await api("api/templates",{method:"POST",body:JSON.stringify({name:document.querySelector("#customTemplateName").value,description:document.querySelector("#customTemplateDescription").value,prompt:document.querySelector("#customTemplatePrompt").value,layout:document.querySelector("#customTemplateLayout").value,accent:document.querySelector("#customTemplateAccent").value})});document.querySelector("#customTemplateForm").hidden=true;toast("Шаблон додано. Тепер можна згенерувати його прев’ю.");await refresh()},"Збереження")};
+function wrapSelection(tag,attrs=""){const area=document.querySelector("#editorCaption");const start=area.selectionStart,end=area.selectionEnd,selected=area.value.slice(start,end)||"текст";const open=`<${tag}${attrs}>`,close=`</${tag}>`;area.setRangeText(open+selected+close,start,end,"select");area.focus()}
+document.querySelectorAll("[data-format]").forEach(b=>b.onclick=()=>wrapSelection(b.dataset.format));
+document.querySelector("#insertLink").onclick=()=>{const url=prompt("Вставте URL посилання");if(url)wrapSelection("a",` href="${url.replace(/"/g,"&quot;")}"`)};
+syncRubricControls();refresh();setInterval(()=>refresh(true),15000);
+</script>
+</body></html>
+"""
+
+
+app = create_app()
+
+
+def main() -> None:
+    uvicorn.run("voicerhub_bot.admin:app", host="0.0.0.0", port=8080)
+
+
+if __name__ == "__main__":
+    main()

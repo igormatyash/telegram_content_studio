@@ -1,0 +1,9 @@
+:80 {
+  handle_path /content-admin/* {
+    reverse_proxy voicerhub-admin:8080
+  }
+
+  handle {
+    reverse_proxy app:8501
+  }
+}

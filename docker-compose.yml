@@ -1,0 +1,31 @@
+services:
+  admin:
+    build: .
+    command: ["voicerhub-admin"]
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    expose:
+      - "8080"
+    networks:
+      worldcup:
+        aliases:
+          - voicerhub-admin
+
+  bot:
+    build: .
+    command: ["voicerhub-bot"]
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    networks:
+      - worldcup
+
+networks:
+  worldcup:
+    external: true
+    name: worldcup-2026_default
