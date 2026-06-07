@@ -10,9 +10,7 @@ services:
     expose:
       - "8080"
     networks:
-      worldcup:
-        aliases:
-          - voicerhub-admin
+      - studio
 
   bot:
     build: .
@@ -23,9 +21,26 @@ services:
     volumes:
       - ./data:/app/data
     networks:
-      - worldcup
+      - studio
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile.production:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - admin
+    networks:
+      - studio
+
+volumes:
+  caddy_data:
+  caddy_config:
 
 networks:
-  worldcup:
-    external: true
-    name: worldcup-2026_default
+  studio:
