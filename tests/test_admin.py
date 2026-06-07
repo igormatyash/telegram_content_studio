@@ -1,5 +1,6 @@
 from io import BytesIO
 
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -17,6 +18,8 @@ def make_client(tmp_path) -> TestClient:
         database_path=tmp_path / "admin.sqlite3",
         generated_dir=tmp_path / "generated",
         reference_dir=tmp_path / "references",
+        organizations_dir=tmp_path / "organizations",
+        app_encryption_key=Fernet.generate_key().decode(),
     )
     return TestClient(create_app(settings))
 

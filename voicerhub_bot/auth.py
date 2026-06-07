@@ -65,6 +65,14 @@ class AuthRepository:
                 )
                 """
             )
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(users)").fetchall()
+            }
+            if "is_super_admin" not in columns:
+                connection.execute(
+                    "ALTER TABLE users ADD COLUMN is_super_admin INTEGER NOT NULL DEFAULT 0"
+                )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS user_sessions (
@@ -76,6 +84,21 @@ class AuthRepository:
                 )
                 """
             )
+            connection.execute(
+                """
+                UPDATE users
+                SET is_super_admin = 1
+                WHERE id = (
+                    SELECT id FROM users
+                    WHERE is_admin = 1
+                    ORDER BY id
+                    LIMIT 1
+                )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM users WHERE is_super_admin = 1
+                )
+                """
+            )
 
     def ensure_bootstrap_admin(self, username: str, password: str) -> None:
         with self._connect() as connection:
@@ -83,9 +106,22 @@ class AuthRepository:
         if count == 0:
             if not password:
                 raise RuntimeError("ADMIN_PASSWORD is required for the first administrator")
-            self.create_user(username, password, is_admin=True)
+            user = self.create_user(username, password, is_admin=True)
+            with self._connect() as connection:
+                connection.execute(
+                    "UPDATE users SET is_super_admin = 1 WHERE id = ?",
+                    (user["id"],),
+                )
 
-    def create_user(self, username: str, password: str, *, is_admin: bool) -> dict:
+    def create_user(
+        self,
+        username: str,
+        password: str,
+        *,
+        is_admin: bool,
+        organization_id: int | None = None,
+        role: str | None = None,
+    ) -> dict:
         normalized = username.strip()
         with self._connect() as connection:
             cursor = connection.execute(
@@ -96,13 +132,27 @@ class AuthRepository:
                 (normalized, hash_password(password), int(is_admin)),
             )
             user_id = int(cursor.lastrowid)
+            if organization_id is not None and self._table_exists(
+                connection, "organization_members"
+            ):
+                connection.execute(
+                    """
+                    INSERT INTO organization_members (organization_id, user_id, role)
+                    VALUES (?, ?, ?)
+                    """,
+                    (
+                        organization_id,
+                        user_id,
+                        role or ("admin" if is_admin else "editor"),
+                    ),
+                )
         return self.get_user(user_id)
 
     def get_user(self, user_id: int) -> dict:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, username, is_admin, active, created_at
+                SELECT id, username, is_admin, is_super_admin, active, created_at
                 FROM users WHERE id = ?
                 """,
                 (user_id,),
@@ -111,14 +161,29 @@ class AuthRepository:
             raise KeyError(f"User {user_id} not found")
         return self._public_user(row)
 
-    def list_users(self) -> list[dict]:
+    def list_users(self, organization_id: int | None = None) -> list[dict]:
         with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT id, username, is_admin, active, created_at
-                FROM users ORDER BY username COLLATE NOCASE
-                """
-            ).fetchall()
+            if organization_id is not None and self._table_exists(
+                connection, "organization_members"
+            ):
+                rows = connection.execute(
+                    """
+                    SELECT u.id, u.username, u.is_admin, u.is_super_admin,
+                        u.active, u.created_at
+                    FROM users u
+                    JOIN organization_members m ON m.user_id = u.id
+                    WHERE m.organization_id = ?
+                    ORDER BY u.username COLLATE NOCASE
+                    """,
+                    (organization_id,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT id, username, is_admin, is_super_admin, active, created_at
+                    FROM users ORDER BY username COLLATE NOCASE
+                    """
+                ).fetchall()
         return [self._public_user(row) for row in rows]
 
     def authenticate(self, username: str, password: str) -> dict | None:
@@ -159,7 +224,8 @@ class AuthRepository:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT u.id, u.username, u.is_admin, u.active, u.created_at
+                SELECT u.id, u.username, u.is_admin, u.is_super_admin,
+                    u.active, u.created_at
                 FROM user_sessions s
                 JOIN users u ON u.id = s.user_id
                 WHERE s.token_hash = ? AND s.expires_at > ? AND u.active = 1
@@ -199,6 +265,20 @@ class AuthRepository:
                     f"UPDATE users SET {', '.join(assignments)} WHERE id = ?",
                     values,
                 )
+                if is_admin is not None and self._table_exists(
+                    connection, "organization_members"
+                ):
+                    connection.execute(
+                        """
+                        UPDATE organization_members
+                        SET role = CASE
+                            WHEN role = 'owner' THEN role
+                            ELSE ?
+                        END
+                        WHERE user_id = ?
+                        """,
+                        ("admin" if is_admin else "editor", user_id),
+                    )
                 if active is False:
                     connection.execute(
                         "DELETE FROM user_sessions WHERE user_id = ?", (user_id,)
@@ -215,12 +295,40 @@ class AuthRepository:
                 "DELETE FROM user_sessions WHERE user_id = ?", (user_id,)
             )
 
-    @staticmethod
-    def _public_user(row: sqlite3.Row) -> dict:
-        return {
+    def _public_user(self, row: sqlite3.Row) -> dict:
+        user = {
             "id": row["id"],
             "username": row["username"],
             "is_admin": bool(row["is_admin"]),
+            "is_super_admin": bool(row["is_super_admin"]),
             "active": bool(row["active"]),
             "created_at": row["created_at"],
         }
+        with self._connect() as connection:
+            if self._table_exists(connection, "organization_members"):
+                membership = connection.execute(
+                    """
+                    SELECT m.organization_id, m.role, o.name organization_name,
+                        o.slug organization_slug
+                    FROM organization_members m
+                    JOIN organizations o ON o.id = m.organization_id
+                    WHERE m.user_id = ? AND o.active = 1
+                    ORDER BY m.organization_id
+                    LIMIT 1
+                    """,
+                    (row["id"],),
+                ).fetchone()
+                if membership:
+                    user.update(dict(membership))
+                    user["is_admin"] = membership["role"] in {"owner", "admin"}
+        return user
+
+    @staticmethod
+    def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
+        return (
+            connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table,),
+            ).fetchone()
+            is not None
+        )

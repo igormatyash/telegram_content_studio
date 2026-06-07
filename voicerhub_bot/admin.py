@@ -26,7 +26,8 @@ from voicerhub_bot.ideas import IdeaGenerator
 from voicerhub_bot.images import ImageGenerator
 from voicerhub_bot.models import Product
 from voicerhub_bot.rendering import MAX_CAPTION_LENGTH, sanitize_telegram_html
-from voicerhub_bot.storage import DraftRepository
+from voicerhub_bot.saas import SaasRepository
+from voicerhub_bot.storage import DraftRepository, TenantRepository
 from voicerhub_bot.visual_templates import DEFAULT_TEMPLATE_ID, VISUAL_TEMPLATES
 
 
@@ -159,22 +160,76 @@ class PasswordRequest(BaseModel):
     password: str = Field(min_length=10, max_length=200)
 
 
+class OrganizationCreateRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=100)
+    slug: str = Field(min_length=2, max_length=60, pattern=r"^[A-Za-z0-9-]+$")
+    owner_username: str = Field(
+        min_length=3,
+        max_length=50,
+        pattern=r"^[A-Za-z0-9._-]+$",
+    )
+    owner_password: str = Field(min_length=10, max_length=200)
+    max_users: int = Field(default=50, ge=1, le=50)
+    max_channels: int = Field(default=1, ge=1, le=1)
+    monthly_publications: int = Field(default=90, ge=1, le=10000)
+    monthly_ai_budget: float = Field(default=50, ge=0, le=100000)
+
+
+class TelegramConnectionRequest(BaseModel):
+    bot_token: str = Field(min_length=20, max_length=200)
+    channel_id: str = Field(min_length=2, max_length=200)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     settings.prepare_directories()
-    repository = DraftRepository(settings.database_path)
+    repository = TenantRepository(settings.database_path, settings.organizations_dir)
     auth = AuthRepository(settings.database_path)
     auth.ensure_bootstrap_admin(settings.admin_username, settings.admin_password)
+    saas = SaasRepository(settings.database_path, settings.app_encryption_key)
+    saas.ensure_legacy_organization(channel_id=settings.telegram_channel)
     idea_generator = IdeaGenerator(settings)
     editorial_tools = EditorialTools(settings)
-    image_generator = ImageGenerator(
-        settings.openai_api_key,
-        settings.openai_image_model,
-        settings.generated_dir,
-        settings.brand_logo_path,
-    )
-    telegram = Bot(settings.telegram_bot_token)
-    app = FastAPI(title="VoicerHub Content Studio", docs_url=None, redoc_url=None)
+    app = FastAPI(title=settings.product_name, docs_url=None, redoc_url=None)
+
+    def organization_dirs(organization_id: int) -> tuple[Path, Path]:
+        if organization_id == 1:
+            return settings.generated_dir, settings.reference_dir
+        root = settings.organizations_dir / str(organization_id)
+        generated = root / "generated"
+        references = root / "references"
+        generated.mkdir(parents=True, exist_ok=True)
+        references.mkdir(parents=True, exist_ok=True)
+        return generated, references
+
+    def image_generator_for(organization_id: int) -> ImageGenerator:
+        generated, _ = organization_dirs(organization_id)
+        return ImageGenerator(
+            settings.openai_api_key,
+            settings.openai_image_model,
+            generated,
+            settings.brand_logo_path if organization_id == 1 else None,
+        )
+
+    def telegram_credentials(organization_id: int) -> tuple[str, str]:
+        try:
+            connection = saas.telegram_connection(
+                organization_id,
+                include_token=True,
+            )
+        except KeyError:
+            connection = {}
+        token = connection.get("bot_token")
+        channel = connection.get("channel_id")
+        if organization_id == 1:
+            token = token or settings.telegram_bot_token
+            channel = channel or settings.telegram_channel
+        if not token or not channel:
+            raise HTTPException(
+                status_code=409,
+                detail="Спочатку підключіть Telegram-бота та канал компанії",
+            )
+        return token, channel
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(_, exc: RequestValidationError) -> JSONResponse:
@@ -194,6 +249,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         user = auth.session_user(voicerhub_session)
         if user is None:
             raise HTTPException(status_code=401, detail="Authentication required")
+        organization_id = int(user.get("organization_id") or 1)
+        repository.use(organization_id)
         return user
 
     def authorize_write(
@@ -209,9 +266,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=403, detail="Administrator access required")
         return user
 
+    def authorize_super_admin(user: dict = Depends(authorize_write)) -> dict:
+        if not user.get("is_super_admin"):
+            raise HTTPException(status_code=403, detail="Platform administrator required")
+        return user
+
+    def organization_id(user: dict) -> int:
+        return int(user.get("organization_id") or 1)
+
+    def ensure_organization_user(current: dict, target_user_id: int) -> None:
+        if target_user_id not in saas.member_ids(organization_id(current)):
+            raise HTTPException(status_code=404, detail="Користувача не знайдено")
+
+    def ensure_ai_budget() -> None:
+        company = saas.get_organization(repository.organization_id)
+        budget = float(company["monthly_ai_budget"])
+        if budget > 0 and repository.current_month_cost() >= budget:
+            raise HTTPException(
+                status_code=402,
+                detail="Місячний AI-бюджет компанії вичерпано",
+            )
+
+    def ensure_publication_quota() -> None:
+        company = saas.get_organization(repository.organization_id)
+        if (
+            repository.current_month_publications()
+            >= company["monthly_publications"]
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Місячний ліміт публікацій вичерпано",
+            )
+
     @app.get("/", response_class=HTMLResponse)
     def dashboard(voicerhub_session: str | None = Cookie(default=None)) -> str:
-        return ADMIN_HTML if auth.session_user(voicerhub_session) else LOGIN_HTML
+        user = auth.session_user(voicerhub_session)
+        if user:
+            repository.use(int(user.get("organization_id") or 1))
+        return ADMIN_HTML if user else LOGIN_HTML
 
     @app.post("/api/login")
     def login(payload: LoginRequest, response: Response) -> dict:
@@ -244,22 +336,137 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return user
 
     @app.get("/api/users")
-    def users(_: dict = Depends(authorize_admin)) -> list[dict]:
-        return auth.list_users()
+    def users(user: dict = Depends(authorize_admin)) -> list[dict]:
+        return auth.list_users(int(user.get("organization_id") or 1))
 
     @app.post("/api/users")
     def create_user(
         payload: UserCreateRequest,
-        _: dict = Depends(authorize_admin),
+        current: dict = Depends(authorize_admin),
     ) -> dict:
+        company = saas.get_organization(organization_id(current))
+        if len(saas.member_ids(organization_id(current))) >= company["max_users"]:
+            raise HTTPException(
+                status_code=409,
+                detail="Досягнуто ліміт користувачів компанії",
+            )
         try:
             return auth.create_user(
-                payload.username, payload.password, is_admin=payload.is_admin
+                payload.username,
+                payload.password,
+                is_admin=payload.is_admin,
+                organization_id=organization_id(current),
+                role="admin" if payload.is_admin else "editor",
             )
         except Exception as exc:
             if "UNIQUE constraint failed" in str(exc):
                 raise HTTPException(status_code=409, detail="Такий логін вже існує") from exc
             raise
+
+    @app.get("/api/organizations")
+    def organizations(_: dict = Depends(authorize_super_admin)) -> list[dict]:
+        return saas.list_organizations()
+
+    @app.post("/api/organizations")
+    def create_organization(
+        payload: OrganizationCreateRequest,
+        current: dict = Depends(authorize_super_admin),
+    ) -> dict:
+        if len(saas.list_organizations()) >= settings.max_organizations:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Досягнуто ліміт у {settings.max_organizations} компанії",
+            )
+        try:
+            organization = saas.create_organization(
+                name=payload.name,
+                slug=payload.slug,
+                max_users=payload.max_users,
+                max_channels=payload.max_channels,
+                monthly_publications=payload.monthly_publications,
+                monthly_ai_budget=payload.monthly_ai_budget,
+            )
+            owner = auth.create_user(
+                payload.owner_username,
+                payload.owner_password,
+                is_admin=True,
+                organization_id=organization["id"],
+                role="owner",
+            )
+        except Exception as exc:
+            if "UNIQUE constraint failed" in str(exc):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Компанія або логін уже існує",
+                ) from exc
+            raise
+        repository.for_organization(organization["id"])
+        saas.audit(
+            organization["id"],
+            current["id"],
+            "organization.created",
+            payload.slug,
+        )
+        return {**organization, "owner": owner}
+
+    @app.get("/api/company")
+    def current_company(user: dict = Depends(authorize)) -> dict:
+        current_organization_id = organization_id(user)
+        company = saas.get_organization(current_organization_id)
+        try:
+            telegram_connection = saas.telegram_connection(
+                current_organization_id,
+                include_token=False,
+            )
+        except KeyError:
+            telegram_connection = None
+        return {
+            **company,
+            "telegram": telegram_connection,
+            "user_count": len(saas.member_ids(current_organization_id)),
+            "ai_spend": repository.current_month_cost(),
+            "publication_count": repository.current_month_publications(),
+        }
+
+    @app.put("/api/company/telegram")
+    async def connect_telegram(
+        payload: TelegramConnectionRequest,
+        user: dict = Depends(authorize_admin),
+    ) -> dict:
+        organization_id = int(user.get("organization_id") or 1)
+        try:
+            bot = Bot(payload.bot_token.strip())
+            profile = await bot.get_me()
+            member = await bot.get_chat_member(payload.channel_id.strip(), profile.id)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="Не вдалося перевірити бота або доступ до каналу",
+            ) from exc
+        if member.status not in {"administrator", "creator"}:
+            raise HTTPException(
+                status_code=422,
+                detail="Бот повинен бути адміністратором Telegram-каналу",
+            )
+        try:
+            connection = saas.save_telegram_connection(
+                organization_id,
+                channel_id=payload.channel_id,
+                bot_token=payload.bot_token,
+                bot_username=profile.username or "",
+            )
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Шифрування секретів ще не налаштовано",
+            ) from exc
+        saas.audit(
+            organization_id,
+            user["id"],
+            "telegram.connected",
+            payload.channel_id,
+        )
+        return connection
 
     @app.patch("/api/users/{user_id}")
     def update_user(
@@ -267,6 +474,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload: UserUpdateRequest,
         current: dict = Depends(authorize_admin),
     ) -> dict:
+        ensure_organization_user(current, user_id)
         if user_id == current["id"] and payload.active is False:
             raise HTTPException(status_code=422, detail="Не можна заблокувати себе")
         if user_id == current["id"] and payload.is_admin is False:
@@ -282,8 +490,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def admin_set_password(
         user_id: int,
         payload: PasswordRequest,
-        _: dict = Depends(authorize_admin),
+        current: dict = Depends(authorize_admin),
     ) -> dict:
+        ensure_organization_user(current, user_id)
         try:
             auth.get_user(user_id)
         except KeyError as exc:
@@ -362,6 +571,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload: IdeaRequest,
         _: str = Depends(authorize_write),
     ) -> dict:
+        ensure_ai_budget()
         _validate_models(payload.text_model)
         _validate_tone(payload.tone)
         ideas, input_tokens, output_tokens = await idea_generator.generate(
@@ -380,6 +590,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload: ContentPlanRequest,
         _: str = Depends(authorize_write),
     ) -> dict:
+        ensure_ai_budget()
         _validate_models(payload.text_model)
         days = 7 if payload.period == "week" else 30
         plan, input_tokens, output_tokens = await idea_generator.generate_plan(
@@ -400,6 +611,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload: SeriesRequest,
         _: str = Depends(authorize_write),
     ) -> dict:
+        ensure_ai_budget()
         _validate_models(payload.text_model)
         _validate_tone(payload.tone)
         ideas, input_tokens, output_tokens = await idea_generator.generate_series(
@@ -426,6 +638,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload: MaterialRequest,
         _: str = Depends(authorize_write),
     ) -> dict:
+        ensure_ai_budget()
         _validate_models(payload.text_model)
         _validate_tone(payload.tone)
         material = payload.text.strip()
@@ -468,6 +681,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload: GenerationRequest,
         _: str = Depends(authorize_write),
     ) -> dict:
+        ensure_ai_budget()
         _validate_generation(payload, repository)
         job = repository.select_idea(
             idea_id,
@@ -550,6 +764,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         template_id: str,
         _: str = Depends(authorize_write),
     ) -> dict:
+        ensure_ai_budget()
         try:
             template = repository.get_custom_template(template_id)
         except KeyError as exc:
@@ -557,6 +772,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 status_code=404,
                 detail="Кастомний шаблон не знайдено",
             ) from exc
+        image_generator = image_generator_for(repository.organization_id)
         path, response = await image_generator.generate(
             "AI-аналітика клієнтського досвіду",
             "A credible customer experience team using AI analytics, voice signals and structured business insights.",
@@ -596,7 +812,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         suffix = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}[
             media_type
         ]
-        path = settings.reference_dir / f"{uuid4().hex}{suffix}"
+        _, reference_dir = organization_dirs(repository.organization_id)
+        path = reference_dir / f"{uuid4().hex}{suffix}"
         path.write_bytes(content)
         return repository.add_reference(
             name=Path(file.filename or "reference").stem[:100],
@@ -653,6 +870,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload: ProofreadRequest,
         _: str = Depends(authorize_write),
     ) -> dict:
+        ensure_ai_budget()
         _validate_models(payload.text_model)
         try:
             draft = repository.draft_record(draft_id)
@@ -722,6 +940,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload: GenerationRequest,
         _: str = Depends(authorize_write),
     ) -> dict:
+        ensure_ai_budget()
         _validate_generation(payload, repository)
         if repository.draft_record(draft_id)["product"] == Product.WAVE.value:
             raise HTTPException(
@@ -744,6 +963,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload: GenerationRequest,
         _: str = Depends(authorize_write),
     ) -> dict:
+        ensure_ai_budget()
         _validate_generation(payload, repository)
         draft = repository.draft_record(draft_id)
         job = repository.create_job(
@@ -764,15 +984,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/drafts/{draft_id}/publish")
     async def publish_draft(
         draft_id: int,
-        _: str = Depends(authorize_write),
+        user: dict = Depends(authorize_write),
     ) -> dict:
+        ensure_publication_quota()
         draft = repository.draft_record(draft_id)
         image_path = Path(draft["image_path"])
         if not draft["image_path"] or not image_path.is_file():
             raise HTTPException(status_code=409, detail="Image is not ready")
+        token, channel = telegram_credentials(int(user.get("organization_id") or 1))
+        telegram = Bot(token)
         with image_path.open("rb") as image:
             message = await telegram.send_photo(
-                chat_id=settings.telegram_channel,
+                chat_id=channel,
                 photo=image,
                 caption=draft["caption_html"],
                 parse_mode=ParseMode.HTML,
@@ -818,7 +1041,7 @@ LOGIN_HTML = r"""
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Вхід · VoicerHub Content Studio</title>
+  <title>Вхід · Content Studio</title>
   <style>
     *{box-sizing:border-box}body{margin:0;background:#f4f7f9;color:#101827;font:15px/1.45 Inter,system-ui,sans-serif;letter-spacing:0}
     main{min-height:100vh;display:grid;place-items:center;padding:20px}.login{width:min(400px,100%);background:#fff;border:1px solid #dce3ea;border-top:4px solid #18ecd6;padding:28px;border-radius:6px;box-shadow:0 18px 45px #10182712}
@@ -828,7 +1051,7 @@ LOGIN_HTML = r"""
   </style>
 </head>
 <body><main><form class="login" id="loginForm">
-  <h1>VOICERHUB · CONTENT STUDIO</h1>
+  <h1>CONTENT STUDIO</h1>
   <p class="sub">Увійдіть до редакційної панелі</p>
   <label>Логін<input id="username" autocomplete="username" required autofocus></label>
   <label>Пароль<input id="password" type="password" autocomplete="current-password" required></label>
@@ -846,7 +1069,7 @@ ADMIN_HTML = r"""
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>VoicerHub Content Studio</title>
+  <title>Content Studio</title>
   <style>
     :root { --ink:#101827;--muted:#647084;--line:#dce3ea;--paper:#f6f8fa;--white:#fff;--cyan:#00a994;--blue:#1765d8;--amber:#a96200;--red:#bd2c2c; }
     *{box-sizing:border-box} [hidden]{display:none!important} body{margin:0;color:var(--ink);background:var(--paper);font:14px/1.45 Inter,system-ui,sans-serif;letter-spacing:0}
@@ -872,14 +1095,14 @@ ADMIN_HTML = r"""
     .asset-head{display:flex;justify-content:space-between;align-items:center;gap:12px}.asset-upload input{display:none}.assets{display:grid;grid-template-columns:repeat(6,minmax(130px,1fr));gap:10px}.asset{position:relative;background:#fff;border:1px solid var(--line);border-radius:6px;overflow:hidden}.asset.selected{border:2px solid var(--cyan)}.asset img{display:block;width:100%;aspect-ratio:1;object-fit:contain;background:#eef2f5;padding:8px}.asset-info{display:flex;gap:5px;align-items:center;padding:8px}.asset-info span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:700;flex:1}.asset-delete{padding:4px 7px;color:var(--red)}.reference-note{color:var(--muted);margin:6px 0 12px}
     .section-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.templates{display:grid;grid-template-columns:repeat(4,minmax(190px,1fr));gap:10px}.template{position:relative;min-height:210px;text-align:left;padding:0;border:1px solid var(--line);background:#fff;overflow:hidden}.template.selected{border:2px solid var(--cyan);box-shadow:inset 0 0 0 1px var(--cyan)}.template img{display:block;width:100%;aspect-ratio:3/2;object-fit:cover;background:#e8edf2}.template-copy{display:block;padding:11px}.template strong{display:block;margin-bottom:5px}.template span{display:block;color:var(--muted);font-weight:400;font-size:12px}.template-actions{display:flex;gap:6px;padding:0 10px 10px}.template-actions button{padding:5px 8px;font-size:11px}.brand-options{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin:12px 0;padding:14px 16px;background:#fff;border:1px solid var(--line);border-radius:6px}.custom-template{padding:16px;background:#fff;border:1px solid var(--line);display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}.custom-template .wide{grid-column:1/-1}.formatbar{display:flex;flex-wrap:wrap;gap:5px;margin:6px 0}.formatbar button{width:34px;height:32px;padding:0}.pagination{display:flex;justify-content:center;align-items:center;gap:8px;margin:16px 0}.pagination span{color:var(--muted);font-weight:700}
     .calendar-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.calendar-nav{display:flex;align-items:center;gap:7px}.calendar{display:grid;grid-template-columns:repeat(7,minmax(140px,1fr));border-left:1px solid var(--line);border-top:1px solid var(--line);background:#fff}.weekday,.day{border-right:1px solid var(--line);border-bottom:1px solid var(--line)}.weekday{padding:8px;background:#edf1f5;color:var(--muted);font-size:12px;font-weight:800;text-align:center}.day{min-height:165px;padding:8px}.day.outside{background:#f7f8fa;color:#9aa5b2}.day.today{box-shadow:inset 0 0 0 2px var(--cyan)}.day-number{font-weight:800;margin-bottom:6px}.calendar-item{display:block;width:100%;margin:5px 0;padding:7px;border:0;border-left:4px solid var(--cyan);background:#eaf7f5;text-align:left;font-size:11px;font-weight:700}.calendar-item.published{border-color:var(--blue);background:#edf3fb}.calendar-item.planned{border-color:var(--amber);background:#fff6e7}.calendar-item time,.calendar-item small{display:block;color:var(--muted);font-size:10px}.calendar-item .cal-product{display:inline-block;margin:3px 0;color:var(--blue);text-transform:uppercase;font-size:9px}
-    .user-create{display:grid;grid-template-columns:1fr 1fr auto auto;gap:10px;align-items:end;background:#fff;border:1px solid var(--line);padding:16px;border-radius:6px;margin-bottom:16px}.check-label{display:flex;gap:8px;align-items:center;padding-bottom:10px}.check-label input{width:auto;margin:0}.user-actions{display:flex;gap:6px;flex-wrap:wrap}
+    .user-create{display:grid;grid-template-columns:1fr 1fr auto auto;gap:10px;align-items:end;background:#fff;border:1px solid var(--line);padding:16px;border-radius:6px;margin-bottom:16px}.check-label{display:flex;gap:8px;align-items:center;padding-bottom:10px}.check-label input{width:auto;margin:0}.user-actions{display:flex;gap:6px;flex-wrap:wrap}.company-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}.company-card{background:#fff;border:1px solid var(--line);border-radius:6px;padding:16px}.company-card span{display:block;color:var(--muted);font-size:12px;font-weight:800}.company-card strong{display:block;font-size:21px;margin-top:4px}.company-form{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;align-items:end;background:#fff;border:1px solid var(--line);border-radius:6px;padding:16px;margin-bottom:16px}.company-form .wide{grid-column:span 2}.masked{font-family:ui-monospace,SFMono-Regular,monospace;color:var(--muted)}
     .planning-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.planning-panel{background:#fff;border:1px solid var(--line);padding:16px;border-radius:6px}.planning-panel h2{margin:0 0 12px}.planning-panel .editor-actions button{flex:1}.idea-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}.meta-chip{padding:2px 6px;border-radius:3px;background:#edf1f5;color:var(--muted);font-size:10px;font-weight:800}.meta-chip.warn{background:#fff0dc;color:#914f00}.variants{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:10px 0}.variant-list{display:flex;gap:5px;flex-wrap:wrap}.variant-list button{font-size:11px;padding:5px 7px}.favorite{color:#a96200}
-    @media(max-width:950px){.drafts{grid-template-columns:repeat(2,1fr)}.editor-grid{grid-template-columns:1fr}.toolbar,.user-create,.planning-grid{grid-template-columns:1fr 1fr}.toolbar label:nth-child(4){grid-column:1/-1}.assets,.templates{grid-template-columns:repeat(3,1fr)}.calendar-wrap{overflow-x:auto}.calendar{min-width:900px}}
-    @media(max-width:620px){header,main{padding-left:14px;padding-right:14px}header{gap:8px}header h1{font-size:14px}.account{gap:6px}.account #updated{display:none}.tabs{overflow-x:auto}.tab{flex:0 0 auto;padding:11px 12px}.toolbar,.modelbar,.user-create,.brand-options,.custom-template,.planning-grid,.variants{grid-template-columns:1fr}.toolbar label:nth-child(4),.custom-template .wide{grid-column:auto}.drafts{grid-template-columns:1fr}.metrics{grid-template-columns:1fr 1fr}.idea{grid-template-columns:24px 70px minmax(0,1fr)}.idea .editor-actions{grid-column:2/-1}.assets,.templates{grid-template-columns:repeat(2,minmax(0,1fr))}.scroll{overflow-x:auto}.scroll table{min-width:780px}}
+    @media(max-width:950px){.drafts{grid-template-columns:repeat(2,1fr)}.editor-grid{grid-template-columns:1fr}.toolbar,.user-create,.planning-grid,.company-form{grid-template-columns:1fr 1fr}.company-grid{grid-template-columns:repeat(2,1fr)}.toolbar label:nth-child(4){grid-column:1/-1}.assets,.templates{grid-template-columns:repeat(3,1fr)}.calendar-wrap{overflow-x:auto}.calendar{min-width:900px}}
+    @media(max-width:620px){header,main{padding-left:14px;padding-right:14px}header{gap:8px}header h1{font-size:14px}.account{gap:6px}.account #updated{display:none}.tabs{overflow-x:auto}.tab{flex:0 0 auto;padding:11px 12px}.toolbar,.modelbar,.user-create,.brand-options,.custom-template,.planning-grid,.variants,.company-grid,.company-form{grid-template-columns:1fr}.toolbar label:nth-child(4),.custom-template .wide,.company-form .wide{grid-column:auto}.drafts{grid-template-columns:1fr}.metrics{grid-template-columns:1fr 1fr}.idea{grid-template-columns:24px 70px minmax(0,1fr)}.idea .editor-actions{grid-column:2/-1}.assets,.templates{grid-template-columns:repeat(2,minmax(0,1fr))}.scroll{overflow-x:auto}.scroll table{min-width:780px}}
   </style>
 </head>
 <body>
-<header><h1>VOICERHUB · CONTENT STUDIO</h1><div class="account"><span id="currentUser"></span><span id="updated">—</span><button id="logout" title="Вийти">Вийти</button></div></header>
+<header><h1>CONTENT STUDIO</h1><div class="account"><span id="currentCompany"></span><span id="currentUser"></span><span id="updated">—</span><button id="logout" title="Вийти">Вийти</button></div></header>
 <main>
   <nav class="tabs">
     <button class="tab active" data-view="ideasView">Теми</button>
@@ -887,7 +1110,9 @@ ADMIN_HTML = r"""
     <button class="tab" data-view="draftsView">Редактор</button>
     <button class="tab" data-view="calendarView">Календар</button>
     <button class="tab" data-view="opsView">Черга та витрати</button>
+    <button class="tab" data-view="companyView">Компанія</button>
     <button class="tab" id="usersTab" data-view="usersView">Доступ</button>
+    <button class="tab" id="platformTab" data-view="platformView" hidden>Платформа</button>
   </nav>
 
   <section id="ideasView" class="view active">
@@ -1018,6 +1243,33 @@ ADMIN_HTML = r"""
       <button id="changeOwnPassword">Змінити пароль</button>
     </div>
   </section>
+
+  <section id="companyView" class="view">
+    <div class="company-grid" id="companyCards"></div>
+    <h2>Telegram-канал</h2>
+    <div class="company-form">
+      <label class="wide">Канал або ID<input id="companyChannel" placeholder="@company_channel або -100..."></label>
+      <label class="wide">Токен бота<input id="companyBotToken" type="password" autocomplete="off" placeholder="123456:ABC..."></label>
+      <button class="primary" id="saveTelegram">Перевірити і зберегти</button>
+    </div>
+    <p class="reference-note">Бот повинен бути адміністратором каналу з правом публікувати повідомлення. Токен зберігається у зашифрованому вигляді.</p>
+  </section>
+
+  <section id="platformView" class="view">
+    <h2>Нова компанія</h2>
+    <div class="company-form">
+      <label>Назва<input id="orgName" placeholder="Company name"></label>
+      <label>Slug<input id="orgSlug" placeholder="company-name"></label>
+      <label>Логін власника<input id="orgOwner" placeholder="owner.name"></label>
+      <label>Пароль власника<input id="orgPassword" type="password" autocomplete="new-password" placeholder="Мінімум 10 символів"></label>
+      <label>Користувачі<input id="orgUsers" type="number" min="1" max="50" value="50"></label>
+      <label>Канали<input id="orgChannels" type="number" min="1" max="1" value="1"></label>
+      <label>Публікації/міс<input id="orgPublications" type="number" min="1" value="90"></label>
+      <label>AI бюджет/міс<input id="orgBudget" type="number" min="0" step="1" value="50"></label>
+      <button class="primary" id="createOrganization">Створити компанію</button>
+    </div>
+    <div class="scroll"><table><thead><tr><th>ID</th><th>Компанія</th><th>Slug</th><th>Ліміти</th><th>Користувачі</th><th>Статус</th></tr></thead><tbody id="organizations"></tbody></table></div>
+  </section>
 </main>
 
 <dialog id="editor">
@@ -1059,7 +1311,7 @@ const rubricLabel=v=>({wave:"Voicer Wave",tony:"TONY",voicer:"Voicer",general:"T
 const toneLabel=v=>({expert:"Експертний",sales:"Продаючий",light:"Легкий",news:"Новинний"}[v]||v);
 const statusLabels={suggested:"Запропоновано",selected:"У черзі",queued_text:"Очікує генерації тексту",text_batch:"Генерується текст",queued_image:"Очікує генерації зображення",image_batch:"Генерується зображення",ready:"Готово",draft:"Чернетка",scheduled:"Заплановано",published:"Опубліковано",failed:"Помилка",completed:"Завершено",in_progress:"Виконується",cancelled:"Скасовано",expired:"Термін минув"};
 const busyStatuses=new Set(["selected","queued_text","text_batch","queued_image","image_batch","in_progress"]);
-const state={data:null,me:null,draftId:null,currentDraft:null,referenceIds:new Set(),templateId:localStorage.getItem("templateId")||"editorial-dark",calendarDate:new Date(),ideaPage:1,draftPage:1,jobPage:1,pageSize:12,favoritesOnly:false}; const apiUrl=p=>{const u=new URL(p,location.href);u.username="";u.password="";return u};
+const state={data:null,me:null,company:null,organizations:[],draftId:null,currentDraft:null,referenceIds:new Set(),templateId:localStorage.getItem("templateId")||"editorial-dark",calendarDate:new Date(),ideaPage:1,draftPage:1,jobPage:1,pageSize:12,favoritesOnly:false}; const apiUrl=p=>{const u=new URL(p,location.href);u.username="";u.password="";return u};
 function errorText(detail){if(typeof detail==="string")return detail;if(Array.isArray(detail))return detail.map(x=>x.msg||x.message||JSON.stringify(x)).join("; ");if(detail&&typeof detail==="object")return detail.message||detail.detail||JSON.stringify(detail);return "Невідома помилка"}
 async function api(path,options={}){options.credentials="same-origin";options.headers={...(options.headers||{}),"X-Requested-With":"VoicerHubAdmin"};if(options.body&&!(options.body instanceof FormData))options.headers["Content-Type"]="application/json";const r=await fetch(apiUrl(path),options);if(!r.ok){let d={};try{d=await r.json()}catch{}const fallback={401:"Потрібно увійти знову",403:"Недостатньо прав",404:"Дані не знайдено",409:"Дію зараз неможливо виконати",422:"Перевірте введені дані",500:"Внутрішня помилка сервера"}[r.status]||`Помилка HTTP ${r.status}`;const detail=d.detail===undefined?fallback:errorText(d.detail);throw new Error(detail)}if(r.status===204)return {};return r.json()}
 function toast(text,error=false){const n=document.querySelector("#notice");n.textContent=errorText(text);n.style.background=error?"#8f1d1d":"#111a2d";n.style.display="block";clearTimeout(n.timer);n.timer=setTimeout(()=>n.style.display="none",5000)}
@@ -1077,14 +1329,18 @@ function renderAssets(assets){const valid=new Set(assets.map(a=>a.id));for(const
 function renderDrafts(drafts){const filtered=state.favoritesOnly?drafts.filter(d=>d.is_favorite):drafts;const page=paginate(filtered,state.draftPage,state.pageSize);document.querySelector("#drafts").innerHTML=page.length?page.map(d=>`<article class="draft" data-draft-card="${d.id}">${d.image_path?`<img src="api/drafts/${d.id}/image" alt="">`:`<div class="empty"><span class="spinner"></span>Зображення генерується</div>`}<div class="draft-body"><div class="draft-meta"><span class="badge">${esc(rubricLabel(d.product))}${d.is_favorite?" · ★":""}</span><span class="status ${esc(d.status)}">${esc(statusLabels[d.status]||d.status)}</span></div><h3>${esc(d.title)}</h3><p>${esc(d.caption_html.replace(/<[^>]+>/g,""))}</p><button data-draft="${d.id}">Відкрити редактор</button></div></article>`).join(""):`<div class="empty">${state.favoritesOnly?"Вдалих прикладів ще немає":"Готових чернеток поки немає"}</div>`;pagination("draftsPagination",filtered.length,state.draftPage,p=>{state.draftPage=p;renderDrafts(drafts)});document.querySelectorAll("[data-draft]").forEach(b=>b.onclick=()=>openDraft(b.dataset.draft))}
 function updateDraftStatuses(drafts){for(const d of drafts){const card=document.querySelector(`[data-draft-card="${d.id}"]`);if(card){const el=card.querySelector(".status");el.className=`status ${d.status}`;el.textContent=statusLabels[d.status]||d.status}}}
 function renderUsers(users){document.querySelector("#users").innerHTML=users.map(u=>`<tr><td><strong>${esc(u.username)}</strong></td><td>${u.is_admin?"Адміністратор":"Редактор"}</td><td class="status ${u.active?"ready":"failed"}">${u.active?"Активний":"Заблокований"}</td><td>${esc(new Date(`${u.created_at}Z`).toLocaleDateString("uk-UA"))}</td><td><div class="user-actions"><button data-role-user="${u.id}">${u.is_admin?"Зробити редактором":"Зробити адміністратором"}</button><button data-active-user="${u.id}" class="${u.active?"danger":""}">${u.active?"Заблокувати":"Активувати"}</button><button data-password-user="${u.id}">Новий пароль</button></div></td></tr>`).join("");document.querySelectorAll("[data-role-user]").forEach(b=>b.onclick=async()=>{const u=users.find(x=>x.id===Number(b.dataset.roleUser));await api(`api/users/${u.id}`,{method:"PATCH",body:JSON.stringify({is_admin:!u.is_admin})});refreshUsers()});document.querySelectorAll("[data-active-user]").forEach(b=>b.onclick=async()=>{const u=users.find(x=>x.id===Number(b.dataset.activeUser));await api(`api/users/${u.id}`,{method:"PATCH",body:JSON.stringify({active:!u.active})});refreshUsers()});document.querySelectorAll("[data-password-user]").forEach(b=>b.onclick=async()=>{const password=prompt("Новий пароль, мінімум 10 символів");if(!password)return;await api(`api/users/${b.dataset.passwordUser}/password`,{method:"PUT",body:JSON.stringify({password})});toast("Пароль змінено")})}
+function renderCompany(company){state.company=company;document.querySelector("#currentCompany").textContent=company.name;document.querySelector("#companyCards").innerHTML=`<div class="company-card"><span>Компанія</span><strong>${esc(company.name)}</strong></div><div class="company-card"><span>Користувачі</span><strong>${company.user_count} / ${company.max_users}</strong></div><div class="company-card"><span>Telegram-канали</span><strong>${company.telegram?.configured?"1 підключено":`0 / ${company.max_channels}`}</strong></div><div class="company-card"><span>Публікації цього місяця</span><strong>${company.publication_count} / ${company.monthly_publications}</strong></div><div class="company-card"><span>AI-витрати цього місяця</span><strong>${money(company.ai_spend)} / $${Number(company.monthly_ai_budget).toFixed(0)}</strong></div>`;document.querySelector("#companyChannel").value=company.telegram?.channel_id||""}
+function renderOrganizations(items){state.organizations=items;document.querySelector("#organizations").innerHTML=items.map(o=>`<tr><td>${o.id}</td><td><strong>${esc(o.name)}</strong></td><td class="masked">${esc(o.slug)}</td><td>${o.monthly_publications} публікацій<br>$${Number(o.monthly_ai_budget).toFixed(0)} AI</td><td>${o.user_count} / ${o.max_users}</td><td class="status ${o.active?"ready":"failed"}">${o.active?"Активна":"Заблокована"}</td></tr>`).join("")}
 function renderOps(d){document.querySelector("#total").textContent=money(d.totals.total_cost);document.querySelector("#text").textContent=money(d.totals.text_cost);document.querySelector("#image").textContent=money(d.totals.image_cost);const terminal=new Set(["ready","published","failed"]);document.querySelector("#active").textContent=Object.entries(d.job_counts).filter(([k])=>!terminal.has(k)).reduce((s,[,v])=>s+v,0);document.querySelector("#jobs").innerHTML=d.jobs.map(r=>`<tr><td>${r.id}</td><td>${esc(rubricLabel(r.product))}</td><td>${esc(r.topic)}</td><td>${esc(r.text_model||"—")}<br>${esc(r.image_model||"—")}</td><td class="status ${esc(r.status)} ${busyStatuses.has(r.status)?"busy":""}">${esc(statusLabels[r.status]||r.status)}</td><td>${esc(short(r.text_batch_id))}</td><td>${esc(short(r.image_batch_id))}</td><td>${esc(r.error||"—")}</td></tr>`).join("");document.querySelector("#batches").innerHTML=d.batches.map(r=>`<tr><td>${esc(short(r.id))}</td><td>${r.kind==="text"?"Текст":"Зображення"}</td><td class="status ${esc(r.status)} ${r.status==="in_progress"?"busy":""}">${esc(statusLabels[r.status]||r.status)}</td><td>${r.completed}/${r.total}</td><td>${r.failed}</td><td>${r.input_tokens}/${r.output_tokens}</td><td>${money(r.estimated_cost)}</td></tr>`).join("")}
 const localKey=date=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;
 const parseServerDate=raw=>new Date(raw.endsWith("Z")?raw:`${raw.replace(" ","T")}Z`);
 function renderCalendar(){if(!state.data)return;const month=new Date(state.calendarDate.getFullYear(),state.calendarDate.getMonth(),1);document.querySelector("#calendarTitle").textContent=month.toLocaleDateString("uk-UA",{month:"long",year:"numeric"});const monday=(month.getDay()+6)%7;const start=new Date(month);start.setDate(1-monday);const items=(state.data.drafts||[]).filter(d=>d.scheduled_at||d.published_at).map(d=>({...d,eventDate:parseServerDate(d.scheduled_at||d.published_at),kind:"draft"}));items.push(...(state.data.ideas||[]).filter(i=>i.planned_for&&!i.draft_id).map(i=>({...i,eventDate:new Date(`${i.planned_for}T12:00:00`),kind:"idea"})));let html=["Пн","Вт","Ср","Чт","Пт","Сб","Нд"].map(x=>`<div class="weekday">${x}</div>`).join("");for(let i=0;i<42;i++){const date=new Date(start);date.setDate(start.getDate()+i);const key=localKey(date);const dayItems=items.filter(d=>localKey(d.eventDate)===key);html+=`<div class="day ${date.getMonth()===month.getMonth()?"":"outside"} ${key===localKey(new Date())?"today":""}"><div class="day-number">${date.getDate()}</div>${dayItems.map(d=>d.kind==="idea"?`<button class="calendar-item planned" data-calendar-idea="${d.id}"><time>Контент-план · ${esc(toneLabel(d.tone))}</time><span class="cal-product">${esc(rubricLabel(d.product))}</span>${esc(d.title)}<small>${d.series_part?`Серія ${d.series_part}`:"Тема очікує генерації"}</small></button>`:`<button class="calendar-item ${d.status==="published"?"published":""}" data-calendar-draft="${d.id}"><time>${d.eventDate.toLocaleTimeString("uk-UA",{hour:"2-digit",minute:"2-digit"})} · ${esc(statusLabels[d.status]||d.status)}</time><span class="cal-product">${esc(rubricLabel(d.product))}</span>${esc(d.title)}<small>${d.link_url?"Є посилання":"Без посилання"}</small></button>`).join("")}</div>`}document.querySelector("#calendar").innerHTML=html;document.querySelectorAll("[data-calendar-draft]").forEach(b=>b.onclick=()=>openDraft(b.dataset.calendarDraft));document.querySelectorAll("[data-calendar-idea]").forEach(b=>b.onclick=()=>{document.querySelector('[data-view="ideasView"]').click();const idea=state.data.ideas.find(i=>i.id===Number(b.dataset.calendarIdea));if(idea)toast(`Тема: ${idea.title}`)})}
 async function refreshUsers(){if(!state.me?.is_admin)return;try{renderUsers(await api("api/users"))}catch(e){toast(e.message)}}
+async function refreshCompany(){try{renderCompany(await api("api/company"))}catch(e){toast(e.message,true)}}
+async function refreshOrganizations(){if(!state.me?.is_super_admin)return;try{renderOrganizations(await api("api/organizations"))}catch(e){toast(e.message,true)}}
 function activeView(){return document.querySelector(".view.active")?.id}
-function renderActive(full=false){if(!state.data)return;const view=activeView();if(view==="ideasView"){renderIdeas(state.data.ideas);if(full){renderTemplates(state.data.templates||[]);renderLogoOptions(state.data.references||[]);renderAssets(state.data.references||[])}}else if(view==="draftsView"){if(full)renderDrafts(state.data.drafts);else updateDraftStatuses(state.data.drafts)}else if(view==="calendarView")renderCalendar();else if(view==="opsView")renderOps(state.data)}
-async function refresh(background=false){try{if(!state.me){state.me=await api("api/me");document.querySelector("#currentUser").textContent=state.me.username;if(state.me.is_admin){document.querySelector("#userAdmin").hidden=false;await refreshUsers()}}const d=await api("api/dashboard");state.data=d;renderActive(!background);document.querySelector("#updated").textContent=new Date().toLocaleTimeString("uk-UA")}catch(e){if(e.message.includes("увійти"))location.reload();else if(!background)toast(e.message,true)}}
+function renderActive(full=false){if(!state.data)return;const view=activeView();if(view==="ideasView"){renderIdeas(state.data.ideas);if(full){renderTemplates(state.data.templates||[]);renderLogoOptions(state.data.references||[]);renderAssets(state.data.references||[])}}else if(view==="draftsView"){if(full)renderDrafts(state.data.drafts);else updateDraftStatuses(state.data.drafts)}else if(view==="calendarView")renderCalendar();else if(view==="opsView")renderOps(state.data);else if(view==="companyView"&&state.company)renderCompany(state.company);else if(view==="platformView")renderOrganizations(state.organizations)}
+async function refresh(background=false){try{if(!state.me){state.me=await api("api/me");document.querySelector("#currentUser").textContent=state.me.username;if(state.me.is_admin){document.querySelector("#userAdmin").hidden=false;await refreshUsers()}if(state.me.is_super_admin){document.querySelector("#platformTab").hidden=false;await refreshOrganizations()}await refreshCompany()}const d=await api("api/dashboard");state.data=d;renderActive(!background);document.querySelector("#updated").textContent=new Date().toLocaleTimeString("uk-UA")}catch(e){if(e.message.includes("увійти"))location.reload();else if(!background)toast(e.message,true)}}
 async function generateIdea(id){const idea=state.data.ideas.find(i=>i.id===id);const button=document.querySelector(`[data-idea="${id}"]`);await loading(button,async()=>{await api(`api/ideas/${id}/generate`,{method:"POST",body:JSON.stringify(generationPayload(idea?.product,idea?.tone))});toast("Пост поставлено в чергу генерації");await refresh()},"Додається")}
 function syncRubricControls(){const wave=document.querySelector("#ideaProduct").value==="wave";document.querySelectorAll(".image-setting:not(#customTemplateForm)").forEach(el=>el.hidden=wave);if(wave)document.querySelector("#customTemplateForm").hidden=true;document.querySelector("#waveCoverNotice").hidden=!wave}
 document.querySelector("#ideaProduct").onchange=syncRubricControls;
@@ -1104,7 +1360,7 @@ document.querySelector("#regenImage").onclick=async()=>{const b=document.querySe
 document.querySelector("#regenText").onclick=async()=>{const b=document.querySelector("#regenText");await loading(b,async()=>{await api(`api/drafts/${state.draftId}/regenerate-text`,{method:"POST",body:JSON.stringify(generationPayload())});document.querySelector("#editor").close();toast("Нова версія тексту поставлена в чергу");await refresh(true)},"Додається")};
 document.querySelector("#proofreadDraft").onclick=async()=>{const b=document.querySelector("#proofreadDraft");await loading(b,async()=>{const d=await api(`api/drafts/${state.draftId}/proofread`,{method:"POST",body:JSON.stringify({text_model:document.querySelector("#textModel").value})});document.querySelector("#editorCaption").value=d.caption_html;toast("Українську та термінологію перевірено")},"Перевіряється")};
 document.querySelector("#favoriteDraft").onclick=async()=>{const b=document.querySelector("#favoriteDraft");const next=!state.currentDraft?.is_favorite;await loading(b,async()=>{const d=await api(`api/drafts/${state.draftId}/favorite`,{method:"PUT",body:JSON.stringify({favorite:next})});state.currentDraft=d;b.textContent=d.is_favorite?"★ У прикладах":"☆ До прикладів";b.classList.toggle("favorite",!!d.is_favorite);toast(d.is_favorite?"Пост додано до прикладів":"Пост прибрано з прикладів");await refresh(true)},"Зберігається")};
-document.querySelector("#publishNow").onclick=async()=>{if(!confirm("Опублікувати цей пост у @voicerhub зараз?"))return;const b=document.querySelector("#publishNow");await loading(b,async()=>{await api(`api/drafts/${state.draftId}/publish`,{method:"POST"});document.querySelector("#editor").close();toast("Пост опубліковано");await refresh()},"Публікується")};
+document.querySelector("#publishNow").onclick=async()=>{const channel=state.company?.telegram?.channel_id||"підключений канал";if(!confirm(`Опублікувати цей пост у ${channel} зараз?`))return;const b=document.querySelector("#publishNow");await loading(b,async()=>{await api(`api/drafts/${state.draftId}/publish`,{method:"POST"});document.querySelector("#editor").close();toast("Пост опубліковано");await refresh()},"Публікується")};
 document.querySelector("#scheduleDraft").onclick=async()=>{const value=document.querySelector("#scheduleAt").value;if(!value)return toast("Оберіть дату і час");const b=document.querySelector("#scheduleDraft");await loading(b,async()=>{await api(`api/drafts/${state.draftId}/schedule`,{method:"POST",body:JSON.stringify({scheduled_at:new Date(value).toISOString()})});document.querySelector("#editor").close();toast("Публікацію заплановано");await refresh()},"Планується")};
 document.querySelector("#cancelSchedule").onclick=async()=>{const b=document.querySelector("#cancelSchedule");await loading(b,async()=>{await api(`api/drafts/${state.draftId}/cancel-schedule`,{method:"POST"});document.querySelector("#editor").close();toast("Розклад скасовано");await refresh()},"Скасовується")};
 document.querySelector("#calendarPrev").onclick=()=>{state.calendarDate=new Date(state.calendarDate.getFullYear(),state.calendarDate.getMonth()-1,1);renderCalendar()};
@@ -1113,6 +1369,8 @@ document.querySelector("#calendarToday").onclick=()=>{state.calendarDate=new Dat
 document.querySelector("#logout").onclick=async()=>{await api("api/logout",{method:"POST"});location.reload()};
 document.querySelector("#createUser").onclick=async()=>{const username=document.querySelector("#newUsername").value;const password=document.querySelector("#newPassword").value;try{await api("api/users",{method:"POST",body:JSON.stringify({username,password,is_admin:document.querySelector("#newIsAdmin").checked})});document.querySelector("#newUsername").value="";document.querySelector("#newPassword").value="";document.querySelector("#newIsAdmin").checked=false;toast("Користувача додано");refreshUsers()}catch(e){toast(e.message)}};
 document.querySelector("#changeOwnPassword").onclick=async()=>{const password=document.querySelector("#ownPassword").value;if(!password)return toast("Введіть новий пароль");try{await api("api/account/password",{method:"PUT",body:JSON.stringify({password})});location.reload()}catch(e){toast(e.message)}};
+document.querySelector("#saveTelegram").onclick=async()=>{const b=document.querySelector("#saveTelegram");await loading(b,async()=>{await api("api/company/telegram",{method:"PUT",body:JSON.stringify({channel_id:document.querySelector("#companyChannel").value,bot_token:document.querySelector("#companyBotToken").value})});document.querySelector("#companyBotToken").value="";await refreshCompany();toast("Telegram-канал підключено")},"Перевіряється")};
+document.querySelector("#createOrganization").onclick=async()=>{const b=document.querySelector("#createOrganization");await loading(b,async()=>{await api("api/organizations",{method:"POST",body:JSON.stringify({name:document.querySelector("#orgName").value,slug:document.querySelector("#orgSlug").value,owner_username:document.querySelector("#orgOwner").value,owner_password:document.querySelector("#orgPassword").value,max_users:Number(document.querySelector("#orgUsers").value),max_channels:Number(document.querySelector("#orgChannels").value),monthly_publications:Number(document.querySelector("#orgPublications").value),monthly_ai_budget:Number(document.querySelector("#orgBudget").value)})});for(const id of ["orgName","orgSlug","orgOwner","orgPassword"])document.querySelector(`#${id}`).value="";await refreshOrganizations();toast("Компанію та власника створено")},"Створюється")};
 document.querySelector("#showCustomTemplate").onclick=()=>document.querySelector("#customTemplateForm").hidden=false;
 document.querySelector("#cancelCustomTemplate").onclick=()=>document.querySelector("#customTemplateForm").hidden=true;
 document.querySelector("#createTemplate").onclick=async()=>{const b=document.querySelector("#createTemplate");await loading(b,async()=>{await api("api/templates",{method:"POST",body:JSON.stringify({name:document.querySelector("#customTemplateName").value,description:document.querySelector("#customTemplateDescription").value,prompt:document.querySelector("#customTemplatePrompt").value,layout:document.querySelector("#customTemplateLayout").value,accent:document.querySelector("#customTemplateAccent").value})});document.querySelector("#customTemplateForm").hidden=true;toast("Шаблон додано. Тепер можна згенерувати його прев’ю.");await refresh()},"Збереження")};

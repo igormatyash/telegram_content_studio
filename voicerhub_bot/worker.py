@@ -152,6 +152,12 @@ class GenerationWorker:
         )
 
     async def _publish_draft(self, draft: dict) -> None:
+        if (
+            self.settings.monthly_publications_limit
+            and self.repository.current_month_publications()
+            >= self.settings.monthly_publications_limit
+        ):
+            raise RuntimeError("Monthly publication limit reached")
         with open(draft["image_path"], "rb") as image:
             message = await self.bot.send_photo(
                 chat_id=self.settings.telegram_channel,

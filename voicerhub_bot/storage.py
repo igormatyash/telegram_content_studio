@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from contextvars import ContextVar
 from pathlib import Path
 
 from voicerhub_bot.models import BatchRecord, Draft, GenerationJob
@@ -766,6 +767,31 @@ class DraftRepository:
                 (job_id, kind, model, input_tokens, output_tokens, units, cost),
             )
 
+    def current_month_cost(self) -> float:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COALESCE(SUM(cost), 0)
+                FROM usage_events
+                WHERE STRFTIME('%Y-%m', created_at) =
+                    STRFTIME('%Y-%m', 'now')
+                """
+            ).fetchone()
+        return float(row[0] or 0)
+
+    def current_month_publications(self) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM drafts
+                WHERE status = 'published'
+                  AND STRFTIME('%Y-%m', published_at) =
+                    STRFTIME('%Y-%m', 'now')
+                """
+            ).fetchone()
+        return int(row[0] or 0)
+
     def dashboard(self) -> dict:
         with self._connect() as connection:
             job_counts = connection.execute(
@@ -853,3 +879,36 @@ class DraftRepository:
             link_url=row["link_url"] or "",
             tone=row["tone"] or "expert",
         )
+
+
+class TenantRepository:
+    def __init__(self, legacy_database_path: Path, organizations_dir: Path) -> None:
+        self.legacy_database_path = legacy_database_path
+        self.organizations_dir = organizations_dir
+        self._organization_id: ContextVar[int] = ContextVar(
+            "content_studio_organization_id",
+            default=1,
+        )
+        self._repositories: dict[int, DraftRepository] = {
+            1: DraftRepository(legacy_database_path)
+        }
+
+    @property
+    def organization_id(self) -> int:
+        return self._organization_id.get()
+
+    def use(self, organization_id: int) -> DraftRepository:
+        self._organization_id.set(organization_id)
+        return self.for_organization(organization_id)
+
+    def for_organization(self, organization_id: int) -> DraftRepository:
+        if organization_id not in self._repositories:
+            directory = self.organizations_dir / str(organization_id)
+            directory.mkdir(parents=True, exist_ok=True)
+            self._repositories[organization_id] = DraftRepository(
+                directory / "content.sqlite3"
+            )
+        return self._repositories[organization_id]
+
+    def __getattr__(self, name: str):
+        return getattr(self.for_organization(self.organization_id), name)

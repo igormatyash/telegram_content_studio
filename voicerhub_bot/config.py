@@ -5,6 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    product_name: str = "Content Studio"
     telegram_bot_token: str
     telegram_channel: str = "@voicerhub"
     admin_user_ids: str = ""
@@ -28,6 +29,14 @@ class Settings(BaseSettings):
     admin_password: str = ""
     session_cookie_secure: bool = False
     admin_base_path: str = "/content-admin"
+    app_encryption_key: str = ""
+    organizations_dir: Path = Path("data/organizations")
+    max_organizations: int = 3
+    default_max_users: int = 50
+    default_max_channels: int = 1
+    default_monthly_publications: int = 90
+    default_monthly_ai_budget: float = 50.0
+    monthly_publications_limit: int = 0
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -47,6 +56,7 @@ class Settings(BaseSettings):
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self.generated_dir.mkdir(parents=True, exist_ok=True)
         self.reference_dir.mkdir(parents=True, exist_ok=True)
+        self.organizations_dir.mkdir(parents=True, exist_ok=True)
 
 
 @lru_cache
