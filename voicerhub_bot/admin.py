@@ -420,6 +420,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         except KeyError:
             telegram_connection = None
+        if current_organization_id == 1 and settings.telegram_bot_token:
+            telegram_connection = {
+                **(telegram_connection or {}),
+                "organization_id": 1,
+                "channel_id": (
+                    (telegram_connection or {}).get("channel_id")
+                    or settings.telegram_channel
+                ),
+                "configured": True,
+                "legacy": True,
+            }
         return {
             **company,
             "telegram": telegram_connection,
