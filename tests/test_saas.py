@@ -7,6 +7,7 @@ from voicerhub_bot.admin import create_app
 from voicerhub_bot.auth import AuthRepository
 from voicerhub_bot.config import Settings
 from voicerhub_bot.saas import SaasRepository
+from voicerhub_bot.saas_worker import _telegram_settings
 from voicerhub_bot.storage import TenantRepository
 
 
@@ -77,6 +78,35 @@ def test_telegram_token_is_encrypted_at_rest(tmp_path) -> None:
     assert saved["configured"] is True
     assert token not in stored
     assert saas.telegram_connection(1, include_token=True)["bot_token"] == token
+
+
+def test_new_organization_never_inherits_legacy_telegram_channel(tmp_path) -> None:
+    settings = Settings(
+        telegram_bot_token="legacy-token",
+        telegram_channel="@legacy-channel",
+        openai_api_key="openai",
+        database_path=tmp_path / "content.sqlite3",
+        generated_dir=tmp_path / "generated",
+        reference_dir=tmp_path / "references",
+        organizations_dir=tmp_path / "organizations",
+        app_encryption_key=Fernet.generate_key().decode(),
+    )
+    AuthRepository(settings.database_path)
+    saas = SaasRepository(settings.database_path, settings.app_encryption_key)
+    saas.ensure_legacy_organization(channel_id=settings.telegram_channel)
+    organization = saas.create_organization(
+        name="Second company",
+        slug="second-company",
+        max_users=50,
+        max_channels=1,
+        monthly_publications=90,
+        monthly_ai_budget=50,
+    )
+
+    token, channel = _telegram_settings(settings, saas, organization["id"])
+
+    assert token == settings.telegram_bot_token
+    assert channel == ""
 
 
 def test_super_admin_creates_company_with_owner(tmp_path) -> None:

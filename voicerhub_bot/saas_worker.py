@@ -46,7 +46,7 @@ def _telegram_settings(
     if organization_id == 1:
         token = token or settings.telegram_bot_token
         channel = channel or settings.telegram_channel
-    return token or settings.telegram_bot_token, channel or settings.telegram_channel
+    return token or settings.telegram_bot_token, channel or ""
 
 
 class SaaSWorker:
