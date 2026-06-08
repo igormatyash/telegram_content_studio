@@ -122,6 +122,7 @@ def test_job_keeps_models_and_reference_assets(tmp_path: Path) -> None:
         reference_ids=[reference["id"]],
         template_id="clean-light",
         logo_reference_id=reference["id"],
+        generation_mode="fast",
     )
 
     assert job.text_model == "gpt-5.5"
@@ -129,6 +130,7 @@ def test_job_keeps_models_and_reference_assets(tmp_path: Path) -> None:
     assert job.reference_ids == f"[{reference['id']}]"
     assert job.template_id == "clean-light"
     assert job.logo_reference_id == reference["id"]
+    assert job.generation_mode == "fast"
     assert repository.references_by_ids([reference["id"]])[0]["name"] == "Tony logo"
 
 

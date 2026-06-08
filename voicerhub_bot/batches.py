@@ -37,6 +37,29 @@ class BatchOrchestrator:
         )
 
     async def submit_text(self, job: GenerationJob) -> str:
+        request = {
+            "custom_id": f"text-job-{job.id}",
+            "method": "POST",
+            "url": "/v1/responses",
+            "body": self._text_request_body(job),
+        }
+        batch = await self._create_batch(request, "/v1/responses", job.id, "text")
+        self.repository.update_job(job.id, status="text_batch", text_batch_id=batch.id)
+        return batch.id
+
+    async def generate_text_direct(self, job: GenerationJob) -> GeneratedPost:
+        body = self._text_request_body(job)
+        response = await self.client.responses.create(**body)
+        usage = response.usage
+        return self._finalize_text(
+            job,
+            response.output_text,
+            int(getattr(usage, "input_tokens", 0) or 0),
+            int(getattr(usage, "output_tokens", 0) or 0),
+            batch=False,
+        )
+
+    def _text_request_body(self, job: GenerationJob) -> dict[str, Any]:
         rubric = self.repository.get_rubric(job.product)
         fixed_cover = bool(rubric.get("fixed_cover_path"))
         facts = rubric["description"]
@@ -101,26 +124,18 @@ than displaying the raw URL. Generate 3 genuinely different title_options and
 the terminology supplied in the rubric facts.
 """.strip()
         schema = GeneratedPost.model_json_schema()
-        request = {
-            "custom_id": f"text-job-{job.id}",
-            "method": "POST",
-            "url": "/v1/responses",
-            "body": {
-                "model": job.text_model,
-                "input": prompt,
-                "text": {
-                    "format": {
-                        "type": "json_schema",
-                        "name": "voicerhub_post",
-                        "strict": True,
-                        "schema": schema,
-                    }
-                },
+        return {
+            "model": job.text_model,
+            "input": prompt,
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "voicerhub_post",
+                    "strict": True,
+                    "schema": schema,
+                }
             },
         }
-        batch = await self._create_batch(request, "/v1/responses", job.id, "text")
-        self.repository.update_job(job.id, status="text_batch", text_batch_id=batch.id)
-        return batch.id
 
     async def submit_image(self, job: GenerationJob, post: GeneratedPost) -> str:
         template = self._template(job.template_id)
@@ -161,6 +176,24 @@ the terminology supplied in the rubric facts.
         output = await self._read_batch_output(batch.output_file_id)
         body = self._successful_body(output, f"text-job-{job.id}")
         text = _response_output_text(body)
+        usage = body.get("usage") or {}
+        return self._finalize_text(
+            job,
+            text,
+            int(usage.get("input_tokens", 0)),
+            int(usage.get("output_tokens", 0)),
+            batch=True,
+        )
+
+    def _finalize_text(
+        self,
+        job: GenerationJob,
+        text: str,
+        input_tokens: int,
+        output_tokens: int,
+        *,
+        batch: bool,
+    ) -> GeneratedPost:
         post = GeneratedPost.model_validate_json(text)
         # Rubrics are tenant configuration selected before generation. A model
         # may return the display name instead of the stable slug, so bind the
@@ -176,12 +209,13 @@ the terminology supplied in the rubric facts.
         ]
         post.cta_options = [normalize_terminology(item) for item in post.cta_options]
         render_caption(post, job.link_url)
-        usage = body.get("usage") or {}
-        input_tokens = int(usage.get("input_tokens", 0))
-        output_tokens = int(usage.get("output_tokens", 0))
+        input_price, output_price = _text_prices(job.text_model)
+        if not batch:
+            input_price *= 2
+            output_price *= 2
         cost = (
-            input_tokens * _text_prices(job.text_model)[0]
-            + output_tokens * _text_prices(job.text_model)[1]
+            input_tokens * input_price
+            + output_tokens * output_price
         ) / 1_000_000
         if not self.repository.has_usage(job.id, "text"):
             self.repository.add_usage(

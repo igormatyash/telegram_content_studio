@@ -41,7 +41,11 @@ class GenerationWorker:
 
         for job in self.repository.jobs_with_status("queued_text"):
             try:
-                await self.batches.submit_text(job)
+                if job.generation_mode == "fast":
+                    post = await self.batches.generate_text_direct(job)
+                    await self._accept_generated_post(job, post)
+                else:
+                    await self.batches.submit_text(job)
             except Exception as exc:
                 self._fail(job.id, exc)
 
@@ -50,31 +54,7 @@ class GenerationWorker:
                 post = await self.batches.poll_text(job)
                 if post is None:
                     continue
-                rubric = self.repository.get_rubric(post.product)
-                fixed_cover_path = Path(rubric.get("fixed_cover_path") or "")
-                draft = self.repository.create(
-                    topic=job.topic,
-                    product=post.product,
-                    title=post.title,
-                    caption_html=render_caption(post, job.link_url),
-                    image_prompt=json.dumps(post.model_dump(), ensure_ascii=False),
-                    image_path=str(fixed_cover_path) if fixed_cover_path.is_file() else "",
-                    link_url=job.link_url,
-                    title_options=post.title_options,
-                    cta_options=post.cta_options,
-                    tone=job.tone,
-                )
-                if rubric.get("fixed_cover_path"):
-                    if not fixed_cover_path.is_file():
-                        raise FileNotFoundError("Fixed rubric cover image is missing.")
-                    self.repository.update_job(job.id, status="ready", draft_id=draft.id)
-                    await self._notify_ready(job.id)
-                else:
-                    self.repository.update_job(
-                        job.id,
-                        status="queued_image",
-                        draft_id=draft.id,
-                    )
+                await self._accept_generated_post(job, post)
             except Exception as exc:
                 self._fail(job.id, exc)
 
@@ -98,7 +78,11 @@ class GenerationWorker:
                     template = self.repository.get_custom_template(job.template_id)
                 except KeyError:
                     template = None
-                if self.settings.use_image_batch and not references:
+                if (
+                    job.generation_mode != "fast"
+                    and self.settings.use_image_batch
+                    and not references
+                ):
                     await self.batches.submit_image(job, post)
                 else:
                     image_path, response = await self.batches.branding.generate(
@@ -128,6 +112,37 @@ class GenerationWorker:
                     await self._notify_ready(job.id)
             except Exception as exc:
                 self._fail(job.id, exc)
+
+    async def _accept_generated_post(
+        self,
+        job,
+        post: GeneratedPost,
+    ) -> None:
+        rubric = self.repository.get_rubric(job.product)
+        fixed_cover_path = Path(rubric.get("fixed_cover_path") or "")
+        draft = self.repository.create(
+            topic=job.topic,
+            product=job.product,
+            title=post.title,
+            caption_html=render_caption(post, job.link_url),
+            image_prompt=json.dumps(post.model_dump(), ensure_ascii=False),
+            image_path=str(fixed_cover_path) if fixed_cover_path.is_file() else "",
+            link_url=job.link_url,
+            title_options=post.title_options,
+            cta_options=post.cta_options,
+            tone=job.tone,
+        )
+        if rubric.get("fixed_cover_path"):
+            if not fixed_cover_path.is_file():
+                raise FileNotFoundError("Fixed rubric cover image is missing.")
+            self.repository.update_job(job.id, status="ready", draft_id=draft.id)
+            await self._notify_ready(job.id)
+        else:
+            self.repository.update_job(
+                job.id,
+                status="queued_image",
+                draft_id=draft.id,
+            )
 
         for job in self.repository.jobs_with_status("image_batch"):
             try:

@@ -1,11 +1,13 @@
 from io import BytesIO
 from datetime import date, datetime, timedelta, timezone
 import html
+import json
 from pathlib import Path
 from uuid import uuid4
 import re
 
 import uvicorn
+from openai import AsyncOpenAI
 from fastapi import Cookie, Depends, FastAPI, File, Header, HTTPException, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -74,6 +76,7 @@ class GenerationRequest(BaseModel):
     company_logo_reference_id: int | None = None
     link_url: str = Field(default="", max_length=500)
     tone: str = "expert"
+    generation_mode: str = Field(default="fast", pattern=r"^(fast|batch)$")
 
 
 class RubricCreateRequest(BaseModel):
@@ -904,8 +907,78 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             link_url=payload.link_url.strip(),
             tone=payload.tone,
             created_by_user_id=user["id"],
+            generation_mode=payload.generation_mode,
         )
         return {"job_id": job.id}
+
+    @app.post("/api/jobs/{job_id}/retry-fast")
+    async def retry_job_fast(
+        job_id: int,
+        user: dict = Depends(authorize_write),
+    ) -> dict:
+        ensure_ai_budget()
+        try:
+            job = repository.get_job(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Завдання не знайдено") from exc
+        if job.status not in {
+            "queued_text",
+            "text_batch",
+            "queued_image",
+            "image_batch",
+        }:
+            raise HTTPException(
+                status_code=409,
+                detail="Це завдання вже завершено або не може бути перезапущене",
+            )
+        batch_id = (
+            job.text_batch_id if job.status == "text_batch" else job.image_batch_id
+        )
+        if batch_id:
+            try:
+                await AsyncOpenAI(api_key=settings.openai_api_key).batches.cancel(
+                    batch_id
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Не вдалося скасувати OpenAI Batch: {exc}",
+                ) from exc
+        repository.update_job(
+            job.id,
+            status="cancelled",
+            error="Скасовано користувачем. Створено швидке завдання.",
+        )
+        reference_ids = json.loads(job.reference_ids or "[]")
+        if job.draft_id and job.status in {"queued_image", "image_batch"}:
+            replacement = repository.create_image_job(
+                job.draft_id,
+                image_model=job.image_model,
+                reference_ids=reference_ids,
+                template_id=job.template_id,
+                logo_reference_id=job.logo_reference_id,
+                company_logo_reference_id=job.company_logo_reference_id,
+                created_by_user_id=user["id"],
+                generation_mode="fast",
+            )
+        else:
+            replacement = repository.create_job(
+                job.topic,
+                job.product,
+                job.chat_id,
+                text_model=job.text_model,
+                image_model=job.image_model,
+                reference_ids=reference_ids,
+                template_id=job.template_id,
+                logo_reference_id=job.logo_reference_id,
+                company_logo_reference_id=job.company_logo_reference_id,
+                link_url=job.link_url,
+                idea_id=None,
+                tone=job.tone,
+                created_by_user_id=user["id"],
+                generation_mode="fast",
+            )
+        return {"job_id": replacement.id, "cancelled_job_id": job.id}
 
     @app.delete("/api/ideas/{idea_id}")
     def delete_idea(idea_id: int, _: str = Depends(authorize_write)) -> dict:
@@ -1309,6 +1382,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             logo_reference_id=payload.logo_reference_id,
             company_logo_reference_id=payload.company_logo_reference_id,
             created_by_user_id=user["id"],
+            generation_mode=payload.generation_mode,
         )
         return {"job_id": job.id}
 
@@ -1334,6 +1408,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             link_url=payload.link_url.strip() or draft["link_url"],
             tone=payload.tone or draft.get("tone") or "expert",
             created_by_user_id=user["id"],
+            generation_mode=payload.generation_mode,
         )
         return {"job_id": job.id}
 
@@ -1442,7 +1517,7 @@ ADMIN_HTML = r"""
     .idea:last-child{border-bottom:0}.idea strong{display:block;margin-bottom:3px}.idea p{margin:0;color:var(--muted)}.badge{display:inline-block;padding:3px 7px;border-radius:4px;background:#edf3fa;color:var(--blue);font-size:11px;font-weight:800;text-transform:uppercase}
     .drafts{display:grid;grid-template-columns:repeat(3,minmax(260px,1fr));gap:16px}.draft{background:#fff;border:1px solid var(--line);border-radius:6px;overflow:hidden}.draft img{display:block;width:100%;aspect-ratio:3/2;object-fit:cover;background:#e8edf2}
     .draft-body{padding:14px}.draft h3{font-size:16px;margin:0 0 7px}.draft p{color:var(--muted);margin:0 0 12px;max-height:84px;overflow:hidden}.draft-meta{display:flex;gap:8px;align-items:center;justify-content:space-between}
-    .status{font-weight:800;color:var(--blue)}.status.ready,.status.draft,.status.completed{color:var(--cyan)}.status.failed{color:var(--red)}.status.scheduled,.status.in_progress,.status.text_batch,.status.image_batch{color:var(--amber)}
+    .status{font-weight:800;color:var(--blue)}.status.ready,.status.draft,.status.completed{color:var(--cyan)}.status.failed{color:var(--red)}.status.scheduled,.status.in_progress,.status.text_batch,.status.image_batch{color:var(--amber)}.wait-warning{color:#a25a00;font-weight:800}.wait-danger{color:var(--red);font-weight:800}
     .metrics{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--line);gap:1px;margin-bottom:22px}.metric{background:#fff;padding:17px}.metric span{color:var(--muted);font-size:12px}.metric strong{display:block;font-size:24px;margin-top:5px}
     table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line)}th,td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{background:#edf1f5;color:var(--muted);font-size:12px}
     dialog{width:min(1050px,calc(100% - 24px));border:0;border-radius:7px;padding:0;box-shadow:0 24px 80px #10182755}dialog::backdrop{background:#0b1220aa}.editor-head{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line)}
@@ -1497,6 +1572,13 @@ ADMIN_HTML = r"""
           <option value="gpt-image-2" selected>GPT Image 2 · найкраща якість</option>
         </select>
         <small>GPT Image 2 краще зберігає деталі референсів.</small>
+      </label>
+      <label>Режим генерації
+        <select id="generationMode">
+          <option value="fast" selected>Швидко · звичайний API</option>
+          <option value="batch">Економно · Batch до 24 годин</option>
+        </select>
+        <small>Для окремих постів рекомендовано швидкий режим.</small>
       </label>
     </div>
     <div class="section-head image-setting"><h2>Візуальний шаблон</h2><button id="showCustomTemplate">＋ Власний шаблон</button></div>
@@ -1579,8 +1661,8 @@ ADMIN_HTML = r"""
       <div class="metric"><span>Зображення</span><strong id="image">$0.0000</strong></div>
       <div class="metric"><span>Активні завдання</span><strong id="active">0</strong></div>
     </div>
-    <h2>Генерація</h2><div class="scroll"><table><thead><tr><th>ID</th><th>Продукт</th><th>Тема</th><th>Моделі</th><th>Статус</th><th>Text Batch</th><th>Image Batch</th><th>Помилка</th></tr></thead><tbody id="jobs"></tbody></table></div>
-    <h2>OpenAI Batch</h2><div class="scroll"><table><thead><tr><th>ID</th><th>Тип</th><th>Статус</th><th>Виконано</th><th>Помилки</th><th>Токени</th><th>Вартість</th></tr></thead><tbody id="batches"></tbody></table></div>
+    <h2>Генерація</h2><div class="scroll"><table><thead><tr><th>ID</th><th>Продукт</th><th>Тема</th><th>Режим і моделі</th><th>Статус</th><th>Очікування</th><th>Batch</th><th>Помилка</th><th>Дія</th></tr></thead><tbody id="jobs"></tbody></table></div>
+    <h2>OpenAI Batch</h2><div class="scroll"><table><thead><tr><th>ID</th><th>Тип</th><th>Статус</th><th>Очікування</th><th>Виконано</th><th>Помилки</th><th>Токени</th><th>Вартість</th></tr></thead><tbody id="batches"></tbody></table></div>
   </section>
 
   <section id="usersView" class="view">
@@ -1720,8 +1802,8 @@ async function api(path,options={}){options.credentials="same-origin";options.he
 function toast(text,error=false){const n=document.querySelector("#notice");n.textContent=errorText(text);n.style.background=error?"#8f1d1d":"#111a2d";n.style.display="block";clearTimeout(n.timer);n.timer=setTimeout(()=>n.style.display="none",5000)}
 async function loading(button,work,label="Виконується"){const old=button.innerHTML;button.disabled=true;button.innerHTML=`<span class="spinner"></span>${label}`;try{return await work()}catch(e){toast(e.message,true);return null}finally{button.disabled=false;button.innerHTML=old}}
 const inferredLink=product=>state.data?.rubrics?.find(r=>r.slug===product)?.default_link||"";
-const generationPayload=(product="",tone="")=>{const modal=document.querySelector("#editor");const inEditor=modal.open;return {text_model:document.querySelector("#textModel").value,image_model:document.querySelector("#imageModel").value,reference_ids:[...state.referenceIds],template_id:inEditor?document.querySelector("#editorTemplate").value:state.templateId,logo_reference_id:Number(inEditor?document.querySelector("#editorLogo").value:document.querySelector("#logoReference").value)||null,company_logo_reference_id:Number(inEditor?document.querySelector("#editorCompanyLogo").value:document.querySelector("#companyLogoReference").value)||null,link_url:(inEditor?document.querySelector("#editorLink").value:document.querySelector("#defaultLink").value)||inferredLink(product),tone:tone||document.querySelector("#ideaTone").value}};
-for(const id of ["textModel","imageModel"]){const el=document.querySelector(`#${id}`);el.value=localStorage.getItem(id)||el.value;el.onchange=()=>localStorage.setItem(id,el.value)}
+const generationPayload=(product="",tone="")=>{const modal=document.querySelector("#editor");const inEditor=modal.open;return {text_model:document.querySelector("#textModel").value,image_model:document.querySelector("#imageModel").value,reference_ids:[...state.referenceIds],template_id:inEditor?document.querySelector("#editorTemplate").value:state.templateId,logo_reference_id:Number(inEditor?document.querySelector("#editorLogo").value:document.querySelector("#logoReference").value)||null,company_logo_reference_id:Number(inEditor?document.querySelector("#editorCompanyLogo").value:document.querySelector("#companyLogoReference").value)||null,link_url:(inEditor?document.querySelector("#editorLink").value:document.querySelector("#defaultLink").value)||inferredLink(product),tone:tone||document.querySelector("#ideaTone").value,generation_mode:document.querySelector("#generationMode").value}};
+for(const id of ["textModel","imageModel","generationMode"]){const el=document.querySelector(`#${id}`);el.value=localStorage.getItem(id)||el.value;el.onchange=()=>localStorage.setItem(id,el.value)}
 document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{document.querySelectorAll(".tab,.view").forEach(x=>x.classList.remove("active"));b.classList.add("active");document.querySelector(`#${b.dataset.view}`).classList.add("active");renderActive(true)});
 const paginate=(items,page,size)=>items.slice((page-1)*size,page*size);
 function pagination(id,total,page,setter){const pages=Math.max(1,Math.ceil(total/state.pageSize));page=Math.min(page,pages);document.querySelector(`#${id}`).innerHTML=total>state.pageSize?`<button data-page-prev ${page<=1?"disabled":""}>←</button><span>Сторінка ${page} з ${pages}</span><button data-page-next ${page>=pages?"disabled":""}>→</button>`:"";document.querySelector(`#${id} [data-page-prev]`)?.addEventListener("click",()=>setter(page-1));document.querySelector(`#${id} [data-page-next]`)?.addEventListener("click",()=>setter(page+1))}
@@ -1737,7 +1819,8 @@ function renderRubrics(items){const active=items.filter(r=>r.active);document.qu
 function renderOrganizations(items){state.organizations=items;document.querySelector("#organizations").innerHTML=items.map(o=>`<tr><td>${o.id}</td><td><strong>${esc(o.name)}</strong></td><td class="masked">${esc(o.slug)}</td><td>${o.monthly_publications} публікацій<br>$${Number(o.monthly_ai_budget).toFixed(0)} AI</td><td>${o.user_count} / ${o.max_users}</td><td class="status ${o.active?"ready":"failed"}">${o.active?"Активна":"Заблокована"}</td></tr>`).join("")}
 const number=value=>Number(value||0).toLocaleString("uk-UA");
 function renderPlatformUsage(report){state.platformUsage=report;const t=report.totals;document.querySelector("#platformUsageTotals").innerHTML=`<div class="metric"><span>Витрати</span><strong>${money(t.cost)}</strong></div><div class="metric"><span>Текстові генерації</span><strong>${number(t.text_generations)}</strong></div><div class="metric"><span>Зображення</span><strong>${number(t.image_generations)}</strong></div><div class="metric"><span>Токени</span><strong>${number(t.input_tokens+t.output_tokens)}</strong></div>`;document.querySelector("#companyUsage").innerHTML=report.companies.map(r=>`<tr><td><strong>${esc(r.organization_name)}</strong></td><td>${number(r.text_generations)}</td><td>${number(r.image_generations)}</td><td>${number(r.input_tokens)}</td><td>${number(r.output_tokens)}</td><td>${money(r.cost)}</td></tr>`).join("")||`<tr><td colspan="6" class="empty">Немає використання за цей період</td></tr>`;document.querySelector("#userUsage").innerHTML=report.users.map(r=>`<tr><td>${esc(r.organization_name)}</td><td><strong>${esc(r.username)}</strong></td><td>${number(r.text_generations)}</td><td>${number(r.image_generations)}</td><td>${number(r.input_tokens+r.output_tokens)}</td><td>${money(r.cost)}</td></tr>`).join("")||`<tr><td colspan="6" class="empty">Немає використання за цей період</td></tr>`;document.querySelector("#modelUsage").innerHTML=report.models.map(r=>`<tr><td>${esc(r.organization_name)}</td><td>${r.kind==="text"?"Текст":"Зображення"}</td><td class="masked">${esc(r.model)}</td><td>${number(r.operations)}</td><td>${r.kind==="text"?`${number(r.input_tokens)} / ${number(r.output_tokens)}`:number(r.units)}</td><td>${money(r.cost)}</td></tr>`).join("")||`<tr><td colspan="6" class="empty">Немає використання за цей період</td></tr>`}
-function renderOps(d){document.querySelector("#total").textContent=money(d.totals.total_cost);document.querySelector("#text").textContent=money(d.totals.text_cost);document.querySelector("#image").textContent=money(d.totals.image_cost);const terminal=new Set(["ready","published","failed"]);document.querySelector("#active").textContent=Object.entries(d.job_counts).filter(([k])=>!terminal.has(k)).reduce((s,[,v])=>s+v,0);document.querySelector("#jobs").innerHTML=d.jobs.map(r=>`<tr><td>${r.id}</td><td>${esc(rubricLabel(r.product))}</td><td>${esc(r.topic)}</td><td>${esc(r.text_model||"—")}<br>${esc(r.image_model||"—")}</td><td class="status ${esc(r.status)} ${busyStatuses.has(r.status)?"busy":""}">${esc(statusLabels[r.status]||r.status)}</td><td>${esc(short(r.text_batch_id))}</td><td>${esc(short(r.image_batch_id))}</td><td>${esc(r.error||"—")}</td></tr>`).join("");document.querySelector("#batches").innerHTML=d.batches.map(r=>`<tr><td>${esc(short(r.id))}</td><td>${r.kind==="text"?"Текст":"Зображення"}</td><td class="status ${esc(r.status)} ${r.status==="in_progress"?"busy":""}">${esc(statusLabels[r.status]||r.status)}</td><td>${r.completed}/${r.total}</td><td>${r.failed}</td><td>${r.input_tokens}/${r.output_tokens}</td><td>${money(r.estimated_cost)}</td></tr>`).join("")}
+const elapsedInfo=raw=>{if(!raw)return {text:"—",hours:0,cls:""};const hours=Math.max(0,(Date.now()-parseServerDate(raw).getTime())/3600000);const mins=Math.floor(hours*60);const text=mins<60?`${mins} хв`:`${Math.floor(mins/60)} год ${mins%60} хв`;return {text,hours,cls:hours>=12?"wait-danger":hours>=2?"wait-warning":""}};
+function renderOps(d){document.querySelector("#total").textContent=money(d.totals.total_cost);document.querySelector("#text").textContent=money(d.totals.text_cost);document.querySelector("#image").textContent=money(d.totals.image_cost);const terminal=new Set(["ready","published","failed","cancelled"]);document.querySelector("#active").textContent=Object.entries(d.job_counts).filter(([k])=>!terminal.has(k)).reduce((s,[,v])=>s+v,0);document.querySelector("#jobs").innerHTML=d.jobs.map(r=>{const wait=elapsedInfo(r.updated_at||r.created_at);const batchActive=["text_batch","image_batch"].includes(r.status);return `<tr><td>${r.id}</td><td>${esc(rubricLabel(r.product))}</td><td>${esc(r.topic)}</td><td>${r.generation_mode==="fast"?"Швидко":"Економно"}<br>${esc(r.text_model||"—")}<br>${esc(r.image_model||"—")}</td><td class="status ${esc(r.status)} ${busyStatuses.has(r.status)?"busy":""}">${esc(statusLabels[r.status]||r.status)}</td><td class="${batchActive?wait.cls:""}">${busyStatuses.has(r.status)?wait.text:"—"}</td><td>${esc(short(r.text_batch_id||r.image_batch_id))}</td><td>${esc(r.error||"—")}</td><td>${batchActive?`<button data-retry-fast="${r.id}">Скасувати й швидко</button>`:"—"}</td></tr>`}).join("");document.querySelector("#batches").innerHTML=d.batches.map(r=>{const wait=elapsedInfo(r.created_at);return `<tr><td>${esc(short(r.id))}</td><td>${r.kind==="text"?"Текст":"Зображення"}</td><td class="status ${esc(r.status)} ${r.status==="in_progress"?"busy":""}">${esc(statusLabels[r.status]||r.status)}</td><td class="${r.status==="in_progress"?wait.cls:""}">${r.status==="in_progress"?wait.text:"—"}</td><td>${r.completed}/${r.total}</td><td>${r.failed}</td><td>${r.input_tokens}/${r.output_tokens}</td><td>${money(r.estimated_cost)}</td></tr>`}).join("");document.querySelectorAll("[data-retry-fast]").forEach(b=>b.onclick=()=>{if(!confirm("Скасувати Batch і запустити нову швидку генерацію? Завершені OpenAI-запити можуть бути тарифіковані."))return;loading(b,async()=>{await api(`api/jobs/${b.dataset.retryFast}/retry-fast`,{method:"POST"});toast("Batch скасовано. Швидку генерацію запущено.");await refresh()},"Запускається")})}
 const localKey=date=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;
 const parseServerDate=raw=>new Date(raw.endsWith("Z")?raw:`${raw.replace(" ","T")}Z`);
 function renderCalendar(){if(!state.data)return;const month=new Date(state.calendarDate.getFullYear(),state.calendarDate.getMonth(),1);document.querySelector("#calendarTitle").textContent=month.toLocaleDateString("uk-UA",{month:"long",year:"numeric"});const monday=(month.getDay()+6)%7;const start=new Date(month);start.setDate(1-monday);const items=(state.data.drafts||[]).filter(d=>d.scheduled_at||d.published_at).map(d=>({...d,eventDate:parseServerDate(d.scheduled_at||d.published_at),kind:"draft"}));items.push(...(state.data.ideas||[]).filter(i=>i.planned_for&&!i.draft_id).map(i=>({...i,eventDate:new Date(`${i.planned_for}T12:00:00`),kind:"idea"})));let html=["Пн","Вт","Ср","Чт","Пт","Сб","Нд"].map(x=>`<div class="weekday">${x}</div>`).join("");for(let i=0;i<42;i++){const date=new Date(start);date.setDate(start.getDate()+i);const key=localKey(date);const dayItems=items.filter(d=>localKey(d.eventDate)===key);html+=`<div class="day ${date.getMonth()===month.getMonth()?"":"outside"} ${key===localKey(new Date())?"today":""}"><div class="day-number">${date.getDate()}</div>${dayItems.map(d=>d.kind==="idea"?`<button class="calendar-item planned" data-calendar-idea="${d.id}"><time>Контент-план · ${esc(toneLabel(d.tone))}</time><span class="cal-product">${esc(rubricLabel(d.product))}</span>${esc(d.title)}<small>${d.series_part?`Серія ${d.series_part}`:"Тема очікує генерації"}</small></button>`:`<button class="calendar-item ${d.status==="published"?"published":""}" data-calendar-draft="${d.id}"><time>${d.eventDate.toLocaleTimeString("uk-UA",{hour:"2-digit",minute:"2-digit"})} · ${esc(statusLabels[d.status]||d.status)}</time><span class="cal-product">${esc(rubricLabel(d.product))}</span>${esc(d.title)}<small>${d.link_url?"Є посилання":"Без посилання"}</small></button>`).join("")}</div>`}document.querySelector("#calendar").innerHTML=html;document.querySelectorAll("[data-calendar-draft]").forEach(b=>b.onclick=()=>openDraft(b.dataset.calendarDraft));document.querySelectorAll("[data-calendar-idea]").forEach(b=>b.onclick=()=>{document.querySelector('[data-view="ideasView"]').click();const idea=state.data.ideas.find(i=>i.id===Number(b.dataset.calendarIdea));if(idea)toast(`Тема: ${idea.title}`)})}

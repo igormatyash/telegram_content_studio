@@ -99,6 +99,7 @@ class GenerationJob:
     link_url: str
     tone: str
     created_by_user_id: int | None
+    generation_mode: str = "batch"
 
 
 @dataclass(slots=True)

@@ -96,6 +96,12 @@ class DraftRepository:
             self._ensure_column(
                 connection, "generation_jobs", "created_by_user_id", "INTEGER"
             )
+            self._ensure_column(
+                connection,
+                "generation_jobs",
+                "generation_mode",
+                "TEXT NOT NULL DEFAULT 'batch'",
+            )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS reference_assets (
@@ -673,6 +679,7 @@ class DraftRepository:
         idea_id: int | None = None,
         tone: str = "expert",
         created_by_user_id: int | None = None,
+        generation_mode: str = "batch",
     ) -> GenerationJob:
         with self._connect() as connection:
             cursor = connection.execute(
@@ -680,8 +687,8 @@ class DraftRepository:
                 INSERT INTO generation_jobs (
                     topic, product, chat_id, text_model, image_model, reference_ids,
                     template_id, logo_reference_id, company_logo_reference_id,
-                    link_url, idea_id, tone, created_by_user_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    link_url, idea_id, tone, created_by_user_id, generation_mode
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     topic,
@@ -697,6 +704,7 @@ class DraftRepository:
                     idea_id,
                     tone,
                     created_by_user_id,
+                    generation_mode,
                 ),
             )
             job_id = int(cursor.lastrowid)
@@ -712,6 +720,7 @@ class DraftRepository:
         logo_reference_id: int | None = None,
         company_logo_reference_id: int | None = None,
         created_by_user_id: int | None = None,
+        generation_mode: str = "batch",
     ) -> GenerationJob:
         draft = self.get(draft_id)
         with self._connect() as connection:
@@ -729,8 +738,8 @@ class DraftRepository:
                     topic, product, chat_id, status, draft_id,
                     text_model, image_model, reference_ids, template_id,
                     logo_reference_id, company_logo_reference_id, link_url,
-                    created_by_user_id
-                ) VALUES (?, ?, 0, 'queued_image', ?, '', ?, ?, ?, ?, ?, ?, ?)
+                    created_by_user_id, generation_mode
+                ) VALUES (?, ?, 0, 'queued_image', ?, '', ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     draft.topic,
@@ -743,6 +752,7 @@ class DraftRepository:
                     company_logo_reference_id,
                     draft.link_url,
                     created_by_user_id,
+                    generation_mode,
                 ),
             )
             job_id = int(cursor.lastrowid)
@@ -821,6 +831,7 @@ class DraftRepository:
         link_url: str = "",
         tone: str | None = None,
         created_by_user_id: int | None = None,
+        generation_mode: str = "batch",
     ) -> GenerationJob:
         idea = self.get_idea(idea_id)
         with self._connect() as connection:
@@ -843,6 +854,7 @@ class DraftRepository:
             idea_id=idea_id,
             tone=tone or idea.get("tone") or "expert",
             created_by_user_id=created_by_user_id,
+            generation_mode=generation_mode,
         )
 
     def delete_idea(self, idea_id: int) -> None:
@@ -975,7 +987,13 @@ class DraftRepository:
         return [self._job_from_row(row) for row in rows]
 
     def update_job(self, job_id: int, *, status: str, **fields: object) -> None:
-        allowed = {"text_batch_id", "image_batch_id", "draft_id", "error"}
+        allowed = {
+            "text_batch_id",
+            "image_batch_id",
+            "draft_id",
+            "error",
+            "generation_mode",
+        }
         assignments = ["status = ?", "updated_at = CURRENT_TIMESTAMP"]
         values: list[object] = [status]
         for key, value in fields.items():
@@ -1246,6 +1264,7 @@ class DraftRepository:
             link_url=row["link_url"] or "",
             tone=row["tone"] or "expert",
             created_by_user_id=row["created_by_user_id"],
+            generation_mode=row["generation_mode"] or "batch",
         )
 
 
