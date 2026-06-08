@@ -162,6 +162,10 @@ the terminology supplied in the rubric facts.
         body = self._successful_body(output, f"text-job-{job.id}")
         text = _response_output_text(body)
         post = GeneratedPost.model_validate_json(text)
+        # Rubrics are tenant configuration selected before generation. A model
+        # may return the display name instead of the stable slug, so bind the
+        # generated content back to the original job.
+        post.product = job.product
         post.title = normalize_terminology(post.title)
         post.lead = normalize_terminology(post.lead)
         post.body = [normalize_terminology(item) for item in post.body]
@@ -179,14 +183,15 @@ the terminology supplied in the rubric facts.
             input_tokens * _text_prices(job.text_model)[0]
             + output_tokens * _text_prices(job.text_model)[1]
         ) / 1_000_000
-        self.repository.add_usage(
-            job_id=job.id,
-            kind="text",
-            model=job.text_model,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cost=cost,
-        )
+        if not self.repository.has_usage(job.id, "text"):
+            self.repository.add_usage(
+                job_id=job.id,
+                kind="text",
+                model=job.text_model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost=cost,
+            )
         return post
 
     async def poll_image(self, job: GenerationJob, title: str) -> Path | None:

@@ -157,6 +157,23 @@ def test_usage_inherits_user_from_generation_job(tmp_path: Path) -> None:
     assert report["users"][0]["text_generations"] == 1
 
 
+def test_usage_can_be_checked_before_retrying_completed_batch(tmp_path: Path) -> None:
+    repository = DraftRepository(tmp_path / "usage-retry.sqlite3")
+
+    assert repository.has_usage(42, "text") is False
+    repository.add_usage(
+        job_id=42,
+        kind="text",
+        model="gpt-5.4-mini",
+        input_tokens=100,
+        output_tokens=50,
+        cost=0.01,
+    )
+
+    assert repository.has_usage(42, "text") is True
+    assert repository.has_usage(42, "image") is False
+
+
 def test_custom_rubrics_and_social_variants_are_stored_per_tenant(tmp_path: Path) -> None:
     repository = DraftRepository(tmp_path / "company.sqlite3")
     rubric = repository.add_rubric(

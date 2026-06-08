@@ -1059,6 +1059,19 @@ class DraftRepository:
                 ),
             )
 
+    def has_usage(self, job_id: int, kind: str) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1
+                FROM usage_events
+                WHERE job_id = ? AND kind = ?
+                LIMIT 1
+                """,
+                (job_id, kind),
+            ).fetchone()
+        return row is not None
+
     def usage_summary(self, *, since: str | None = None) -> dict:
         where = "WHERE created_at >= ?" if since else ""
         params = (since,) if since else ()
