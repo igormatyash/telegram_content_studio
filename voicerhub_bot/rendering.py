@@ -125,18 +125,26 @@ def sanitize_telegram_html(value: str) -> str:
     result = parser.result()
     for tag in ALLOWED_TAGS - {"a"}:
         result = re.sub(
-            rf"<{tag}><{tag}>",
-            f"<{tag}>",
+            rf"<{tag}><{tag}>(.*?)</{tag}></{tag}>",
+            rf"<{tag}>\1</{tag}>",
             result,
-            flags=re.IGNORECASE,
-        )
-        result = re.sub(
-            rf"</{tag}></{tag}>",
-            f"</{tag}>",
-            result,
-            flags=re.IGNORECASE,
+            count=1,
+            flags=re.IGNORECASE | re.DOTALL,
         )
     return result
+
+
+def canonicalize_draft_caption(
+    caption_html: str,
+    title: str,
+    link_url: str,
+) -> str:
+    caption = enforce_link(caption_html, link_url)
+    blocks = caption.split("\n\n")
+    if blocks and re.match(r"^\s*<b>", blocks[0], flags=re.IGNORECASE):
+        blocks[0] = f"<b>{html.escape(plain_text(title))}</b>"
+        caption = "\n\n".join(blocks)
+    return caption
 
 
 def decode_html_markup(value: str) -> str:

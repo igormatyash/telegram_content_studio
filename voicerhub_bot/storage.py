@@ -449,7 +449,7 @@ class DraftRepository:
         return [row["title"] for row in rows]
 
     def repair_draft_markup(self) -> int:
-        from voicerhub_bot.rendering import enforce_link, plain_text
+        from voicerhub_bot.rendering import canonicalize_draft_caption, plain_text
 
         repaired = 0
         with self._connect() as connection:
@@ -462,8 +462,9 @@ class DraftRepository:
             ).fetchall()
             for row in rows:
                 title = plain_text(row["title"])
-                caption = enforce_link(
+                caption = canonicalize_draft_caption(
                     row["caption_html"],
+                    title,
                     row["link_url"] or "",
                 )
                 try:

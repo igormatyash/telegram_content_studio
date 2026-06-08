@@ -3,6 +3,7 @@ import pytest
 from voicerhub_bot.models import GeneratedPost, Product
 from voicerhub_bot.rendering import (
     MAX_CAPTION_LENGTH,
+    canonicalize_draft_caption,
     enforce_link,
     normalize_hashtag,
     plain_text,
@@ -111,6 +112,18 @@ def test_enforce_link_collapses_duplicate_formatting_tags() -> None:
     )
 
     assert result == "<b>Сильний заголовок</b>"
+
+
+def test_canonicalize_draft_caption_repairs_legacy_title_markup() -> None:
+    result = canonicalize_draft_caption(
+        "<b><b>Сильний заголовок</b> 🛒</b>\n\nОсновний текст",
+        "Сильний заголовок 🛒",
+        "https://voicerhub.com/ua/products/tony",
+    )
+
+    assert result.startswith("<b>Сильний заголовок 🛒</b>\n\nОсновний текст")
+    assert "</b> 🛒</b>" not in result
+    assert 'href="https://voicerhub.com/ua/products/tony"' in result
 
 
 def test_wave_caption_is_short_and_omits_product_post_sections() -> None:

@@ -30,6 +30,7 @@ from voicerhub_bot.ideas import IdeaGenerator
 from voicerhub_bot.images import ImageGenerator
 from voicerhub_bot.rendering import (
     MAX_CAPTION_LENGTH,
+    canonicalize_draft_caption,
     enforce_link,
     plain_text,
     sanitize_telegram_html,
@@ -1437,10 +1438,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 status_code=422,
                 detail="Посилання має починатися з http:// або https://",
             )
-        caption_html = enforce_link(payload.caption_html, link_url)
+        title = plain_text(payload.title)
+        caption_html = canonicalize_draft_caption(
+            payload.caption_html,
+            title,
+            link_url,
+        )
         repository.update_draft(
             draft_id,
-            title=plain_text(payload.title),
+            title=title,
             caption_html=caption_html,
             link_url=link_url,
         )
