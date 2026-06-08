@@ -935,11 +935,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             job.text_batch_id if job.status == "text_batch" else job.image_batch_id
         )
         if batch_id:
+            client = AsyncOpenAI(api_key=settings.openai_api_key)
             try:
-                await AsyncOpenAI(api_key=settings.openai_api_key).batches.cancel(
-                    batch_id
-                )
+                batch = await client.batches.retrieve(batch_id)
+                if batch.status in {
+                    "completed",
+                    "failed",
+                    "expired",
+                    "cancelled",
+                    "cancelling",
+                }:
+                    return {
+                        "job_id": None,
+                        "cancelled_job_id": None,
+                        "batch_status": batch.status,
+                        "message": (
+                            "OpenAI Batch уже завершився. Результат буде "
+                            "оброблено автоматично, швидкий дубль не створено."
+                        ),
+                    }
+                await client.batches.cancel(batch_id)
             except Exception as exc:
+                if getattr(exc, "status_code", None) == 409:
+                    batch = await client.batches.retrieve(batch_id)
+                    if batch.status in {
+                        "completed",
+                        "failed",
+                        "expired",
+                        "cancelled",
+                        "cancelling",
+                    }:
+                        return {
+                            "job_id": None,
+                            "cancelled_job_id": None,
+                            "batch_status": batch.status,
+                            "message": (
+                                "OpenAI Batch завершився під час скасування. "
+                                "Результат буде оброблено автоматично, "
+                                "швидкий дубль не створено."
+                            ),
+                        }
                 raise HTTPException(
                     status_code=502,
                     detail=f"Не вдалося скасувати OpenAI Batch: {exc}",
@@ -1851,7 +1886,7 @@ function renderOrganizations(items){state.organizations=items;document.querySele
 const number=value=>Number(value||0).toLocaleString("uk-UA");
 function renderPlatformUsage(report){state.platformUsage=report;const t=report.totals;document.querySelector("#platformUsageTotals").innerHTML=`<div class="metric"><span>Витрати</span><strong>${money(t.cost)}</strong></div><div class="metric"><span>Текстові генерації</span><strong>${number(t.text_generations)}</strong></div><div class="metric"><span>Зображення</span><strong>${number(t.image_generations)}</strong></div><div class="metric"><span>Токени</span><strong>${number(t.input_tokens+t.output_tokens)}</strong></div>`;document.querySelector("#companyUsage").innerHTML=report.companies.map(r=>`<tr><td><strong>${esc(r.organization_name)}</strong></td><td>${number(r.text_generations)}</td><td>${number(r.image_generations)}</td><td>${number(r.input_tokens)}</td><td>${number(r.output_tokens)}</td><td>${money(r.cost)}</td></tr>`).join("")||`<tr><td colspan="6" class="empty">Немає використання за цей період</td></tr>`;document.querySelector("#userUsage").innerHTML=report.users.map(r=>`<tr><td>${esc(r.organization_name)}</td><td><strong>${esc(r.username)}</strong></td><td>${number(r.text_generations)}</td><td>${number(r.image_generations)}</td><td>${number(r.input_tokens+r.output_tokens)}</td><td>${money(r.cost)}</td></tr>`).join("")||`<tr><td colspan="6" class="empty">Немає використання за цей період</td></tr>`;document.querySelector("#modelUsage").innerHTML=report.models.map(r=>`<tr><td>${esc(r.organization_name)}</td><td>${r.kind==="text"?"Текст":"Зображення"}</td><td class="masked">${esc(r.model)}</td><td>${number(r.operations)}</td><td>${r.kind==="text"?`${number(r.input_tokens)} / ${number(r.output_tokens)}`:number(r.units)}</td><td>${money(r.cost)}</td></tr>`).join("")||`<tr><td colspan="6" class="empty">Немає використання за цей період</td></tr>`}
 const elapsedInfo=raw=>{if(!raw)return {text:"—",hours:0,cls:""};const hours=Math.max(0,(Date.now()-parseServerDate(raw).getTime())/3600000);const mins=Math.floor(hours*60);const text=mins<60?`${mins} хв`:`${Math.floor(mins/60)} год ${mins%60} хв`;return {text,hours,cls:hours>=12?"wait-danger":hours>=2?"wait-warning":""}};
-function renderOps(d){document.querySelector("#total").textContent=money(d.totals.total_cost);document.querySelector("#text").textContent=money(d.totals.text_cost);document.querySelector("#image").textContent=money(d.totals.image_cost);const terminal=new Set(["ready","published","failed","cancelled"]);document.querySelector("#active").textContent=Object.entries(d.job_counts).filter(([k])=>!terminal.has(k)).reduce((s,[,v])=>s+v,0);document.querySelector("#jobs").innerHTML=d.jobs.map(r=>{const wait=elapsedInfo(r.updated_at||r.created_at);const batchActive=["text_batch","image_batch"].includes(r.status);return `<tr><td>${r.id}</td><td>${esc(rubricLabel(r.product))}</td><td>${esc(r.topic)}</td><td>${r.generation_mode==="fast"?"Швидко":"Економно"}<br>${esc(r.text_model||"—")}<br>${esc(r.image_model||"—")}</td><td class="status ${esc(r.status)} ${busyStatuses.has(r.status)?"busy":""}">${esc(statusLabels[r.status]||r.status)}</td><td class="${batchActive?wait.cls:""}">${busyStatuses.has(r.status)?wait.text:"—"}</td><td>${esc(short(r.text_batch_id||r.image_batch_id))}</td><td>${esc(r.error||"—")}</td><td>${batchActive?`<button data-retry-fast="${r.id}">Скасувати й швидко</button>`:"—"}</td></tr>`}).join("");document.querySelector("#batches").innerHTML=d.batches.map(r=>{const wait=elapsedInfo(r.created_at);return `<tr><td>${esc(short(r.id))}</td><td>${r.kind==="text"?"Текст":"Зображення"}</td><td class="status ${esc(r.status)} ${r.status==="in_progress"?"busy":""}">${esc(statusLabels[r.status]||r.status)}</td><td class="${r.status==="in_progress"?wait.cls:""}">${r.status==="in_progress"?wait.text:"—"}</td><td>${r.completed}/${r.total}</td><td>${r.failed}</td><td>${r.input_tokens}/${r.output_tokens}</td><td>${money(r.estimated_cost)}</td></tr>`}).join("");document.querySelectorAll("[data-retry-fast]").forEach(b=>b.onclick=()=>{if(!confirm("Скасувати Batch і запустити нову швидку генерацію? Завершені OpenAI-запити можуть бути тарифіковані."))return;loading(b,async()=>{await api(`api/jobs/${b.dataset.retryFast}/retry-fast`,{method:"POST"});toast("Batch скасовано. Швидку генерацію запущено.");await refresh()},"Запускається")})}
+function renderOps(d){document.querySelector("#total").textContent=money(d.totals.total_cost);document.querySelector("#text").textContent=money(d.totals.text_cost);document.querySelector("#image").textContent=money(d.totals.image_cost);const terminal=new Set(["ready","published","failed","cancelled"]);document.querySelector("#active").textContent=Object.entries(d.job_counts).filter(([k])=>!terminal.has(k)).reduce((s,[,v])=>s+v,0);document.querySelector("#jobs").innerHTML=d.jobs.map(r=>{const wait=elapsedInfo(r.updated_at||r.created_at);const batchActive=["text_batch","image_batch"].includes(r.status);return `<tr><td>${r.id}</td><td>${esc(rubricLabel(r.product))}</td><td>${esc(r.topic)}</td><td>${r.generation_mode==="fast"?"Швидко":"Економно"}<br>${esc(r.text_model||"—")}<br>${esc(r.image_model||"—")}</td><td class="status ${esc(r.status)} ${busyStatuses.has(r.status)?"busy":""}">${esc(statusLabels[r.status]||r.status)}</td><td class="${batchActive?wait.cls:""}">${busyStatuses.has(r.status)?wait.text:"—"}</td><td>${esc(short(r.text_batch_id||r.image_batch_id))}</td><td>${esc(r.error||"—")}</td><td>${batchActive?`<button data-retry-fast="${r.id}">Скасувати й швидко</button>`:"—"}</td></tr>`}).join("");document.querySelector("#batches").innerHTML=d.batches.map(r=>{const wait=elapsedInfo(r.created_at);return `<tr><td>${esc(short(r.id))}</td><td>${r.kind==="text"?"Текст":"Зображення"}</td><td class="status ${esc(r.status)} ${r.status==="in_progress"?"busy":""}">${esc(statusLabels[r.status]||r.status)}</td><td class="${r.status==="in_progress"?wait.cls:""}">${r.status==="in_progress"?wait.text:"—"}</td><td>${r.completed}/${r.total}</td><td>${r.failed}</td><td>${r.input_tokens}/${r.output_tokens}</td><td>${money(r.estimated_cost)}</td></tr>`}).join("");document.querySelectorAll("[data-retry-fast]").forEach(b=>b.onclick=()=>{if(!confirm("Скасувати Batch і запустити нову швидку генерацію? Завершені OpenAI-запити можуть бути тарифіковані."))return;loading(b,async()=>{const result=await api(`api/jobs/${b.dataset.retryFast}/retry-fast`,{method:"POST"});toast(result.job_id?"Batch скасовано. Швидку генерацію запущено.":result.message||"Batch уже завершено.");await refresh()},"Запускається")})}
 const localKey=date=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;
 const parseServerDate=raw=>new Date(raw.endsWith("Z")?raw:`${raw.replace(" ","T")}Z`);
 function renderCalendar(){if(!state.data)return;const month=new Date(state.calendarDate.getFullYear(),state.calendarDate.getMonth(),1);document.querySelector("#calendarTitle").textContent=month.toLocaleDateString("uk-UA",{month:"long",year:"numeric"});const monday=(month.getDay()+6)%7;const start=new Date(month);start.setDate(1-monday);const items=(state.data.drafts||[]).filter(d=>d.scheduled_at||d.published_at).map(d=>({...d,eventDate:parseServerDate(d.scheduled_at||d.published_at),kind:"draft"}));items.push(...(state.data.ideas||[]).filter(i=>i.planned_for&&!i.draft_id).map(i=>({...i,eventDate:new Date(`${i.planned_for}T12:00:00`),kind:"idea"})));let html=["Пн","Вт","Ср","Чт","Пт","Сб","Нд"].map(x=>`<div class="weekday">${x}</div>`).join("");for(let i=0;i<42;i++){const date=new Date(start);date.setDate(start.getDate()+i);const key=localKey(date);const dayItems=items.filter(d=>localKey(d.eventDate)===key);html+=`<div class="day ${date.getMonth()===month.getMonth()?"":"outside"} ${key===localKey(new Date())?"today":""}"><div class="day-number">${date.getDate()}</div>${dayItems.map(d=>d.kind==="idea"?`<button class="calendar-item planned" data-calendar-idea="${d.id}"><time>Контент-план · ${esc(toneLabel(d.tone))}</time><span class="cal-product">${esc(rubricLabel(d.product))}</span>${esc(d.title)}<small>${d.series_part?`Серія ${d.series_part}`:"Тема очікує генерації"}</small></button>`:`<button class="calendar-item ${d.status==="published"?"published":""}" data-calendar-draft="${d.id}"><time>${d.eventDate.toLocaleTimeString("uk-UA",{hour:"2-digit",minute:"2-digit"})} · ${esc(statusLabels[d.status]||d.status)}</time><span class="cal-product">${esc(rubricLabel(d.product))}</span>${esc(d.title)}<small>${d.link_url?"Є посилання":"Без посилання"}</small></button>`).join("")}</div>`}document.querySelector("#calendar").innerHTML=html;document.querySelectorAll("[data-calendar-draft]").forEach(b=>b.onclick=()=>openDraft(b.dataset.calendarDraft));document.querySelectorAll("[data-calendar-idea]").forEach(b=>b.onclick=()=>{document.querySelector('[data-view="ideasView"]').click();const idea=state.data.ideas.find(i=>i.id===Number(b.dataset.calendarIdea));if(idea)toast(`Тема: ${idea.title}`)})}

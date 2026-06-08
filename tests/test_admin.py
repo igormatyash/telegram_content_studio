@@ -1,9 +1,11 @@
 from io import BytesIO
+from types import SimpleNamespace
 
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from PIL import Image
 
+import voicerhub_bot.admin as admin_module
 from voicerhub_bot.admin import create_app
 from voicerhub_bot.config import Settings
 from voicerhub_bot.storage import DraftRepository
@@ -48,6 +50,42 @@ def test_admin_uses_login_session(tmp_path) -> None:
     cover = client.get("/wave-cover")
     assert cover.status_code == 200
     assert cover.headers["content-type"].startswith("image/jpeg")
+
+
+def test_retry_fast_does_not_duplicate_completed_batch(tmp_path, monkeypatch) -> None:
+    client = make_client(tmp_path)
+    assert login(client).status_code == 200
+    headers = {"X-Requested-With": "VoicerHubAdmin"}
+    repository = DraftRepository(tmp_path / "admin.sqlite3")
+    job = repository.create_job("Готовий Batch", "tony", 1)
+    repository.update_job(
+        job.id,
+        status="text_batch",
+        text_batch_id="batch_completed",
+    )
+
+    class FakeBatches:
+        async def retrieve(self, batch_id):
+            assert batch_id == "batch_completed"
+            return SimpleNamespace(status="completed")
+
+        async def cancel(self, batch_id):
+            raise AssertionError("Completed Batch must not be cancelled")
+
+    class FakeOpenAI:
+        def __init__(self, **_):
+            self.batches = FakeBatches()
+
+    monkeypatch.setattr(admin_module, "AsyncOpenAI", FakeOpenAI)
+    response = client.post(
+        f"/api/jobs/{job.id}/retry-fast",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["job_id"] is None
+    assert response.json()["batch_status"] == "completed"
+    assert repository.get_job(job.id).status == "text_batch"
 
 
 def test_admin_creates_and_blocks_user(tmp_path) -> None:
