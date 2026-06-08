@@ -4,6 +4,7 @@ from pathlib import Path
 
 from telegram import Bot
 
+from voicerhub_bot.billing import BillingService
 from voicerhub_bot.config import Settings, get_settings
 from voicerhub_bot.saas import SaasRepository
 from voicerhub_bot.storage import DraftRepository
@@ -54,6 +55,7 @@ class SaaSWorker:
         self.settings = settings
         self.saas = SaasRepository(settings.database_path, settings.app_encryption_key)
         self.saas.ensure_legacy_organization(channel_id=settings.telegram_channel)
+        self.billing = BillingService(self.saas, settings.telegram_bot_token)
 
     async def run_forever(self) -> None:
         while True:
@@ -62,6 +64,14 @@ class SaaSWorker:
             except Exception:
                 logger.exception("SaaS worker tick failed")
             await asyncio.sleep(30)
+
+    async def run_billing_forever(self) -> None:
+        while True:
+            try:
+                await self.billing.poll()
+            except Exception:
+                logger.exception("Telegram Stars billing poll failed")
+                await asyncio.sleep(5)
 
     async def tick(self) -> None:
         for organization_id in self.saas.organization_ids():
@@ -99,7 +109,10 @@ class SaaSWorker:
 
 async def run() -> None:
     worker = SaaSWorker(get_settings())
-    await worker.run_forever()
+    await asyncio.gather(
+        worker.run_forever(),
+        worker.run_billing_forever(),
+    )
 
 
 def main() -> None:

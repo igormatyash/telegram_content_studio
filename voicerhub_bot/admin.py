@@ -17,6 +17,7 @@ from telegram import Bot
 from telegram.constants import ParseMode
 
 from voicerhub_bot.auth import AuthRepository, SESSION_DAYS
+from voicerhub_bot.billing import BillingService, public_plans
 from voicerhub_bot.config import Settings, get_settings
 from voicerhub_bot.content_tools import (
     EditorialTools,
@@ -214,6 +215,10 @@ class TelegramConnectionRequest(BaseModel):
     channel_id: str = Field(min_length=2, max_length=200)
 
 
+class CheckoutRequest(BaseModel):
+    plan_code: str = Field(pattern=r"^(start|growth|scale)$")
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     settings.prepare_directories()
@@ -227,6 +232,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     idea_generator = IdeaGenerator(settings)
     editorial_tools = EditorialTools(settings)
+    billing = BillingService(saas, settings.telegram_bot_token)
     app = FastAPI(title=settings.product_name, docs_url=None, redoc_url=None)
 
     def organization_dirs(organization_id: int) -> tuple[Path, Path]:
@@ -317,6 +323,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def ensure_ai_budget() -> None:
         company = saas.get_organization(repository.organization_id)
+        ensure_subscription(company)
         budget = float(company["monthly_ai_budget"])
         if budget > 0 and repository.current_month_cost() >= budget:
             raise HTTPException(
@@ -326,6 +333,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def ensure_publication_quota() -> None:
         company = saas.get_organization(repository.organization_id)
+        ensure_subscription(company)
         if (
             repository.current_month_publications()
             >= company["monthly_publications"]
@@ -333,6 +341,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(
                 status_code=409,
                 detail="Місячний ліміт публікацій вичерпано",
+            )
+
+    def ensure_subscription(company: dict) -> None:
+        expires_at = company.get("plan_expires_at")
+        if not expires_at:
+            return
+        expiration = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        if expiration.tzinfo is None:
+            expiration = expiration.replace(tzinfo=timezone.utc)
+        if expiration <= datetime.now(timezone.utc):
+            raise HTTPException(
+                status_code=402,
+                detail="Термін дії тарифу завершився. Оновіть підписку в розділі «Тарифи».",
             )
 
     def active_rubrics() -> list[dict]:
@@ -574,6 +595,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "ai_spend": repository.current_month_cost(),
             "publication_count": repository.current_month_publications(),
         }
+
+    @app.get("/api/plans")
+    def plans(user: dict = Depends(authorize)) -> dict:
+        company = saas.get_organization(organization_id(user))
+        return {
+            "plans": public_plans(),
+            "current_plan": company.get("plan_code") or "custom",
+            "expires_at": company.get("plan_expires_at"),
+            "payment_method": "Telegram Stars",
+        }
+
+    @app.post("/api/billing/checkout")
+    async def create_checkout(
+        payload: CheckoutRequest,
+        user: dict = Depends(authorize_admin),
+    ) -> dict:
+        try:
+            return await billing.create_checkout(
+                organization_id=organization_id(user),
+                user_id=user["id"],
+                plan_code=payload.plan_code,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Тариф не знайдено") from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail="Не вдалося створити рахунок Telegram Stars",
+            ) from exc
 
     @app.get("/api/rubrics")
     def rubrics(_: dict = Depends(authorize)) -> list[dict]:
@@ -1580,8 +1630,9 @@ ADMIN_HTML = r"""
     .calendar{border:0;gap:10px;background:transparent;grid-template-columns:repeat(7,minmax(0,1fr))}.weekday{border:0;border-radius:8px;background:#eaf0f7}.day{border:1px solid rgba(203,213,225,.78);border-radius:8px;background:rgba(255,255,255,.88);box-shadow:var(--shadow-sm);transition:transform .16s ease,box-shadow .16s ease}.day:hover{transform:translateY(-2px);box-shadow:var(--shadow)}.day.today{box-shadow:0 0 0 3px rgba(16,191,174,.18),var(--shadow-sm)}.calendar-item{border-radius:7px;border-left:0;background:linear-gradient(135deg,#ecfdf5,#eef6ff);box-shadow:inset 0 0 0 1px rgba(16,191,174,.16);transition:transform .15s ease,box-shadow .15s ease}.calendar-item:hover{transform:translateY(-1px);box-shadow:0 8px 20px rgba(15,23,42,.10)}.calendar-item.published{background:linear-gradient(135deg,#eff6ff,#f5f3ff)}.calendar-item.planned{background:linear-gradient(135deg,#fff7ed,#fefce8)}
     th{background:#f4f7fb;color:#64748b;font-size:11px;letter-spacing:.04em;text-transform:uppercase}td{background:rgba(255,255,255,.78)}tbody tr{transition:background .16s ease}tbody tr:hover td{background:#f8fbff}.scroll{border-radius:8px;overflow:auto;box-shadow:var(--shadow-sm)}.scroll table{box-shadow:none}.status.busy{animation:glow 2s ease-in-out infinite}.notice{border-radius:8px;box-shadow:var(--shadow);animation:rise .22s ease both}
     dialog{border-radius:8px;box-shadow:0 30px 110px rgba(15,23,42,.42)}.editor-head{background:linear-gradient(135deg,#0f172a,#111827);color:#fff}.editor-head button{color:#fff;background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.16)}.editor-grid{background:#f8fafc}.editor-grid img{border-radius:8px;box-shadow:var(--shadow-sm)}#socialVariant{border-radius:8px;background:#fff;box-shadow:var(--shadow-sm)}
+    .pricing-button{display:inline-flex;align-items:center;gap:8px;color:#fff!important;border:1px solid rgba(16,191,174,.42)!important;background:linear-gradient(135deg,#0f766e,#2563eb)!important;box-shadow:0 12px 28px rgba(37,99,235,.20)}.pricing-button::before{content:"★";color:#fde68a}.pricing-modal{width:min(1120px,calc(100vw - 28px));max-height:92vh;padding:0;overflow:auto}.pricing-head{display:flex;align-items:flex-start;justify-content:space-between;padding:24px 26px 18px;border-bottom:1px solid var(--line);background:#fff}.pricing-head h2{margin:0;font-size:25px}.pricing-head p{margin:5px 0 0;color:var(--muted)}.pricing-content{padding:22px 26px 26px;background:#f6f8fc}.pricing-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.price-card{position:relative;display:flex;flex-direction:column;min-height:430px;padding:20px;border:1px solid #dbe3ee;border-radius:8px;background:#fff;box-shadow:var(--shadow-sm)}.price-card.popular{border-color:var(--cyan);box-shadow:0 0 0 3px rgba(16,191,174,.10),var(--shadow)}.popular-label{position:absolute;right:14px;top:14px;padding:4px 8px;border-radius:999px;background:#dcfce7;color:#087f6f;font-size:10px;font-weight:900;text-transform:uppercase}.price-card h3{margin:0;font-size:20px}.price-card .tagline{min-height:44px;color:var(--muted)}.price{display:flex;align-items:baseline;gap:7px;margin:14px 0}.price strong{font-size:34px}.price span{color:var(--muted)}.plan-limits{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px}.plan-limit{padding:9px;border-radius:8px;background:#f3f6fb}.plan-limit strong,.plan-limit span{display:block}.plan-limit span{color:var(--muted);font-size:11px}.plan-features{display:grid;gap:8px;margin:0 0 18px;padding:0;list-style:none}.plan-features li{position:relative;padding-left:20px}.plan-features li::before{content:"✓";position:absolute;left:0;color:var(--cyan);font-weight:900}.price-card button{margin-top:auto;width:100%}.billing-note{display:flex;justify-content:space-between;gap:16px;margin-top:16px;padding:14px 16px;border:1px solid #dbe3ee;border-radius:8px;background:#fff;color:var(--muted)}.billing-note strong{color:var(--ink)}.current-plan{color:var(--cyan);font-weight:800}
     @media(max-width:1100px){.app-shell{grid-template-columns:1fr}.sidebar{position:static;height:auto}.tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))}.tab:hover{transform:translateY(-1px)}.sidebar-foot{display:none}.modelbar{grid-template-columns:1fr 1fr}.topbar{position:static}.templates{grid-template-columns:repeat(3,1fr)}}
-    @media(max-width:950px){.drafts{grid-template-columns:repeat(2,1fr)}.editor-grid{grid-template-columns:1fr}.toolbar,.user-create,.planning-grid,.company-form{grid-template-columns:1fr 1fr}.company-grid{grid-template-columns:repeat(2,1fr)}.toolbar label:nth-child(4){grid-column:1/-1}.assets,.templates{grid-template-columns:repeat(3,1fr)}.calendar-wrap{overflow-x:auto}.calendar{min-width:900px}}
+    @media(max-width:950px){.drafts{grid-template-columns:repeat(2,1fr)}.editor-grid{grid-template-columns:1fr}.toolbar,.user-create,.planning-grid,.company-form{grid-template-columns:1fr 1fr}.company-grid{grid-template-columns:repeat(2,1fr)}.toolbar label:nth-child(4){grid-column:1/-1}.assets,.templates{grid-template-columns:repeat(3,1fr)}.calendar-wrap{overflow-x:auto}.calendar{min-width:900px}.pricing-grid{grid-template-columns:1fr}.price-card{min-height:0}}
     @media(max-width:620px){main,.topbar{padding-left:14px;padding-right:14px}.sidebar{min-width:0}.brand h1{font-size:14px}.topbar{align-items:flex-start;flex-direction:column}.topbar>div:first-child{min-width:0}.topbar p{white-space:normal}.account{gap:6px;flex-wrap:wrap}.account #updated{display:none}.tabs{display:flex;max-width:100%;overflow-x:auto;flex-direction:row}.tab{width:auto;flex:0 0 auto;padding:11px 12px}.toolbar,.modelbar,.user-create,.brand-options,.custom-template,.planning-grid,.variants,.company-grid,.company-form{grid-template-columns:1fr}.toolbar label:nth-child(4),.custom-template .wide,.company-form .wide{grid-column:auto}.drafts{grid-template-columns:1fr}.metrics{grid-template-columns:1fr 1fr}.idea{grid-template-columns:24px 74px minmax(0,1fr)}.idea .editor-actions{grid-column:2/-1}.assets,.templates{grid-template-columns:repeat(2,minmax(0,1fr))}.scroll{overflow-x:auto}.scroll table{min-width:780px}}
     @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
   </style>
@@ -1605,7 +1656,7 @@ ADMIN_HTML = r"""
   <div class="workspace">
     <header class="topbar">
       <div><h2 id="viewTitle">Теми</h2><p id="viewSubtitle">Плануйте і запускайте AI-публікації з одного робочого центру.</p></div>
-      <div class="account"><span id="currentCompany"></span><span id="currentUser"></span><span id="updated">—</span><button id="logout" title="Вийти">Вийти</button></div>
+      <div class="account"><button class="pricing-button" id="openPricing">Тарифи</button><span id="currentCompany"></span><span id="currentUser"></span><span id="updated">—</span><button id="logout" title="Вийти">Вийти</button></div>
     </header>
 <main>
 
@@ -1803,6 +1854,20 @@ ADMIN_HTML = r"""
   </div>
 </div>
 
+<dialog id="pricing" class="pricing-modal">
+  <div class="pricing-head">
+    <div><h2>Тарифи Content Studio</h2><p>Місячна підписка для вашої контент-команди.</p></div>
+    <button id="closePricing" title="Закрити">✕</button>
+  </div>
+  <div class="pricing-content">
+    <div class="pricing-grid" id="pricingGrid"></div>
+    <div class="billing-note">
+      <span><strong>Оплата:</strong> Telegram Stars. Після підтвердження тариф активується автоматично.</span>
+      <span>Інші способи оплати з’являться незабаром.</span>
+    </div>
+  </div>
+</dialog>
+
 <dialog id="editor">
   <div class="editor-head"><strong>Редагування поста</strong><button id="closeEditor">✕</button></div>
   <div class="editor-grid">
@@ -1861,7 +1926,7 @@ const toneLabel=v=>({expert:"Експертний",sales:"Продаючий",li
 const statusLabels={suggested:"Запропоновано",selected:"У черзі",queued_text:"Очікує генерації тексту",text_batch:"Генерується текст",queued_image:"Очікує генерації зображення",image_batch:"Генерується зображення",ready:"Готово",draft:"Чернетка",scheduled:"Заплановано",published:"Опубліковано",failed:"Помилка",completed:"Завершено",in_progress:"Виконується",cancelled:"Скасовано",expired:"Термін минув"};
 const busyStatuses=new Set(["selected","queued_text","text_batch","queued_image","image_batch","in_progress"]);
 const viewMeta={ideasView:["Теми","Плануйте і запускайте AI-публікації з одного робочого центру."],planningView:["Планування","Створюйте контент-плани, серії та матеріали на основі сайту."],draftsView:["Редактор","Перевіряйте тексти, візуали та версії для соціальних мереж."],calendarView:["Календар","Контролюйте ритм публікацій і майбутнє навантаження."],opsView:["Черга та витрати","Слідкуйте за генераціями, Batch-завданнями і бюджетом."],companyView:["Компанія","Керуйте каналом, рубриками та корпоративним контекстом."],usersView:["Доступ","Керуйте користувачами, ролями та паролями."],platformView:["Платформа","Контролюйте компанії, використання AI та загальні ліміти."]};
-const state={data:null,me:null,company:null,organizations:[],platformUsage:null,draftId:null,currentDraft:null,socialPlatform:null,socialVariants:[],referenceIds:new Set(),templateId:localStorage.getItem("templateId")||"editorial-dark",calendarDate:new Date(),ideaPage:1,draftPage:1,jobPage:1,pageSize:12,favoritesOnly:false}; const apiUrl=p=>{const u=new URL(p,location.href);u.username="";u.password="";return u};
+const state={data:null,me:null,company:null,pricing:null,organizations:[],platformUsage:null,draftId:null,currentDraft:null,socialPlatform:null,socialVariants:[],referenceIds:new Set(),templateId:localStorage.getItem("templateId")||"editorial-dark",calendarDate:new Date(),ideaPage:1,draftPage:1,jobPage:1,pageSize:12,favoritesOnly:false}; const apiUrl=p=>{const u=new URL(p,location.href);u.username="";u.password="";return u};
 function errorText(detail){if(typeof detail==="string")return detail;if(Array.isArray(detail))return detail.map(x=>x.msg||x.message||JSON.stringify(x)).join("; ");if(detail&&typeof detail==="object")return detail.message||detail.detail||JSON.stringify(detail);return "Невідома помилка"}
 async function api(path,options={}){options.credentials="same-origin";options.headers={...(options.headers||{}),"X-Requested-With":"VoicerHubAdmin"};if(options.body&&!(options.body instanceof FormData))options.headers["Content-Type"]="application/json";const r=await fetch(apiUrl(path),options);if(!r.ok){let d={};try{d=await r.json()}catch{}const fallback={401:"Потрібно увійти знову",403:"Недостатньо прав",404:"Дані не знайдено",409:"Дію зараз неможливо виконати",422:"Перевірте введені дані",500:"Внутрішня помилка сервера"}[r.status]||`Помилка HTTP ${r.status}`;const detail=d.detail===undefined?fallback:errorText(d.detail);throw new Error(detail)}if(r.status===204)return {};return r.json()}
 function toast(text,error=false){const n=document.querySelector("#notice");n.textContent=errorText(text);n.style.background=error?"#8f1d1d":"#111a2d";n.style.display="block";clearTimeout(n.timer);n.timer=setTimeout(()=>n.style.display="none",5000)}
@@ -1881,6 +1946,8 @@ function renderDrafts(drafts){const filtered=state.favoritesOnly?drafts.filter(d
 function updateDraftStatuses(drafts){for(const d of drafts){const card=document.querySelector(`[data-draft-card="${d.id}"]`);if(card){const el=card.querySelector(".status");el.className=`status ${d.status}`;el.textContent=statusLabels[d.status]||d.status}}}
 function renderUsers(users){document.querySelector("#users").innerHTML=users.map(u=>`<tr><td><strong>${esc(u.username)}</strong></td><td>${u.is_admin?"Адміністратор":"Редактор"}</td><td class="status ${u.active?"ready":"failed"}">${u.active?"Активний":"Заблокований"}</td><td>${esc(new Date(`${u.created_at}Z`).toLocaleDateString("uk-UA"))}</td><td><div class="user-actions"><button data-role-user="${u.id}">${u.is_admin?"Зробити редактором":"Зробити адміністратором"}</button><button data-active-user="${u.id}" class="${u.active?"danger":""}">${u.active?"Заблокувати":"Активувати"}</button><button data-password-user="${u.id}">Новий пароль</button></div></td></tr>`).join("");document.querySelectorAll("[data-role-user]").forEach(b=>b.onclick=async()=>{const u=users.find(x=>x.id===Number(b.dataset.roleUser));await api(`api/users/${u.id}`,{method:"PATCH",body:JSON.stringify({is_admin:!u.is_admin})});refreshUsers()});document.querySelectorAll("[data-active-user]").forEach(b=>b.onclick=async()=>{const u=users.find(x=>x.id===Number(b.dataset.activeUser));await api(`api/users/${u.id}`,{method:"PATCH",body:JSON.stringify({active:!u.active})});refreshUsers()});document.querySelectorAll("[data-password-user]").forEach(b=>b.onclick=async()=>{const password=prompt("Новий пароль, мінімум 10 символів");if(!password)return;await api(`api/users/${b.dataset.passwordUser}/password`,{method:"PUT",body:JSON.stringify({password})});toast("Пароль змінено")})}
 function renderCompany(company){state.company=company;document.querySelector("#currentCompany").textContent=company.name;document.querySelector("#sidebarCompany").textContent=company.name;document.querySelector("#companyCards").innerHTML=`<div class="company-card"><span>Компанія</span><strong>${esc(company.name)}</strong></div><div class="company-card"><span>Користувачі</span><strong>${company.user_count} / ${company.max_users}</strong></div><div class="company-card"><span>Telegram-канали</span><strong>${company.telegram?.configured?"1 підключено":`0 / ${company.max_channels}`}</strong></div><div class="company-card"><span>Публікації цього місяця</span><strong>${company.publication_count} / ${company.monthly_publications}</strong></div><div class="company-card"><span>AI-витрати цього місяця</span><strong>${money(company.ai_spend)} / $${Number(company.monthly_ai_budget).toFixed(0)}</strong></div>`;document.querySelector("#companyChannel").value=company.telegram?.channel_id||""}
+function renderPricing(data){state.pricing=data;const expires=data.expires_at?new Date(data.expires_at).toLocaleDateString("uk-UA"):"";document.querySelector("#pricingGrid").innerHTML=data.plans.map(plan=>{const current=data.current_plan===plan.code;return `<article class="price-card ${plan.popular?"popular":""}">${plan.popular?`<span class="popular-label">Найпопулярніший</span>`:""}<h3>${esc(plan.name)}</h3><p class="tagline">${esc(plan.tagline)}</p><div class="price"><strong>${number(plan.stars)} ★</strong><span>/ 30 днів</span></div><div class="plan-limits"><div class="plan-limit"><strong>${number(plan.publications)}</strong><span>публікацій / місяць</span></div><div class="plan-limit"><strong>${number(plan.users)}</strong><span>користувачів</span></div><div class="plan-limit"><strong>${number(plan.channels)}</strong><span>Telegram-канал</span></div><div class="plan-limit"><strong>$${Number(plan.ai_budget).toFixed(0)}</strong><span>AI-бюджет / місяць</span></div></div><ul class="plan-features">${plan.features.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>${current?`<button disabled class="current-plan">Поточний тариф${expires?` · до ${expires}`:""}</button>`:`<button class="${plan.popular?"success":"primary"}" data-buy-plan="${esc(plan.code)}" ${state.me?.is_admin?"":"disabled"}>${state.me?.is_admin?"Оплатити в Telegram":"Доступно адміністратору"}</button>`}</article>`}).join("");document.querySelectorAll("[data-buy-plan]").forEach(button=>button.onclick=()=>buyPlan(button,button.dataset.buyPlan))}
+async function buyPlan(button,planCode){const popup=window.open("about:blank","_blank");const result=await loading(button,()=>api("api/billing/checkout",{method:"POST",body:JSON.stringify({plan_code:planCode})}),"Створюється рахунок");if(!result){popup?.close();return}if(popup)popup.location=result.invoice_url;else location.href=result.invoice_url;toast("Рахунок відкрито в Telegram")}
 function renderRubrics(items){const active=items.filter(r=>r.active);document.querySelector("#rubrics").innerHTML=items.map(r=>`<tr><td><strong>${esc(r.name)}</strong></td><td class="masked">${esc(r.slug)}</td><td>${esc(r.description.slice(0,160))}</td><td>${r.default_link?`<a href="${esc(r.default_link)}" target="_blank">Відкрити</a>`:"—"}</td><td class="status ${r.active?"ready":"failed"}">${r.active?"Активна":"Вимкнена"}</td><td><button data-toggle-rubric="${r.id}">${r.active?"Вимкнути":"Увімкнути"}</button></td></tr>`).join("")||`<tr><td colspan="6" class="empty">Створіть першу рубрику компанії</td></tr>`;const options=active.map(r=>`<option value="${esc(r.slug)}">${esc(r.name)}</option>`).join("");for(const id of ["ideaProduct","planProduct","materialProduct"]){const select=document.querySelector(`#${id}`),current=select.value;select.innerHTML=`<option value="all">Усі рубрики</option>${options}`;if([...select.options].some(o=>o.value===current))select.value=current}const series=document.querySelector("#seriesProduct"),seriesCurrent=series.value;series.innerHTML=options;if([...series.options].some(o=>o.value===seriesCurrent))series.value=seriesCurrent;syncRubricControls();document.querySelectorAll("[data-toggle-rubric]").forEach(b=>b.onclick=async()=>{const r=items.find(x=>x.id===Number(b.dataset.toggleRubric));await api(`api/rubrics/${r.id}`,{method:"PUT",body:JSON.stringify({name:r.name,description:r.description,instructions:r.instructions,default_link:r.default_link,active:!r.active})});await refresh()})}
 function renderOrganizations(items){state.organizations=items;document.querySelector("#organizations").innerHTML=items.map(o=>`<tr><td>${o.id}</td><td><strong>${esc(o.name)}</strong></td><td class="masked">${esc(o.slug)}</td><td>${o.monthly_publications} публікацій<br>$${Number(o.monthly_ai_budget).toFixed(0)} AI</td><td>${o.user_count} / ${o.max_users}</td><td class="status ${o.active?"ready":"failed"}">${o.active?"Активна":"Заблокована"}</td></tr>`).join("")}
 const number=value=>Number(value||0).toLocaleString("uk-UA");
@@ -1924,6 +1991,8 @@ document.querySelector("#calendarPrev").onclick=()=>{state.calendarDate=new Date
 document.querySelector("#calendarNext").onclick=()=>{state.calendarDate=new Date(state.calendarDate.getFullYear(),state.calendarDate.getMonth()+1,1);renderCalendar()};
 document.querySelector("#calendarToday").onclick=()=>{state.calendarDate=new Date();renderCalendar()};
 document.querySelector("#logout").onclick=async()=>{await api("api/logout",{method:"POST"});location.reload()};
+document.querySelector("#openPricing").onclick=async()=>{try{const data=await api("api/plans");renderPricing(data);document.querySelector("#pricing").showModal()}catch(e){toast(e.message,true)}};
+document.querySelector("#closePricing").onclick=()=>document.querySelector("#pricing").close();
 document.querySelector("#createUser").onclick=async()=>{const username=document.querySelector("#newUsername").value;const password=document.querySelector("#newPassword").value;try{await api("api/users",{method:"POST",body:JSON.stringify({username,password,is_admin:document.querySelector("#newIsAdmin").checked})});document.querySelector("#newUsername").value="";document.querySelector("#newPassword").value="";document.querySelector("#newIsAdmin").checked=false;toast("Користувача додано");refreshUsers()}catch(e){toast(e.message)}};
 document.querySelector("#changeOwnPassword").onclick=async()=>{const password=document.querySelector("#ownPassword").value;if(!password)return toast("Введіть новий пароль");try{await api("api/account/password",{method:"PUT",body:JSON.stringify({password})});location.reload()}catch(e){toast(e.message)}};
 document.querySelector("#saveTelegram").onclick=async()=>{const b=document.querySelector("#saveTelegram");await loading(b,async()=>{await api("api/company/telegram",{method:"PUT",body:JSON.stringify({channel_id:document.querySelector("#companyChannel").value,bot_token:document.querySelector("#companyBotToken").value})});document.querySelector("#companyBotToken").value="";await refreshCompany();toast("Telegram-канал підключено")},"Перевіряється")};

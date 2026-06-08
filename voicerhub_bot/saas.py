@@ -1,5 +1,6 @@
 import re
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -85,7 +86,50 @@ class SaasRepository:
                     details TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
+                CREATE TABLE IF NOT EXISTS billing_orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    organization_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    plan_code TEXT NOT NULL,
+                    amount_stars INTEGER NOT NULL,
+                    payload TEXT NOT NULL UNIQUE,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    paid_at TEXT,
+                    FOREIGN KEY (organization_id) REFERENCES organizations(id),
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                );
+                CREATE TABLE IF NOT EXISTS star_payments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_id INTEGER NOT NULL,
+                    organization_id INTEGER NOT NULL,
+                    telegram_user_id INTEGER,
+                    telegram_payment_charge_id TEXT NOT NULL UNIQUE,
+                    amount_stars INTEGER NOT NULL,
+                    raw TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (order_id) REFERENCES billing_orders(id),
+                    FOREIGN KEY (organization_id) REFERENCES organizations(id)
+                );
                 """
+            )
+            self._ensure_column(connection, "organizations", "plan_code", "TEXT NOT NULL DEFAULT 'custom'")
+            self._ensure_column(connection, "organizations", "plan_expires_at", "TEXT")
+
+    @staticmethod
+    def _ensure_column(
+        connection: sqlite3.Connection,
+        table: str,
+        column: str,
+        definition: str,
+    ) -> None:
+        columns = {
+            row["name"]
+            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in columns:
+            connection.execute(
+                f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
             )
 
     def ensure_legacy_organization(
@@ -308,3 +352,114 @@ class SaasRepository:
                 """,
                 (organization_id, user_id, action, details[:1000]),
             )
+
+    def create_billing_order(
+        self,
+        *,
+        organization_id: int,
+        user_id: int,
+        plan_code: str,
+        amount_stars: int,
+        payload: str,
+    ) -> dict:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO billing_orders (
+                    organization_id, user_id, plan_code, amount_stars, payload
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (organization_id, user_id, plan_code, amount_stars, payload),
+            )
+            order_id = int(cursor.lastrowid)
+        return self.billing_order(order_id)
+
+    def billing_order(self, order_id: int) -> dict:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM billing_orders WHERE id = ?",
+                (order_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError("Billing order not found")
+        return dict(row)
+
+    def billing_order_by_payload(self, payload: str) -> dict | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM billing_orders WHERE payload = ?",
+                (payload,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def complete_star_payment(
+        self,
+        *,
+        order_id: int,
+        telegram_user_id: int | None,
+        telegram_payment_charge_id: str,
+        amount_stars: int,
+        plan: dict,
+        expires_at: datetime,
+        raw: str,
+    ) -> bool:
+        order = self.billing_order(order_id)
+        with self._connect() as connection:
+            existing = connection.execute(
+                """
+                SELECT id FROM star_payments
+                WHERE telegram_payment_charge_id = ?
+                """,
+                (telegram_payment_charge_id,),
+            ).fetchone()
+            if existing:
+                return False
+            connection.execute(
+                """
+                INSERT INTO star_payments (
+                    order_id, organization_id, telegram_user_id,
+                    telegram_payment_charge_id, amount_stars, raw
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    order_id,
+                    order["organization_id"],
+                    telegram_user_id,
+                    telegram_payment_charge_id,
+                    amount_stars,
+                    raw[:10000],
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE billing_orders
+                SET status = 'paid', paid_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (order_id,),
+            )
+            connection.execute(
+                """
+                UPDATE organizations
+                SET plan_code = ?, plan_expires_at = ?, max_users = ?,
+                    max_channels = ?, monthly_publications = ?,
+                    monthly_ai_budget = ?
+                WHERE id = ?
+                """,
+                (
+                    plan["code"],
+                    expires_at.isoformat(),
+                    plan["users"],
+                    plan["channels"],
+                    plan["publications"],
+                    plan["ai_budget"],
+                    order["organization_id"],
+                ),
+            )
+        self.audit(
+            order["organization_id"],
+            order["user_id"],
+            "billing.stars_paid",
+            f"{plan['code']}:{amount_stars}",
+        )
+        return True

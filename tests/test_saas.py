@@ -1,9 +1,12 @@
 import sqlite3
+from datetime import datetime, timezone
 
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
+import voicerhub_bot.admin as admin_module
 from voicerhub_bot.admin import create_app
+from voicerhub_bot.billing import STAR_PLANS
 from voicerhub_bot.auth import AuthRepository
 from voicerhub_bot.config import Settings
 from voicerhub_bot.saas import SaasRepository
@@ -297,3 +300,95 @@ def test_super_admin_sees_usage_by_company_and_user(tmp_path) -> None:
     assert report["totals"]["cost"] == 0.1
     assert report["companies"][0]["organization_name"] == "VoicerHub"
     assert report["users"][0]["username"] == "platform.owner"
+
+
+def test_admin_lists_plans_and_creates_star_checkout(tmp_path, monkeypatch) -> None:
+    settings = Settings(
+        telegram_bot_token="telegram",
+        openai_api_key="openai",
+        admin_username="owner",
+        admin_password="owner-password",
+        database_path=tmp_path / "billing.sqlite3",
+        generated_dir=tmp_path / "generated",
+        reference_dir=tmp_path / "references",
+        organizations_dir=tmp_path / "organizations",
+        app_encryption_key=Fernet.generate_key().decode(),
+    )
+
+    async def fake_checkout(self, *, organization_id, user_id, plan_code):
+        assert organization_id == 1
+        assert user_id > 0
+        assert plan_code == "growth"
+        return {
+            "id": 1,
+            "invoice_url": "https://t.me/$invoice",
+            "plan": STAR_PLANS["growth"],
+        }
+
+    monkeypatch.setattr(
+        admin_module.BillingService,
+        "create_checkout",
+        fake_checkout,
+    )
+    client = TestClient(create_app(settings))
+    assert client.post(
+        "/api/login",
+        json={"username": "owner", "password": "owner-password"},
+    ).status_code == 200
+    headers = {"X-Requested-With": "VoicerHubAdmin"}
+
+    plans = client.get("/api/plans", headers=headers)
+    assert plans.status_code == 200
+    assert [item["code"] for item in plans.json()["plans"]] == [
+        "start",
+        "growth",
+        "scale",
+    ]
+
+    checkout = client.post(
+        "/api/billing/checkout",
+        headers=headers,
+        json={"plan_code": "growth"},
+    )
+    assert checkout.status_code == 200
+    assert checkout.json()["invoice_url"] == "https://t.me/$invoice"
+
+
+def test_star_payment_applies_plan_limits_once(tmp_path) -> None:
+    database = tmp_path / "stars.sqlite3"
+    auth = AuthRepository(database)
+    user = auth.create_user("owner", "owner-password", is_admin=True)
+    saas = SaasRepository(database, Fernet.generate_key().decode())
+    saas.ensure_legacy_organization()
+    order = saas.create_billing_order(
+        organization_id=1,
+        user_id=user["id"],
+        plan_code="growth",
+        amount_stars=999,
+        payload="cs:1:1:growth:test",
+    )
+    expires = datetime(2026, 7, 8, tzinfo=timezone.utc)
+
+    assert saas.complete_star_payment(
+        order_id=order["id"],
+        telegram_user_id=402385847,
+        telegram_payment_charge_id="charge-1",
+        amount_stars=999,
+        plan=STAR_PLANS["growth"],
+        expires_at=expires,
+        raw="{}",
+    )
+    assert not saas.complete_star_payment(
+        order_id=order["id"],
+        telegram_user_id=402385847,
+        telegram_payment_charge_id="charge-1",
+        amount_stars=999,
+        plan=STAR_PLANS["growth"],
+        expires_at=expires,
+        raw="{}",
+    )
+    company = saas.get_organization(1)
+    assert company["plan_code"] == "growth"
+    assert company["max_users"] == 10
+    assert company["monthly_publications"] == 120
+    assert company["monthly_ai_budget"] == 25
