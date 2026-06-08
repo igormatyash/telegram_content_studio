@@ -231,3 +231,55 @@ def test_ai_budget_blocks_new_generation_before_openai_call(tmp_path) -> None:
 
     assert response.status_code == 402
     assert "AI-бюджет" in response.json()["detail"]
+
+
+def test_super_admin_sees_usage_by_company_and_user(tmp_path) -> None:
+    settings = Settings(
+        telegram_bot_token="telegram",
+        openai_api_key="openai",
+        admin_username="platform.owner",
+        admin_password="initial-password",
+        database_path=tmp_path / "admin.sqlite3",
+        generated_dir=tmp_path / "generated",
+        reference_dir=tmp_path / "references",
+        organizations_dir=tmp_path / "organizations",
+        app_encryption_key=Fernet.generate_key().decode(),
+    )
+    client = TestClient(create_app(settings))
+    login = client.post(
+        "/api/login",
+        json={"username": "platform.owner", "password": "initial-password"},
+    )
+    user_id = login.json()["user"]["id"]
+    repository = TenantRepository(settings.database_path, settings.organizations_dir)
+    repository.for_organization(1).add_usage(
+        job_id=0,
+        kind="text",
+        model="gpt-5.4-mini",
+        input_tokens=1000,
+        output_tokens=250,
+        cost=0.02,
+        user_id=user_id,
+    )
+    repository.for_organization(1).add_usage(
+        job_id=0,
+        kind="image",
+        model="gpt-image-2",
+        units=2,
+        cost=0.08,
+        user_id=user_id,
+    )
+
+    response = client.get(
+        "/api/platform/usage?period=all",
+        headers={"X-Requested-With": "VoicerHubAdmin"},
+    )
+
+    assert response.status_code == 200
+    report = response.json()
+    assert report["totals"]["input_tokens"] == 1000
+    assert report["totals"]["output_tokens"] == 250
+    assert report["totals"]["image_generations"] == 2
+    assert report["totals"]["cost"] == 0.1
+    assert report["companies"][0]["organization_name"] == "VoicerHub"
+    assert report["users"][0]["username"] == "platform.owner"

@@ -89,6 +89,7 @@ class GenerationJob:
     company_logo_reference_id: int | None
     link_url: str
     tone: str
+    created_by_user_id: int | None
 
 
 @dataclass(slots=True)

@@ -93,6 +93,9 @@ class DraftRepository:
             self._ensure_column(
                 connection, "generation_jobs", "tone", "TEXT NOT NULL DEFAULT 'expert'"
             )
+            self._ensure_column(
+                connection, "generation_jobs", "created_by_user_id", "INTEGER"
+            )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS reference_assets (
@@ -189,8 +192,22 @@ class DraftRepository:
                     output_tokens INTEGER NOT NULL DEFAULT 0,
                     units INTEGER NOT NULL DEFAULT 0,
                     cost REAL NOT NULL DEFAULT 0,
+                    user_id INTEGER,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
+                """
+            )
+            self._ensure_column(connection, "usage_events", "user_id", "INTEGER")
+            connection.execute(
+                """
+                UPDATE usage_events
+                SET user_id = (
+                    SELECT created_by_user_id
+                    FROM generation_jobs
+                    WHERE generation_jobs.id = usage_events.job_id
+                )
+                WHERE user_id IS NULL
+                  AND job_id > 0
                 """
             )
 
@@ -404,6 +421,7 @@ class DraftRepository:
         link_url: str = "",
         idea_id: int | None = None,
         tone: str = "expert",
+        created_by_user_id: int | None = None,
     ) -> GenerationJob:
         with self._connect() as connection:
             cursor = connection.execute(
@@ -411,8 +429,8 @@ class DraftRepository:
                 INSERT INTO generation_jobs (
                     topic, product, chat_id, text_model, image_model, reference_ids,
                     template_id, logo_reference_id, company_logo_reference_id,
-                    link_url, idea_id, tone
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    link_url, idea_id, tone, created_by_user_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     topic,
@@ -427,6 +445,7 @@ class DraftRepository:
                     link_url,
                     idea_id,
                     tone,
+                    created_by_user_id,
                 ),
             )
             job_id = int(cursor.lastrowid)
@@ -441,6 +460,7 @@ class DraftRepository:
         template_id: str = "editorial-dark",
         logo_reference_id: int | None = None,
         company_logo_reference_id: int | None = None,
+        created_by_user_id: int | None = None,
     ) -> GenerationJob:
         draft = self.get(draft_id)
         with self._connect() as connection:
@@ -457,8 +477,9 @@ class DraftRepository:
                 INSERT INTO generation_jobs (
                     topic, product, chat_id, status, draft_id,
                     text_model, image_model, reference_ids, template_id,
-                    logo_reference_id, company_logo_reference_id, link_url
-                ) VALUES (?, ?, 0, 'queued_image', ?, '', ?, ?, ?, ?, ?, ?)
+                    logo_reference_id, company_logo_reference_id, link_url,
+                    created_by_user_id
+                ) VALUES (?, ?, 0, 'queued_image', ?, '', ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     draft.topic,
@@ -470,6 +491,7 @@ class DraftRepository:
                     logo_reference_id,
                     company_logo_reference_id,
                     draft.link_url,
+                    created_by_user_id,
                 ),
             )
             job_id = int(cursor.lastrowid)
@@ -547,6 +569,7 @@ class DraftRepository:
         company_logo_reference_id: int | None = None,
         link_url: str = "",
         tone: str | None = None,
+        created_by_user_id: int | None = None,
     ) -> GenerationJob:
         idea = self.get_idea(idea_id)
         with self._connect() as connection:
@@ -568,6 +591,7 @@ class DraftRepository:
             link_url=link_url,
             idea_id=idea_id,
             tone=tone or idea.get("tone") or "expert",
+            created_by_user_id=created_by_user_id,
         )
 
     def delete_idea(self, idea_id: int) -> None:
@@ -756,16 +780,95 @@ class DraftRepository:
         output_tokens: int = 0,
         units: int = 0,
         cost: float,
+        user_id: int | None = None,
     ) -> None:
         with self._connect() as connection:
+            if user_id is None and job_id > 0:
+                row = connection.execute(
+                    "SELECT created_by_user_id FROM generation_jobs WHERE id = ?",
+                    (job_id,),
+                ).fetchone()
+                user_id = row["created_by_user_id"] if row else None
             connection.execute(
                 """
                 INSERT INTO usage_events (
-                    job_id, kind, model, input_tokens, output_tokens, units, cost
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    job_id, kind, model, input_tokens, output_tokens, units, cost,
+                    user_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (job_id, kind, model, input_tokens, output_tokens, units, cost),
+                (
+                    job_id,
+                    kind,
+                    model,
+                    input_tokens,
+                    output_tokens,
+                    units,
+                    cost,
+                    user_id,
+                ),
             )
+
+    def usage_summary(self, *, since: str | None = None) -> dict:
+        where = "WHERE created_at >= ?" if since else ""
+        params = (since,) if since else ()
+        with self._connect() as connection:
+            totals = connection.execute(
+                f"""
+                SELECT
+                    COUNT(*) operations,
+                    COALESCE(SUM(input_tokens), 0) input_tokens,
+                    COALESCE(SUM(output_tokens), 0) output_tokens,
+                    COALESCE(SUM(CASE WHEN kind = 'text' THEN 1 ELSE 0 END), 0)
+                        text_generations,
+                    COALESCE(SUM(CASE WHEN kind = 'image' THEN units ELSE 0 END), 0)
+                        image_generations,
+                    COALESCE(SUM(cost), 0) cost
+                FROM usage_events
+                {where}
+                """,
+                params,
+            ).fetchone()
+            users = connection.execute(
+                f"""
+                SELECT
+                    user_id,
+                    COUNT(*) operations,
+                    COALESCE(SUM(input_tokens), 0) input_tokens,
+                    COALESCE(SUM(output_tokens), 0) output_tokens,
+                    COALESCE(SUM(CASE WHEN kind = 'text' THEN 1 ELSE 0 END), 0)
+                        text_generations,
+                    COALESCE(SUM(CASE WHEN kind = 'image' THEN units ELSE 0 END), 0)
+                        image_generations,
+                    COALESCE(SUM(cost), 0) cost
+                FROM usage_events
+                {where}
+                GROUP BY user_id
+                ORDER BY cost DESC, operations DESC
+                """,
+                params,
+            ).fetchall()
+            models = connection.execute(
+                f"""
+                SELECT
+                    model,
+                    kind,
+                    COUNT(*) operations,
+                    COALESCE(SUM(input_tokens), 0) input_tokens,
+                    COALESCE(SUM(output_tokens), 0) output_tokens,
+                    COALESCE(SUM(units), 0) units,
+                    COALESCE(SUM(cost), 0) cost
+                FROM usage_events
+                {where}
+                GROUP BY model, kind
+                ORDER BY cost DESC, operations DESC
+                """,
+                params,
+            ).fetchall()
+        return {
+            "totals": dict(totals),
+            "users": [dict(row) for row in users],
+            "models": [dict(row) for row in models],
+        }
 
     def current_month_cost(self) -> float:
         with self._connect() as connection:
@@ -878,6 +981,7 @@ class DraftRepository:
             company_logo_reference_id=row["company_logo_reference_id"],
             link_url=row["link_url"] or "",
             tone=row["tone"] or "expert",
+            created_by_user_id=row["created_by_user_id"],
         )
 
 

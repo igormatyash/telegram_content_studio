@@ -127,3 +127,28 @@ def test_job_keeps_models_and_reference_assets(tmp_path: Path) -> None:
     assert job.template_id == "clean-light"
     assert job.logo_reference_id == reference["id"]
     assert repository.references_by_ids([reference["id"]])[0]["name"] == "Tony logo"
+
+
+def test_usage_inherits_user_from_generation_job(tmp_path: Path) -> None:
+    repository = DraftRepository(tmp_path / "usage.sqlite3")
+    job = repository.create_job(
+        "Аналітика комунікацій",
+        "tony",
+        0,
+        created_by_user_id=42,
+    )
+
+    repository.add_usage(
+        job_id=job.id,
+        kind="text",
+        model="gpt-5.4-mini",
+        input_tokens=120,
+        output_tokens=80,
+        cost=0.01,
+    )
+
+    report = repository.usage_summary()
+    assert report["totals"]["input_tokens"] == 120
+    assert report["totals"]["output_tokens"] == 80
+    assert report["users"][0]["user_id"] == 42
+    assert report["users"][0]["text_generations"] == 1

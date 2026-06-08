@@ -1,5 +1,5 @@
 from io import BytesIO
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import html
 from pathlib import Path
 from uuid import uuid4
@@ -367,6 +367,86 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def organizations(_: dict = Depends(authorize_super_admin)) -> list[dict]:
         return saas.list_organizations()
 
+    @app.get("/api/platform/usage")
+    def platform_usage(
+        period: str = "month",
+        _: dict = Depends(authorize_super_admin),
+    ) -> dict:
+        now = datetime.now(timezone.utc)
+        if period == "today":
+            since = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        elif period == "7d":
+            since = now - timedelta(days=7)
+        elif period == "month":
+            since = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        elif period == "all":
+            since = None
+        else:
+            raise HTTPException(status_code=422, detail="Невідомий період звіту")
+
+        users = {user["id"]: user for user in auth.list_users()}
+        companies = []
+        user_rows = []
+        model_rows = []
+        totals = {
+            "operations": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "text_generations": 0,
+            "image_generations": 0,
+            "cost": 0.0,
+        }
+        since_value = since.strftime("%Y-%m-%d %H:%M:%S") if since else None
+        for company in saas.list_organizations():
+            report = repository.for_organization(company["id"]).usage_summary(
+                since=since_value
+            )
+            company_totals = report["totals"]
+            companies.append(
+                {
+                    "organization_id": company["id"],
+                    "organization_name": company["name"],
+                    **company_totals,
+                }
+            )
+            for key in totals:
+                totals[key] += company_totals[key]
+            for row in report["users"]:
+                user = users.get(row["user_id"])
+                user_rows.append(
+                    {
+                        "organization_id": company["id"],
+                        "organization_name": company["name"],
+                        "user_id": row["user_id"],
+                        "username": (
+                            user["username"] if user else "Система / не визначено"
+                        ),
+                        **{key: value for key, value in row.items() if key != "user_id"},
+                    }
+                )
+            for row in report["models"]:
+                model_rows.append(
+                    {
+                        "organization_id": company["id"],
+                        "organization_name": company["name"],
+                        **row,
+                    }
+                )
+        return {
+            "period": period,
+            "since": since.isoformat() if since else None,
+            "totals": totals,
+            "companies": companies,
+            "users": sorted(
+                user_rows,
+                key=lambda row: (-float(row["cost"]), row["organization_name"]),
+            ),
+            "models": sorted(
+                model_rows,
+                key=lambda row: (-float(row["cost"]), row["organization_name"]),
+            ),
+        }
+
     @app.post("/api/organizations")
     def create_organization(
         payload: OrganizationCreateRequest,
@@ -533,7 +613,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ]
         return data
 
-    def record_text_usage(model: str, input_tokens: int, output_tokens: int) -> None:
+    def record_text_usage(
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        user_id: int,
+    ) -> None:
         cost = (
             input_tokens * settings.text_standard_input_price_per_1m
             + output_tokens * settings.text_standard_output_price_per_1m
@@ -545,6 +630,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cost=cost,
+            user_id=user_id,
         )
 
     def save_ideas(
@@ -580,7 +666,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/ideas/generate")
     async def generate_ideas(
         payload: IdeaRequest,
-        _: str = Depends(authorize_write),
+        user: dict = Depends(authorize_write),
     ) -> dict:
         ensure_ai_budget()
         _validate_models(payload.text_model)
@@ -592,14 +678,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             repository.recent_titles(),
             payload.text_model,
         )
-        record_text_usage(payload.text_model, input_tokens, output_tokens)
+        record_text_usage(payload.text_model, input_tokens, output_tokens, user["id"])
         saved = save_ideas(ideas.ideas, forced_tone=payload.tone)
         return {"ideas": saved}
 
     @app.post("/api/content-plan/generate")
     async def generate_content_plan(
         payload: ContentPlanRequest,
-        _: str = Depends(authorize_write),
+        user: dict = Depends(authorize_write),
     ) -> dict:
         ensure_ai_budget()
         _validate_models(payload.text_model)
@@ -613,14 +699,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             recent_titles=repository.recent_titles(100),
             model=payload.text_model,
         )
-        record_text_usage(payload.text_model, input_tokens, output_tokens)
+        record_text_usage(payload.text_model, input_tokens, output_tokens, user["id"])
         plan_id = f"plan-{uuid4().hex[:10]}"
         return {"plan_id": plan_id, "ideas": save_ideas(plan.ideas, plan_id=plan_id)}
 
     @app.post("/api/series/generate")
     async def generate_series(
         payload: SeriesRequest,
-        _: str = Depends(authorize_write),
+        user: dict = Depends(authorize_write),
     ) -> dict:
         ensure_ai_budget()
         _validate_models(payload.text_model)
@@ -633,7 +719,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             recent_titles=repository.recent_titles(100),
             model=payload.text_model,
         )
-        record_text_usage(payload.text_model, input_tokens, output_tokens)
+        record_text_usage(payload.text_model, input_tokens, output_tokens, user["id"])
         series_id = f"series-{uuid4().hex[:10]}"
         return {
             "series_id": series_id,
@@ -647,7 +733,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/materials/import")
     async def import_material(
         payload: MaterialRequest,
-        _: str = Depends(authorize_write),
+        user: dict = Depends(authorize_write),
     ) -> dict:
         ensure_ai_budget()
         _validate_models(payload.text_model)
@@ -677,7 +763,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             tone=payload.tone,
             model=payload.text_model,
         )
-        record_text_usage(payload.text_model, input_tokens, output_tokens)
+        record_text_usage(payload.text_model, input_tokens, output_tokens, user["id"])
         return {
             "ideas": save_ideas(
                 ideas.ideas,
@@ -690,7 +776,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def generate_from_idea(
         idea_id: int,
         payload: GenerationRequest,
-        _: str = Depends(authorize_write),
+        user: dict = Depends(authorize_write),
     ) -> dict:
         ensure_ai_budget()
         _validate_generation(payload, repository)
@@ -704,6 +790,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             company_logo_reference_id=payload.company_logo_reference_id,
             link_url=payload.link_url.strip(),
             tone=payload.tone,
+            created_by_user_id=user["id"],
         )
         return {"job_id": job.id}
 
@@ -773,7 +860,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/templates/{template_id}/generate-preview")
     async def generate_template_preview(
         template_id: str,
-        _: str = Depends(authorize_write),
+        user: dict = Depends(authorize_write),
     ) -> dict:
         ensure_ai_budget()
         try:
@@ -801,6 +888,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
             units=1,
             cost=0.041,
+            user_id=user["id"],
         )
         return {"preview": f"api/templates/{template_id}/preview"}
 
@@ -879,7 +967,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def proofread_draft(
         draft_id: int,
         payload: ProofreadRequest,
-        _: str = Depends(authorize_write),
+        user: dict = Depends(authorize_write),
     ) -> dict:
         ensure_ai_budget()
         _validate_models(payload.text_model)
@@ -897,7 +985,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             caption_html=caption,
             link_url=draft["link_url"],
         )
-        record_text_usage(payload.text_model, input_tokens, output_tokens)
+        record_text_usage(payload.text_model, input_tokens, output_tokens, user["id"])
         return repository.draft_record(draft_id)
 
     @app.get("/api/drafts/{draft_id}/image")
@@ -949,7 +1037,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def regenerate_image(
         draft_id: int,
         payload: GenerationRequest,
-        _: str = Depends(authorize_write),
+        user: dict = Depends(authorize_write),
     ) -> dict:
         ensure_ai_budget()
         _validate_generation(payload, repository)
@@ -965,6 +1053,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             template_id=payload.template_id,
             logo_reference_id=payload.logo_reference_id,
             company_logo_reference_id=payload.company_logo_reference_id,
+            created_by_user_id=user["id"],
         )
         return {"job_id": job.id}
 
@@ -972,7 +1061,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def regenerate_text(
         draft_id: int,
         payload: GenerationRequest,
-        _: str = Depends(authorize_write),
+        user: dict = Depends(authorize_write),
     ) -> dict:
         ensure_ai_budget()
         _validate_generation(payload, repository)
@@ -989,6 +1078,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             company_logo_reference_id=payload.company_logo_reference_id,
             link_url=payload.link_url.strip() or draft["link_url"],
             tone=payload.tone or draft.get("tone") or "expert",
+            created_by_user_id=user["id"],
         )
         return {"job_id": job.id}
 
@@ -1280,6 +1370,24 @@ ADMIN_HTML = r"""
       <button class="primary" id="createOrganization">Створити компанію</button>
     </div>
     <div class="scroll"><table><thead><tr><th>ID</th><th>Компанія</th><th>Slug</th><th>Ліміти</th><th>Користувачі</th><th>Статус</th></tr></thead><tbody id="organizations"></tbody></table></div>
+    <div class="section-head">
+      <h2>Використання AI</h2>
+      <label>Період
+        <select id="usagePeriod">
+          <option value="today">Сьогодні</option>
+          <option value="7d">Останні 7 днів</option>
+          <option value="month" selected>Поточний місяць</option>
+          <option value="all">За весь час</option>
+        </select>
+      </label>
+    </div>
+    <div class="metrics" id="platformUsageTotals"></div>
+    <h2>За компаніями</h2>
+    <div class="scroll"><table><thead><tr><th>Компанія</th><th>Текстові генерації</th><th>Зображення</th><th>Вхідні токени</th><th>Вихідні токени</th><th>Вартість</th></tr></thead><tbody id="companyUsage"></tbody></table></div>
+    <h2>За користувачами</h2>
+    <div class="scroll"><table><thead><tr><th>Компанія</th><th>Користувач</th><th>Текстові генерації</th><th>Зображення</th><th>Токени</th><th>Вартість</th></tr></thead><tbody id="userUsage"></tbody></table></div>
+    <h2>За моделями</h2>
+    <div class="scroll"><table><thead><tr><th>Компанія</th><th>Тип</th><th>Модель</th><th>Операції</th><th>Токени / зображення</th><th>Вартість</th></tr></thead><tbody id="modelUsage"></tbody></table></div>
   </section>
 </main>
 
@@ -1322,7 +1430,7 @@ const rubricLabel=v=>({wave:"Voicer Wave",tony:"TONY",voicer:"Voicer",general:"T
 const toneLabel=v=>({expert:"Експертний",sales:"Продаючий",light:"Легкий",news:"Новинний"}[v]||v);
 const statusLabels={suggested:"Запропоновано",selected:"У черзі",queued_text:"Очікує генерації тексту",text_batch:"Генерується текст",queued_image:"Очікує генерації зображення",image_batch:"Генерується зображення",ready:"Готово",draft:"Чернетка",scheduled:"Заплановано",published:"Опубліковано",failed:"Помилка",completed:"Завершено",in_progress:"Виконується",cancelled:"Скасовано",expired:"Термін минув"};
 const busyStatuses=new Set(["selected","queued_text","text_batch","queued_image","image_batch","in_progress"]);
-const state={data:null,me:null,company:null,organizations:[],draftId:null,currentDraft:null,referenceIds:new Set(),templateId:localStorage.getItem("templateId")||"editorial-dark",calendarDate:new Date(),ideaPage:1,draftPage:1,jobPage:1,pageSize:12,favoritesOnly:false}; const apiUrl=p=>{const u=new URL(p,location.href);u.username="";u.password="";return u};
+const state={data:null,me:null,company:null,organizations:[],platformUsage:null,draftId:null,currentDraft:null,referenceIds:new Set(),templateId:localStorage.getItem("templateId")||"editorial-dark",calendarDate:new Date(),ideaPage:1,draftPage:1,jobPage:1,pageSize:12,favoritesOnly:false}; const apiUrl=p=>{const u=new URL(p,location.href);u.username="";u.password="";return u};
 function errorText(detail){if(typeof detail==="string")return detail;if(Array.isArray(detail))return detail.map(x=>x.msg||x.message||JSON.stringify(x)).join("; ");if(detail&&typeof detail==="object")return detail.message||detail.detail||JSON.stringify(detail);return "Невідома помилка"}
 async function api(path,options={}){options.credentials="same-origin";options.headers={...(options.headers||{}),"X-Requested-With":"VoicerHubAdmin"};if(options.body&&!(options.body instanceof FormData))options.headers["Content-Type"]="application/json";const r=await fetch(apiUrl(path),options);if(!r.ok){let d={};try{d=await r.json()}catch{}const fallback={401:"Потрібно увійти знову",403:"Недостатньо прав",404:"Дані не знайдено",409:"Дію зараз неможливо виконати",422:"Перевірте введені дані",500:"Внутрішня помилка сервера"}[r.status]||`Помилка HTTP ${r.status}`;const detail=d.detail===undefined?fallback:errorText(d.detail);throw new Error(detail)}if(r.status===204)return {};return r.json()}
 function toast(text,error=false){const n=document.querySelector("#notice");n.textContent=errorText(text);n.style.background=error?"#8f1d1d":"#111a2d";n.style.display="block";clearTimeout(n.timer);n.timer=setTimeout(()=>n.style.display="none",5000)}
@@ -1342,6 +1450,8 @@ function updateDraftStatuses(drafts){for(const d of drafts){const card=document.
 function renderUsers(users){document.querySelector("#users").innerHTML=users.map(u=>`<tr><td><strong>${esc(u.username)}</strong></td><td>${u.is_admin?"Адміністратор":"Редактор"}</td><td class="status ${u.active?"ready":"failed"}">${u.active?"Активний":"Заблокований"}</td><td>${esc(new Date(`${u.created_at}Z`).toLocaleDateString("uk-UA"))}</td><td><div class="user-actions"><button data-role-user="${u.id}">${u.is_admin?"Зробити редактором":"Зробити адміністратором"}</button><button data-active-user="${u.id}" class="${u.active?"danger":""}">${u.active?"Заблокувати":"Активувати"}</button><button data-password-user="${u.id}">Новий пароль</button></div></td></tr>`).join("");document.querySelectorAll("[data-role-user]").forEach(b=>b.onclick=async()=>{const u=users.find(x=>x.id===Number(b.dataset.roleUser));await api(`api/users/${u.id}`,{method:"PATCH",body:JSON.stringify({is_admin:!u.is_admin})});refreshUsers()});document.querySelectorAll("[data-active-user]").forEach(b=>b.onclick=async()=>{const u=users.find(x=>x.id===Number(b.dataset.activeUser));await api(`api/users/${u.id}`,{method:"PATCH",body:JSON.stringify({active:!u.active})});refreshUsers()});document.querySelectorAll("[data-password-user]").forEach(b=>b.onclick=async()=>{const password=prompt("Новий пароль, мінімум 10 символів");if(!password)return;await api(`api/users/${b.dataset.passwordUser}/password`,{method:"PUT",body:JSON.stringify({password})});toast("Пароль змінено")})}
 function renderCompany(company){state.company=company;document.querySelector("#currentCompany").textContent=company.name;document.querySelector("#companyCards").innerHTML=`<div class="company-card"><span>Компанія</span><strong>${esc(company.name)}</strong></div><div class="company-card"><span>Користувачі</span><strong>${company.user_count} / ${company.max_users}</strong></div><div class="company-card"><span>Telegram-канали</span><strong>${company.telegram?.configured?"1 підключено":`0 / ${company.max_channels}`}</strong></div><div class="company-card"><span>Публікації цього місяця</span><strong>${company.publication_count} / ${company.monthly_publications}</strong></div><div class="company-card"><span>AI-витрати цього місяця</span><strong>${money(company.ai_spend)} / $${Number(company.monthly_ai_budget).toFixed(0)}</strong></div>`;document.querySelector("#companyChannel").value=company.telegram?.channel_id||""}
 function renderOrganizations(items){state.organizations=items;document.querySelector("#organizations").innerHTML=items.map(o=>`<tr><td>${o.id}</td><td><strong>${esc(o.name)}</strong></td><td class="masked">${esc(o.slug)}</td><td>${o.monthly_publications} публікацій<br>$${Number(o.monthly_ai_budget).toFixed(0)} AI</td><td>${o.user_count} / ${o.max_users}</td><td class="status ${o.active?"ready":"failed"}">${o.active?"Активна":"Заблокована"}</td></tr>`).join("")}
+const number=value=>Number(value||0).toLocaleString("uk-UA");
+function renderPlatformUsage(report){state.platformUsage=report;const t=report.totals;document.querySelector("#platformUsageTotals").innerHTML=`<div class="metric"><span>Витрати</span><strong>${money(t.cost)}</strong></div><div class="metric"><span>Текстові генерації</span><strong>${number(t.text_generations)}</strong></div><div class="metric"><span>Зображення</span><strong>${number(t.image_generations)}</strong></div><div class="metric"><span>Токени</span><strong>${number(t.input_tokens+t.output_tokens)}</strong></div>`;document.querySelector("#companyUsage").innerHTML=report.companies.map(r=>`<tr><td><strong>${esc(r.organization_name)}</strong></td><td>${number(r.text_generations)}</td><td>${number(r.image_generations)}</td><td>${number(r.input_tokens)}</td><td>${number(r.output_tokens)}</td><td>${money(r.cost)}</td></tr>`).join("")||`<tr><td colspan="6" class="empty">Немає використання за цей період</td></tr>`;document.querySelector("#userUsage").innerHTML=report.users.map(r=>`<tr><td>${esc(r.organization_name)}</td><td><strong>${esc(r.username)}</strong></td><td>${number(r.text_generations)}</td><td>${number(r.image_generations)}</td><td>${number(r.input_tokens+r.output_tokens)}</td><td>${money(r.cost)}</td></tr>`).join("")||`<tr><td colspan="6" class="empty">Немає використання за цей період</td></tr>`;document.querySelector("#modelUsage").innerHTML=report.models.map(r=>`<tr><td>${esc(r.organization_name)}</td><td>${r.kind==="text"?"Текст":"Зображення"}</td><td class="masked">${esc(r.model)}</td><td>${number(r.operations)}</td><td>${r.kind==="text"?`${number(r.input_tokens)} / ${number(r.output_tokens)}`:number(r.units)}</td><td>${money(r.cost)}</td></tr>`).join("")||`<tr><td colspan="6" class="empty">Немає використання за цей період</td></tr>`}
 function renderOps(d){document.querySelector("#total").textContent=money(d.totals.total_cost);document.querySelector("#text").textContent=money(d.totals.text_cost);document.querySelector("#image").textContent=money(d.totals.image_cost);const terminal=new Set(["ready","published","failed"]);document.querySelector("#active").textContent=Object.entries(d.job_counts).filter(([k])=>!terminal.has(k)).reduce((s,[,v])=>s+v,0);document.querySelector("#jobs").innerHTML=d.jobs.map(r=>`<tr><td>${r.id}</td><td>${esc(rubricLabel(r.product))}</td><td>${esc(r.topic)}</td><td>${esc(r.text_model||"—")}<br>${esc(r.image_model||"—")}</td><td class="status ${esc(r.status)} ${busyStatuses.has(r.status)?"busy":""}">${esc(statusLabels[r.status]||r.status)}</td><td>${esc(short(r.text_batch_id))}</td><td>${esc(short(r.image_batch_id))}</td><td>${esc(r.error||"—")}</td></tr>`).join("");document.querySelector("#batches").innerHTML=d.batches.map(r=>`<tr><td>${esc(short(r.id))}</td><td>${r.kind==="text"?"Текст":"Зображення"}</td><td class="status ${esc(r.status)} ${r.status==="in_progress"?"busy":""}">${esc(statusLabels[r.status]||r.status)}</td><td>${r.completed}/${r.total}</td><td>${r.failed}</td><td>${r.input_tokens}/${r.output_tokens}</td><td>${money(r.estimated_cost)}</td></tr>`).join("")}
 const localKey=date=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;
 const parseServerDate=raw=>new Date(raw.endsWith("Z")?raw:`${raw.replace(" ","T")}Z`);
@@ -1349,9 +1459,10 @@ function renderCalendar(){if(!state.data)return;const month=new Date(state.calen
 async function refreshUsers(){if(!state.me?.is_admin)return;try{renderUsers(await api("api/users"))}catch(e){toast(e.message)}}
 async function refreshCompany(){try{renderCompany(await api("api/company"))}catch(e){toast(e.message,true)}}
 async function refreshOrganizations(){if(!state.me?.is_super_admin)return;try{renderOrganizations(await api("api/organizations"))}catch(e){toast(e.message,true)}}
+async function refreshPlatformUsage(){if(!state.me?.is_super_admin)return;try{renderPlatformUsage(await api(`api/platform/usage?period=${document.querySelector("#usagePeriod").value}`))}catch(e){toast(e.message,true)}}
 function activeView(){return document.querySelector(".view.active")?.id}
-function renderActive(full=false){if(!state.data)return;const view=activeView();if(view==="ideasView"){renderIdeas(state.data.ideas);if(full){renderTemplates(state.data.templates||[]);renderLogoOptions(state.data.references||[]);renderAssets(state.data.references||[])}}else if(view==="draftsView"){if(full)renderDrafts(state.data.drafts);else updateDraftStatuses(state.data.drafts)}else if(view==="calendarView")renderCalendar();else if(view==="opsView")renderOps(state.data);else if(view==="companyView"&&state.company)renderCompany(state.company);else if(view==="platformView")renderOrganizations(state.organizations)}
-async function refresh(background=false){try{if(!state.me){state.me=await api("api/me");document.querySelector("#currentUser").textContent=state.me.username;if(state.me.is_admin){document.querySelector("#userAdmin").hidden=false;await refreshUsers()}if(state.me.is_super_admin){document.querySelector("#platformTab").hidden=false;await refreshOrganizations()}await refreshCompany()}const d=await api("api/dashboard");state.data=d;renderActive(!background);document.querySelector("#updated").textContent=new Date().toLocaleTimeString("uk-UA")}catch(e){if(e.message.includes("увійти"))location.reload();else if(!background)toast(e.message,true)}}
+function renderActive(full=false){if(!state.data)return;const view=activeView();if(view==="ideasView"){renderIdeas(state.data.ideas);if(full){renderTemplates(state.data.templates||[]);renderLogoOptions(state.data.references||[]);renderAssets(state.data.references||[])}}else if(view==="draftsView"){if(full)renderDrafts(state.data.drafts);else updateDraftStatuses(state.data.drafts)}else if(view==="calendarView")renderCalendar();else if(view==="opsView")renderOps(state.data);else if(view==="companyView"&&state.company)renderCompany(state.company);else if(view==="platformView"){renderOrganizations(state.organizations);if(state.platformUsage)renderPlatformUsage(state.platformUsage)}}
+async function refresh(background=false){try{if(!state.me){state.me=await api("api/me");document.querySelector("#currentUser").textContent=state.me.username;if(state.me.is_admin){document.querySelector("#userAdmin").hidden=false;await refreshUsers()}if(state.me.is_super_admin){document.querySelector("#platformTab").hidden=false;await refreshOrganizations();await refreshPlatformUsage()}await refreshCompany()}const d=await api("api/dashboard");state.data=d;renderActive(!background);document.querySelector("#updated").textContent=new Date().toLocaleTimeString("uk-UA")}catch(e){if(e.message.includes("увійти"))location.reload();else if(!background)toast(e.message,true)}}
 async function generateIdea(id){const idea=state.data.ideas.find(i=>i.id===id);const button=document.querySelector(`[data-idea="${id}"]`);await loading(button,async()=>{await api(`api/ideas/${id}/generate`,{method:"POST",body:JSON.stringify(generationPayload(idea?.product,idea?.tone))});toast("Пост поставлено в чергу генерації");await refresh()},"Додається")}
 function syncRubricControls(){const wave=document.querySelector("#ideaProduct").value==="wave";document.querySelectorAll(".image-setting:not(#customTemplateForm)").forEach(el=>el.hidden=wave);if(wave)document.querySelector("#customTemplateForm").hidden=true;document.querySelector("#waveCoverNotice").hidden=!wave}
 document.querySelector("#ideaProduct").onchange=syncRubricControls;
@@ -1382,6 +1493,7 @@ document.querySelector("#createUser").onclick=async()=>{const username=document.
 document.querySelector("#changeOwnPassword").onclick=async()=>{const password=document.querySelector("#ownPassword").value;if(!password)return toast("Введіть новий пароль");try{await api("api/account/password",{method:"PUT",body:JSON.stringify({password})});location.reload()}catch(e){toast(e.message)}};
 document.querySelector("#saveTelegram").onclick=async()=>{const b=document.querySelector("#saveTelegram");await loading(b,async()=>{await api("api/company/telegram",{method:"PUT",body:JSON.stringify({channel_id:document.querySelector("#companyChannel").value,bot_token:document.querySelector("#companyBotToken").value})});document.querySelector("#companyBotToken").value="";await refreshCompany();toast("Telegram-канал підключено")},"Перевіряється")};
 document.querySelector("#createOrganization").onclick=async()=>{const b=document.querySelector("#createOrganization");await loading(b,async()=>{await api("api/organizations",{method:"POST",body:JSON.stringify({name:document.querySelector("#orgName").value,slug:document.querySelector("#orgSlug").value,owner_username:document.querySelector("#orgOwner").value,owner_password:document.querySelector("#orgPassword").value,max_users:Number(document.querySelector("#orgUsers").value),max_channels:Number(document.querySelector("#orgChannels").value),monthly_publications:Number(document.querySelector("#orgPublications").value),monthly_ai_budget:Number(document.querySelector("#orgBudget").value)})});for(const id of ["orgName","orgSlug","orgOwner","orgPassword"])document.querySelector(`#${id}`).value="";await refreshOrganizations();toast("Компанію та власника створено")},"Створюється")};
+document.querySelector("#usagePeriod").onchange=refreshPlatformUsage;
 document.querySelector("#showCustomTemplate").onclick=()=>document.querySelector("#customTemplateForm").hidden=false;
 document.querySelector("#cancelCustomTemplate").onclick=()=>document.querySelector("#customTemplateForm").hidden=true;
 document.querySelector("#createTemplate").onclick=async()=>{const b=document.querySelector("#createTemplate");await loading(b,async()=>{await api("api/templates",{method:"POST",body:JSON.stringify({name:document.querySelector("#customTemplateName").value,description:document.querySelector("#customTemplateDescription").value,prompt:document.querySelector("#customTemplatePrompt").value,layout:document.querySelector("#customTemplateLayout").value,accent:document.querySelector("#customTemplateAccent").value})});document.querySelector("#customTemplateForm").hidden=true;toast("Шаблон додано. Тепер можна згенерувати його прев’ю.");await refresh()},"Збереження")};
