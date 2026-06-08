@@ -113,6 +113,18 @@ class GenerationWorker:
             except Exception as exc:
                 self._fail(job.id, exc)
 
+        for job in self.repository.jobs_with_status("image_batch"):
+            try:
+                draft = self.repository.get(job.draft_id)
+                image_path = await self.batches.poll_image(job, draft.title)
+                if image_path is None:
+                    continue
+                self.repository.set_draft_image(draft.id, str(image_path))
+                self.repository.update_job(job.id, status="ready")
+                await self._notify_ready(job.id)
+            except Exception as exc:
+                self._fail(job.id, exc)
+
     async def _accept_generated_post(
         self,
         job,
@@ -143,18 +155,6 @@ class GenerationWorker:
                 status="queued_image",
                 draft_id=draft.id,
             )
-
-        for job in self.repository.jobs_with_status("image_batch"):
-            try:
-                draft = self.repository.get(job.draft_id)
-                image_path = await self.batches.poll_image(job, draft.title)
-                if image_path is None:
-                    continue
-                self.repository.set_draft_image(draft.id, str(image_path))
-                self.repository.update_job(job.id, status="ready")
-                await self._notify_ready(job.id)
-            except Exception as exc:
-                self._fail(job.id, exc)
 
     async def _notify_ready(self, job_id: int) -> None:
         job = self.repository.get_job(job_id)
