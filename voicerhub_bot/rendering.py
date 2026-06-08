@@ -122,7 +122,21 @@ def sanitize_telegram_html(value: str) -> str:
     value = decode_html_markup(value)
     parser = _TelegramHTMLSanitizer()
     parser.feed(value)
-    return parser.result()
+    result = parser.result()
+    for tag in ALLOWED_TAGS - {"a"}:
+        result = re.sub(
+            rf"<{tag}><{tag}>",
+            f"<{tag}>",
+            result,
+            flags=re.IGNORECASE,
+        )
+        result = re.sub(
+            rf"</{tag}></{tag}>",
+            f"</{tag}>",
+            result,
+            flags=re.IGNORECASE,
+        )
+    return result
 
 
 def decode_html_markup(value: str) -> str:

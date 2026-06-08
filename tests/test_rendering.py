@@ -104,6 +104,15 @@ def test_enforce_link_repairs_existing_href_without_changing_case() -> None:
     assert 'href="https://voicerhub.com/ua/products/tony"' in result
 
 
+def test_enforce_link_collapses_duplicate_formatting_tags() -> None:
+    result = enforce_link(
+        "<b><b>Сильний заголовок</b></b>",
+        "",
+    )
+
+    assert result == "<b>Сильний заголовок</b>"
+
+
 def test_wave_caption_is_short_and_omits_product_post_sections() -> None:
     caption = render_caption(
         make_post(
