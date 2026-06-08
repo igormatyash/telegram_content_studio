@@ -60,10 +60,16 @@ def normalize_terminology(value: str) -> str:
         r"\bPowerBi\b": "Power BI",
         r"\bGoogle maps\b": "Google Maps",
     }
-    result = value
-    for pattern, replacement in replacements.items():
-        result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
-    return result
+    chunks = re.split(r"(https?://[^\s\"'<>]+)", value)
+    for index in range(0, len(chunks), 2):
+        for pattern, replacement in replacements.items():
+            chunks[index] = re.sub(
+                pattern,
+                replacement,
+                chunks[index],
+                flags=re.IGNORECASE,
+            )
+    return "".join(chunks)
 
 
 def visible_length(value: str) -> int:

@@ -20,7 +20,7 @@ def render_caption(post: GeneratedPost, link_url: str = "") -> str:
         return render_wave_caption(post)
 
     parts = [
-        f"<b>{html.escape(post.title.strip())}</b>",
+        f"<b>{html.escape(plain_text(post.title))}</b>",
         sanitize_telegram_html(post.lead.strip()),
     ]
     parts.extend(
@@ -38,8 +38,8 @@ def render_caption(post: GeneratedPost, link_url: str = "") -> str:
             )
         )
 
-    cta = sanitize_telegram_html(post.cta.strip())
-    if link_url and _safe_url(link_url) and "<a " not in cta:
+    cta = strip_links(sanitize_telegram_html(post.cta.strip()))
+    if link_url and _safe_url(link_url):
         cta = f'<a href="{html.escape(link_url, quote=True)}">{cta}</a>'
     parts.append(cta)
     hashtags = " ".join(filter(None, (normalize_hashtag(tag) for tag in post.hashtags)))
@@ -57,7 +57,7 @@ def render_wave_caption(post: GeneratedPost) -> str:
     if post.cta.strip():
         sentences.append(post.cta.strip())
     body = " ".join(sentences[:4])
-    caption = f"<b>{html.escape(post.title.strip())}</b>\n\n{html.escape(body)}"
+    caption = f"<b>{html.escape(plain_text(post.title))}</b>\n\n{html.escape(body)}"
     if len(caption) > 600:
         raise ValueError(
             f"Generated Voicer Wave caption is {len(caption)} characters; maximum is 600."
@@ -119,9 +119,45 @@ class _TelegramHTMLSanitizer(HTMLParser):
 
 
 def sanitize_telegram_html(value: str) -> str:
+    value = decode_html_markup(value)
     parser = _TelegramHTMLSanitizer()
     parser.feed(value)
     return parser.result()
+
+
+def decode_html_markup(value: str) -> str:
+    result = value
+    for _ in range(3):
+        decoded = html.unescape(result)
+        if decoded == result:
+            break
+        result = decoded
+    return result
+
+
+def plain_text(value: str) -> str:
+    decoded = decode_html_markup(value)
+    decoded = re.sub(r"</?[A-Za-z][^>]*>", "", decoded)
+    return html.unescape(decoded).strip()
+
+
+def strip_links(value: str) -> str:
+    return re.sub(r"</?a(?:\s+[^>]*)?>", "", value, flags=re.IGNORECASE)
+
+
+def enforce_link(caption_html: str, link_url: str) -> str:
+    caption = sanitize_telegram_html(caption_html.strip())
+    if not link_url or not _safe_url(link_url):
+        return caption
+    escaped_url = html.escape(link_url, quote=True)
+    if re.search(r"<a\s", caption, flags=re.IGNORECASE):
+        return re.sub(
+            r'(<a\s+href=")[^"]*(">)',
+            lambda match: f"{match.group(1)}{escaped_url}{match.group(2)}",
+            caption,
+            flags=re.IGNORECASE,
+        )
+    return caption + f'\n\n<a href="{escaped_url}">Детальніше про продукт</a>'
 
 
 def _safe_url(value: str) -> bool:

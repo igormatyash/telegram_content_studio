@@ -28,7 +28,12 @@ from voicerhub_bot.content_tools import (
 )
 from voicerhub_bot.ideas import IdeaGenerator
 from voicerhub_bot.images import ImageGenerator
-from voicerhub_bot.rendering import MAX_CAPTION_LENGTH, sanitize_telegram_html
+from voicerhub_bot.rendering import (
+    MAX_CAPTION_LENGTH,
+    enforce_link,
+    plain_text,
+    sanitize_telegram_html,
+)
 from voicerhub_bot.saas import SaasRepository
 from voicerhub_bot.storage import DraftRepository, TenantRepository
 from voicerhub_bot.visual_templates import DEFAULT_TEMPLATE_ID, VISUAL_TEMPLATES
@@ -230,6 +235,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     repository.for_organization(1).ensure_legacy_rubrics(
         str(Path(__file__).parent / "assets" / "VoicerWave.jpg")
     )
+    for existing_organization_id in saas.organization_ids():
+        repository.for_organization(existing_organization_id).repair_draft_markup()
     idea_generator = IdeaGenerator(settings)
     editorial_tools = EditorialTools(settings)
     billing = BillingService(saas, settings.telegram_bot_token)
@@ -1430,15 +1437,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 status_code=422,
                 detail="Посилання має починатися з http:// або https://",
             )
-        caption_html = sanitize_telegram_html(payload.caption_html.strip())
-        if link_url and "<a " not in caption_html:
-            caption_html += (
-                f'\n\n<a href="{html.escape(link_url, quote=True)}">'
-                "Детальніше про продукт</a>"
-            )
+        caption_html = enforce_link(payload.caption_html, link_url)
         repository.update_draft(
             draft_id,
-            title=payload.title.strip(),
+            title=plain_text(payload.title),
             caption_html=caption_html,
             link_url=link_url,
         )

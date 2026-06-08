@@ -39,6 +39,14 @@ def test_terminology_and_shortening() -> None:
     assert len(shorten_caption("слово " * 400)) <= 950
 
 
+def test_terminology_does_not_modify_urls() -> None:
+    value = normalize_terminology(
+        'TONY: <a href="https://voicerhub.com/ua/products/tony">посилання</a>'
+    )
+
+    assert 'href="https://voicerhub.com/ua/products/tony"' in value
+
+
 def test_page_parser_reads_meta_and_application_json() -> None:
     parser = _PageTextParser()
     parser.feed(

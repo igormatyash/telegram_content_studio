@@ -16,7 +16,7 @@ from voicerhub_bot.knowledge import (
     WAVE_EDITORIAL_RULES,
 )
 from voicerhub_bot.models import BatchRecord, GeneratedPost, GenerationJob
-from voicerhub_bot.rendering import render_caption
+from voicerhub_bot.rendering import plain_text, render_caption
 from voicerhub_bot.storage import DraftRepository
 from voicerhub_bot.visual_templates import get_visual_template
 
@@ -116,12 +116,14 @@ rendered caption concise.
 Output details:
 {output_rules}
 
-The lead, body, bullets and CTA may contain valid Telegram HTML tags. When a
-destination link is supplied, use it naturally in a short clickable CTA rather
-than displaying the raw URL. Generate 3 genuinely different title_options and
-3 CTA options. The main title and CTA must be the strongest options. Generate
-3 to 5 relevant hashtags automatically. Check Ukrainian spelling and always use
-the terminology supplied in the rubric facts.
+The lead, body and bullets may contain valid Telegram HTML tags. The title,
+title_options, CTA and CTA options must be plain text without HTML or escaped
+HTML entities. Never reproduce, rewrite, capitalize or return the destination
+URL; the application inserts the exact user-supplied URL after generation.
+Generate 3 genuinely different title_options and 3 CTA options. The main title
+and CTA must be the strongest options. Generate 3 to 5 relevant hashtags
+automatically. Check Ukrainian spelling and always use the terminology supplied
+in the rubric facts.
 """.strip()
         schema = GeneratedPost.model_json_schema()
         return {
@@ -199,15 +201,17 @@ the terminology supplied in the rubric facts.
         # may return the display name instead of the stable slug, so bind the
         # generated content back to the original job.
         post.product = job.product
-        post.title = normalize_terminology(post.title)
+        post.title = plain_text(normalize_terminology(post.title))
         post.lead = normalize_terminology(post.lead)
         post.body = [normalize_terminology(item) for item in post.body]
         post.bullets = [normalize_terminology(item) for item in post.bullets]
-        post.cta = normalize_terminology(post.cta)
+        post.cta = plain_text(normalize_terminology(post.cta))
         post.title_options = [
-            normalize_terminology(item) for item in post.title_options
+            plain_text(normalize_terminology(item)) for item in post.title_options
         ]
-        post.cta_options = [normalize_terminology(item) for item in post.cta_options]
+        post.cta_options = [
+            plain_text(normalize_terminology(item)) for item in post.cta_options
+        ]
         render_caption(post, job.link_url)
         input_price, output_price = _text_prices(job.text_model)
         if not batch:

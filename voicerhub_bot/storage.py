@@ -448,6 +448,64 @@ class DraftRepository:
             ).fetchall()
         return [row["title"] for row in rows]
 
+    def repair_draft_markup(self) -> int:
+        from voicerhub_bot.rendering import enforce_link, plain_text
+
+        repaired = 0
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, title, caption_html, link_url,
+                    title_options, cta_options
+                FROM drafts
+                """
+            ).fetchall()
+            for row in rows:
+                title = plain_text(row["title"])
+                caption = enforce_link(
+                    row["caption_html"],
+                    row["link_url"] or "",
+                )
+                try:
+                    title_options = [
+                        plain_text(item)
+                        for item in json.loads(row["title_options"] or "[]")
+                    ]
+                except (TypeError, ValueError):
+                    title_options = []
+                try:
+                    cta_options = [
+                        plain_text(item)
+                        for item in json.loads(row["cta_options"] or "[]")
+                    ]
+                except (TypeError, ValueError):
+                    cta_options = []
+                values = (
+                    title,
+                    caption,
+                    json.dumps(title_options, ensure_ascii=False),
+                    json.dumps(cta_options, ensure_ascii=False),
+                )
+                current = (
+                    row["title"],
+                    row["caption_html"],
+                    row["title_options"],
+                    row["cta_options"],
+                )
+                if values == current:
+                    continue
+                connection.execute(
+                    """
+                    UPDATE drafts
+                    SET title = ?, caption_html = ?,
+                        title_options = ?, cta_options = ?
+                    WHERE id = ?
+                    """,
+                    (*values, row["id"]),
+                )
+                repaired += 1
+        return repaired
+
     def ensure_legacy_rubrics(self, wave_cover_path: str = "") -> None:
         from voicerhub_bot.knowledge import (
             EDITORIAL_RULES,

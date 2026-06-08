@@ -176,6 +176,32 @@ def test_usage_can_be_checked_before_retrying_completed_batch(tmp_path: Path) ->
     assert repository.has_usage(42, "image") is False
 
 
+def test_repair_draft_markup_cleans_titles_and_restores_exact_link(tmp_path: Path) -> None:
+    repository = DraftRepository(tmp_path / "repair.sqlite3")
+    draft = repository.create(
+        topic="Тема",
+        product="tony",
+        title="<b>Сильний заголовок</b>",
+        caption_html=(
+            "&lt;b&gt;Сильний заголовок&lt;/b&gt;\n\n"
+            '<a href="https://VoicerHub.com/ua/products/TONY">Детальніше</a>'
+        ),
+        image_prompt="A premium technology scene with a contact center dashboard.",
+        image_path="",
+        link_url="https://voicerhub.com/ua/products/tony",
+        title_options=["<b>Варіант</b>"],
+        cta_options=['<a href="https://example.com">CTA</a>'],
+    )
+
+    assert repository.repair_draft_markup() == 1
+    repaired = repository.draft_record(draft.id)
+    assert repaired["title"] == "Сильний заголовок"
+    assert "<b>Сильний заголовок</b>" in repaired["caption_html"]
+    assert 'href="https://voicerhub.com/ua/products/tony"' in repaired["caption_html"]
+    assert repaired["title_options"] == '["Варіант"]'
+    assert repaired["cta_options"] == '["CTA"]'
+
+
 def test_custom_rubrics_and_social_variants_are_stored_per_tenant(tmp_path: Path) -> None:
     repository = DraftRepository(tmp_path / "company.sqlite3")
     rubric = repository.add_rubric(
