@@ -18,13 +18,13 @@ from voicerhub_bot.auth import AuthRepository, SESSION_DAYS
 from voicerhub_bot.config import Settings, get_settings
 from voicerhub_bot.content_tools import (
     EditorialTools,
+    SOCIAL_PLATFORM_RULES,
     TONE_GUIDANCE,
     closest_duplicate,
     fetch_page_text,
 )
 from voicerhub_bot.ideas import IdeaGenerator
 from voicerhub_bot.images import ImageGenerator
-from voicerhub_bot.models import Product
 from voicerhub_bot.rendering import MAX_CAPTION_LENGTH, sanitize_telegram_html
 from voicerhub_bot.saas import SaasRepository
 from voicerhub_bot.storage import DraftRepository, TenantRepository
@@ -32,7 +32,7 @@ from voicerhub_bot.visual_templates import DEFAULT_TEMPLATE_ID, VISUAL_TEMPLATES
 
 
 class IdeaRequest(BaseModel):
-    product: Product = Product.GENERAL
+    product: str = "all"
     count: int = Field(default=6, ge=1, le=12)
     focus: str = Field(default="", max_length=500)
     text_model: str = "gpt-5.4-mini"
@@ -40,7 +40,7 @@ class IdeaRequest(BaseModel):
 
 
 class ContentPlanRequest(BaseModel):
-    product: Product = Product.GENERAL
+    product: str = "all"
     period: str = Field(default="week", pattern=r"^(week|month)$")
     posts: int = Field(default=5, ge=1, le=31)
     start_date: date
@@ -49,7 +49,7 @@ class ContentPlanRequest(BaseModel):
 
 
 class SeriesRequest(BaseModel):
-    product: Product
+    product: str
     parts: int = Field(default=3, ge=3, le=5)
     topic: str = Field(min_length=10, max_length=500)
     tone: str = "expert"
@@ -59,7 +59,7 @@ class SeriesRequest(BaseModel):
 class MaterialRequest(BaseModel):
     url: str = Field(default="", max_length=1000)
     text: str = Field(default="", max_length=18000)
-    product: Product = Product.GENERAL
+    product: str = "all"
     count: int = Field(default=3, ge=1, le=8)
     tone: str = "expert"
     text_model: str = "gpt-5.4-mini"
@@ -74,6 +74,37 @@ class GenerationRequest(BaseModel):
     company_logo_reference_id: int | None = None
     link_url: str = Field(default="", max_length=500)
     tone: str = "expert"
+
+
+class RubricCreateRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=80)
+    slug: str = Field(min_length=2, max_length=60)
+    description: str = Field(min_length=20, max_length=3000)
+    instructions: str = Field(default="", max_length=3000)
+    default_link: str = Field(default="", max_length=500)
+
+
+class RubricUpdateRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=80)
+    description: str = Field(min_length=20, max_length=3000)
+    instructions: str = Field(default="", max_length=3000)
+    default_link: str = Field(default="", max_length=500)
+    active: bool = True
+
+
+class SocialVariantRequest(BaseModel):
+    platform: str
+    text_model: str = "gpt-5.4-mini"
+    image_model: str = "gpt-image-2"
+    reference_ids: list[int] = Field(default_factory=list, max_length=16)
+    template_id: str = DEFAULT_TEMPLATE_ID
+    logo_reference_id: int | None = None
+    company_logo_reference_id: int | None = None
+
+
+class SocialVariantUpdateRequest(BaseModel):
+    title: str = Field(min_length=3, max_length=160)
+    text_content: str = Field(min_length=20, max_length=3000)
 
 
 TEXT_MODELS = {"gpt-5-mini", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5"}
@@ -188,6 +219,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     auth.ensure_bootstrap_admin(settings.admin_username, settings.admin_password)
     saas = SaasRepository(settings.database_path, settings.app_encryption_key)
     saas.ensure_legacy_organization(channel_id=settings.telegram_channel)
+    repository.for_organization(1).ensure_legacy_rubrics(
+        str(Path(__file__).parent / "assets" / "VoicerWave.jpg")
+    )
     idea_generator = IdeaGenerator(settings)
     editorial_tools = EditorialTools(settings)
     app = FastAPI(title=settings.product_name, docs_url=None, redoc_url=None)
@@ -297,6 +331,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 status_code=409,
                 detail="Місячний ліміт публікацій вичерпано",
             )
+
+    def active_rubrics() -> list[dict]:
+        return repository.list_rubrics()
+
+    def validate_rubric(slug: str, *, allow_all: bool = False) -> None:
+        if allow_all and slug == "all":
+            if not active_rubrics():
+                raise HTTPException(
+                    status_code=409,
+                    detail="Спочатку створіть хоча б одну рубрику",
+                )
+            return
+        try:
+            repository.get_rubric(slug)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="Оберіть активну рубрику компанії",
+            ) from exc
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard(voicerhub_session: str | None = Cookie(default=None)) -> str:
@@ -519,6 +572,57 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "publication_count": repository.current_month_publications(),
         }
 
+    @app.get("/api/rubrics")
+    def rubrics(_: dict = Depends(authorize)) -> list[dict]:
+        return repository.list_rubrics(include_inactive=True)
+
+    @app.post("/api/rubrics")
+    def create_rubric(
+        payload: RubricCreateRequest,
+        user: dict = Depends(authorize_admin),
+    ) -> dict:
+        slug = re.sub(r"[^a-z0-9-]+", "-", payload.slug.lower()).strip("-")
+        if not slug or slug in {"all", "general"}:
+            raise HTTPException(status_code=422, detail="Вкажіть інший slug рубрики")
+        if payload.default_link and not payload.default_link.startswith(("http://", "https://")):
+            raise HTTPException(status_code=422, detail="Посилання має починатися з http:// або https://")
+        try:
+            rubric = repository.add_rubric(
+                slug=slug,
+                name=payload.name.strip(),
+                description=payload.description.strip(),
+                instructions=payload.instructions.strip(),
+                default_link=payload.default_link.strip(),
+            )
+        except Exception as exc:
+            if "UNIQUE constraint failed" in str(exc):
+                raise HTTPException(status_code=409, detail="Такий slug уже існує") from exc
+            raise
+        saas.audit(organization_id(user), user["id"], "rubric.created", slug)
+        return rubric
+
+    @app.put("/api/rubrics/{rubric_id}")
+    def update_rubric(
+        rubric_id: int,
+        payload: RubricUpdateRequest,
+        user: dict = Depends(authorize_admin),
+    ) -> dict:
+        if payload.default_link and not payload.default_link.startswith(("http://", "https://")):
+            raise HTTPException(status_code=422, detail="Посилання має починатися з http:// або https://")
+        try:
+            rubric = repository.update_rubric(
+                rubric_id,
+                name=payload.name.strip(),
+                description=payload.description.strip(),
+                instructions=payload.instructions.strip(),
+                default_link=payload.default_link.strip(),
+                active=payload.active,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Рубрику не знайдено") from exc
+        saas.audit(organization_id(user), user["id"], "rubric.updated", rubric["slug"])
+        return rubric
+
     @app.put("/api/company/telegram")
     async def connect_telegram(
         payload: TelegramConnectionRequest,
@@ -604,6 +708,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/dashboard")
     def dashboard_data(_: dict = Depends(authorize)) -> dict:
         data = repository.dashboard()
+        data["rubrics"] = repository.list_rubrics(include_inactive=True)
         data["templates"] = [
             {**item, "custom": False, "has_preview": True}
             for item in VISUAL_TEMPLATES
@@ -646,7 +751,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for idea in ideas:
             score, duplicate_of = closest_duplicate(idea.title, idea.angle, existing)
             row = {
-                "product": idea.product.value,
+                "product": idea.product,
                 "title": idea.title,
                 "angle": idea.angle,
                 "planned_for": idea.planned_for,
@@ -671,12 +776,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ensure_ai_budget()
         _validate_models(payload.text_model)
         _validate_tone(payload.tone)
+        validate_rubric(payload.product, allow_all=True)
         ideas, input_tokens, output_tokens = await idea_generator.generate(
             payload.product,
             payload.count,
             payload.focus,
             repository.recent_titles(),
             payload.text_model,
+            active_rubrics(),
         )
         record_text_usage(payload.text_model, input_tokens, output_tokens, user["id"])
         saved = save_ideas(ideas.ideas, forced_tone=payload.tone)
@@ -689,6 +796,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict:
         ensure_ai_budget()
         _validate_models(payload.text_model)
+        validate_rubric(payload.product, allow_all=True)
         days = 7 if payload.period == "week" else 30
         plan, input_tokens, output_tokens = await idea_generator.generate_plan(
             product=payload.product,
@@ -698,6 +806,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             start_date=payload.start_date.isoformat(),
             recent_titles=repository.recent_titles(100),
             model=payload.text_model,
+            rubrics=active_rubrics(),
         )
         record_text_usage(payload.text_model, input_tokens, output_tokens, user["id"])
         plan_id = f"plan-{uuid4().hex[:10]}"
@@ -711,6 +820,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ensure_ai_budget()
         _validate_models(payload.text_model)
         _validate_tone(payload.tone)
+        validate_rubric(payload.product)
         ideas, input_tokens, output_tokens = await idea_generator.generate_series(
             product=payload.product,
             parts=payload.parts,
@@ -718,6 +828,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             tone=payload.tone,
             recent_titles=repository.recent_titles(100),
             model=payload.text_model,
+            rubrics=active_rubrics(),
         )
         record_text_usage(payload.text_model, input_tokens, output_tokens, user["id"])
         series_id = f"series-{uuid4().hex[:10]}"
@@ -738,6 +849,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ensure_ai_budget()
         _validate_models(payload.text_model)
         _validate_tone(payload.tone)
+        validate_rubric(payload.product, allow_all=True)
         material = payload.text.strip()
         if not material:
             if not payload.url:
@@ -762,6 +874,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             count=payload.count,
             tone=payload.tone,
             model=payload.text_model,
+            rubrics=active_rubrics(),
         )
         record_text_usage(payload.text_model, input_tokens, output_tokens, user["id"])
         return {
@@ -1000,6 +1113,146 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         media_type = "image/jpeg" if image_path.suffix.lower() in {".jpg", ".jpeg"} else "image/png"
         return FileResponse(image_path, media_type=media_type)
 
+    @app.get("/api/drafts/{draft_id}/social-variants")
+    def social_variants(
+        draft_id: int,
+        _: dict = Depends(authorize),
+    ) -> list[dict]:
+        try:
+            repository.draft_record(draft_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Чернетку не знайдено") from exc
+        return repository.list_social_variants(draft_id)
+
+    @app.post("/api/drafts/{draft_id}/social-variants")
+    async def generate_social_variant(
+        draft_id: int,
+        payload: SocialVariantRequest,
+        user: dict = Depends(authorize_write),
+    ) -> dict:
+        ensure_ai_budget()
+        _validate_models(payload.text_model, payload.image_model)
+        if payload.platform not in SOCIAL_PLATFORM_RULES:
+            raise HTTPException(status_code=422, detail="Ця соцмережа не підтримується")
+        try:
+            draft = repository.draft_record(draft_id)
+            rubric = repository.get_rubric(draft["product"])
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Чернетку або рубрику не знайдено") from exc
+        template_ids = {item["id"] for item in VISUAL_TEMPLATES}
+        template_ids.update(item["id"] for item in repository.list_custom_templates())
+        if payload.template_id not in template_ids:
+            raise HTTPException(status_code=422, detail="Невідомий візуальний шаблон")
+        logo = (
+            repository.get_reference(payload.logo_reference_id)
+            if payload.logo_reference_id
+            else None
+        )
+        company_logo = (
+            repository.get_reference(payload.company_logo_reference_id)
+            if payload.company_logo_reference_id
+            else None
+        )
+        references = repository.references_by_ids(payload.reference_ids)
+        social, input_tokens, output_tokens = await editorial_tools.adapt_for_social(
+            title=draft["title"],
+            telegram_text=re.sub(r"<[^>]+>", "", draft["caption_html"]),
+            platform=payload.platform,
+            rubric=rubric,
+            link_url=draft["link_url"],
+            model=payload.text_model,
+        )
+        record_text_usage(
+            payload.text_model,
+            input_tokens,
+            output_tokens,
+            user["id"],
+        )
+        platform_rules = SOCIAL_PLATFORM_RULES[payload.platform]
+        try:
+            template = repository.get_custom_template(payload.template_id)
+        except KeyError:
+            template = None
+        image_path, response = await image_generator_for(
+            organization_id(user)
+        ).generate(
+            social.title,
+            social.image_prompt,
+            model=payload.image_model,
+            reference_paths=[Path(item["path"]) for item in references],
+            template_id=payload.template_id,
+            logo_path=Path(logo["path"]) if logo else None,
+            company_logo_path=Path(company_logo["path"]) if company_logo else None,
+            template=template,
+            size=platform_rules["api_size"],
+            output_size=platform_rules["output_size"],
+            platform=platform_rules["label"],
+        )
+        usage = getattr(response, "usage", None)
+        repository.add_usage(
+            job_id=0,
+            kind="image",
+            model=payload.image_model,
+            input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+            output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+            units=1,
+            cost=settings.image_standard_price_per_generation,
+            user_id=user["id"],
+        )
+        return repository.save_social_variant(
+            draft_id=draft_id,
+            platform=payload.platform,
+            title=social.title,
+            text_content=social.text,
+            hashtags=social.hashtags,
+            image_prompt=social.image_prompt,
+            image_path=str(image_path),
+            text_model=payload.text_model,
+            image_model=payload.image_model,
+            created_by_user_id=user["id"],
+        )
+
+    @app.put("/api/drafts/{draft_id}/social-variants/{platform}")
+    def update_social_variant(
+        draft_id: int,
+        platform: str,
+        payload: SocialVariantUpdateRequest,
+        _: dict = Depends(authorize_write),
+    ) -> dict:
+        try:
+            current = repository.get_social_variant(draft_id, platform)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Версію не знайдено") from exc
+        return repository.save_social_variant(
+            draft_id=draft_id,
+            platform=platform,
+            title=payload.title.strip(),
+            text_content=payload.text_content.strip(),
+            hashtags=current["hashtags"],
+            image_prompt=current["image_prompt"],
+            image_path=current["image_path"],
+            text_model=current["text_model"],
+            image_model=current["image_model"],
+            created_by_user_id=current["created_by_user_id"],
+        )
+
+    @app.get("/api/drafts/{draft_id}/social-variants/{platform}/image")
+    def social_variant_image(
+        draft_id: int,
+        platform: str,
+        download: bool = False,
+        _: dict = Depends(authorize),
+    ) -> FileResponse:
+        try:
+            variant = repository.get_social_variant(draft_id, platform)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Версію не знайдено") from exc
+        path = Path(variant["image_path"])
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Зображення не знайдено")
+        filename = f"{platform}-post-{draft_id}.png" if download else None
+        return FileResponse(path, media_type="image/png", filename=filename)
+
     @app.get("/wave-cover")
     def wave_cover(_: str = Depends(authorize)) -> FileResponse:
         path = Path(__file__).parent / "assets" / "VoicerWave.jpg"
@@ -1041,10 +1294,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict:
         ensure_ai_budget()
         _validate_generation(payload, repository)
-        if repository.draft_record(draft_id)["product"] == Product.WAVE.value:
+        draft_record = repository.draft_record(draft_id)
+        rubric = repository.get_rubric(draft_record["product"])
+        if rubric.get("fixed_cover_path"):
             raise HTTPException(
                 status_code=409,
-                detail="Voicer Wave uses a fixed cover image",
+                detail="Ця рубрика використовує фіксовану обкладинку",
             )
         job = repository.create_image_job(
             draft_id,
@@ -1192,6 +1447,7 @@ ADMIN_HTML = r"""
     table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line)}th,td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{background:#edf1f5;color:var(--muted);font-size:12px}
     dialog{width:min(1050px,calc(100% - 24px));border:0;border-radius:7px;padding:0;box-shadow:0 24px 80px #10182755}dialog::backdrop{background:#0b1220aa}.editor-head{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line)}
     .editor-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;padding:18px}.editor-grid img{width:100%;aspect-ratio:3/2;object-fit:cover;background:#e8edf2;border:1px solid var(--line)}.editor-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.schedule{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:12px}
+    #socialVariant{margin-top:12px;padding:12px;border:1px solid var(--line);background:#f7f9fb}#socialVariant #socialImage{width:100%;max-height:420px;aspect-ratio:auto;object-fit:contain;background:#eef2f5}.button{display:inline-flex;align-items:center;padding:9px 13px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:var(--ink);font-weight:800;text-decoration:none}
     .notice{position:fixed;right:18px;bottom:18px;max-width:380px;padding:12px 16px;border-radius:5px;background:#111a2d;color:#fff;display:none;z-index:10}.empty{padding:28px;text-align:center;color:var(--muted)}
     .asset-head{display:flex;justify-content:space-between;align-items:center;gap:12px}.asset-upload input{display:none}.assets{display:grid;grid-template-columns:repeat(6,minmax(130px,1fr));gap:10px}.asset{position:relative;background:#fff;border:1px solid var(--line);border-radius:6px;overflow:hidden}.asset.selected{border:2px solid var(--cyan)}.asset img{display:block;width:100%;aspect-ratio:1;object-fit:contain;background:#eef2f5;padding:8px}.asset-info{display:flex;gap:5px;align-items:center;padding:8px}.asset-info span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:700;flex:1}.asset-delete{padding:4px 7px;color:var(--red)}.reference-note{color:var(--muted);margin:6px 0 12px}
     .section-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.templates{display:grid;grid-template-columns:repeat(4,minmax(190px,1fr));gap:10px}.template{position:relative;min-height:210px;text-align:left;padding:0;border:1px solid var(--line);background:#fff;overflow:hidden}.template.selected{border:2px solid var(--cyan);box-shadow:inset 0 0 0 1px var(--cyan)}.template img{display:block;width:100%;aspect-ratio:3/2;object-fit:cover;background:#e8edf2}.template-copy{display:block;padding:11px}.template strong{display:block;margin-bottom:5px}.template span{display:block;color:var(--muted);font-weight:400;font-size:12px}.template-actions{display:flex;gap:6px;padding:0 10px 10px}.template-actions button{padding:5px 8px;font-size:11px}.brand-options{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin:12px 0;padding:14px 16px;background:#fff;border:1px solid var(--line);border-radius:6px}.custom-template{padding:16px;background:#fff;border:1px solid var(--line);display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}.custom-template .wide{grid-column:1/-1}.formatbar{display:flex;flex-wrap:wrap;gap:5px;margin:6px 0}.formatbar button{width:34px;height:32px;padding:0}.pagination{display:flex;justify-content:center;align-items:center;gap:8px;margin:16px 0}.pagination span{color:var(--muted);font-weight:700}
@@ -1218,7 +1474,7 @@ ADMIN_HTML = r"""
 
   <section id="ideasView" class="view active">
     <div class="toolbar">
-      <label>Рубрика<select id="ideaProduct"><option value="general">TONY + Voicer</option><option value="tony">TONY</option><option value="voicer">Voicer</option><option value="wave">Voicer Wave</option></select></label>
+      <label>Рубрика<select id="ideaProduct"></select></label>
       <label>Кількість<input id="ideaCount" type="number" min="1" max="12" value="6"></label>
       <label>Тон<select id="ideaTone"><option value="expert">Експертний</option><option value="sales">Продаючий</option><option value="light">Легкий</option><option value="news">Новинний</option></select></label>
       <label>Фокус або побажання<input id="ideaFocus" placeholder="Наприклад: практичні кейси для відділу продажів"></label>
@@ -1280,13 +1536,13 @@ ADMIN_HTML = r"""
         <label>Період<select id="planPeriod"><option value="week">Тиждень</option><option value="month">Місяць</option></select></label>
         <label>Початок<input id="planStart" type="date"></label>
         <label>Кількість постів<input id="planPosts" type="number" min="1" max="31" value="5"></label>
-        <label>Продукт<select id="planProduct"><option value="general">TONY + Voicer</option><option value="tony">TONY</option><option value="voicer">Voicer</option><option value="wave">Voicer Wave</option></select></label>
+        <label>Рубрика<select id="planProduct"></select></label>
         <label>Фокус<textarea id="planFocus" placeholder="Цілі, аудиторія або основні акценти"></textarea></label>
         <div class="editor-actions"><button class="primary" id="generatePlan">Створити план</button></div>
       </article>
       <article class="planning-panel">
         <h2>Серія постів</h2>
-        <label>Продукт<select id="seriesProduct"><option value="tony">TONY</option><option value="voicer">Voicer</option><option value="wave">Voicer Wave</option></select></label>
+        <label>Рубрика<select id="seriesProduct"></select></label>
         <label>Кількість частин<select id="seriesParts"><option>3</option><option>4</option><option>5</option></select></label>
         <label>Тон<select id="seriesTone"><option value="expert">Експертний</option><option value="sales">Продаючий</option><option value="light">Легкий</option><option value="news">Новинний</option></select></label>
         <label>Тема серії<textarea id="seriesTopic" placeholder="Наприклад: як побудувати контроль якості дзвінків"></textarea></label>
@@ -1296,7 +1552,7 @@ ADMIN_HTML = r"""
         <h2>Матеріал із сайту</h2>
         <label>URL<input id="materialUrl" type="url" placeholder="https://voicerhub.com/ua/..."></label>
         <label>Або текст матеріалу<textarea id="materialText" placeholder="Для сторінок, які не дозволяють автоматичне читання"></textarea></label>
-        <label>Продукт<select id="materialProduct"><option value="general">TONY + Voicer</option><option value="tony">TONY</option><option value="voicer">Voicer</option><option value="wave">Voicer Wave</option></select></label>
+        <label>Рубрика<select id="materialProduct"></select></label>
         <label>Кількість тем<input id="materialCount" type="number" min="1" max="8" value="3"></label>
         <label>Тон<select id="materialTone"><option value="expert">Експертний</option><option value="sales">Продаючий</option><option value="light">Легкий</option><option value="news">Новинний</option></select></label>
         <div class="editor-actions"><button class="primary" id="importMaterial">Створити теми</button></div>
@@ -1354,6 +1610,16 @@ ADMIN_HTML = r"""
       <button class="primary" id="saveTelegram">Перевірити і зберегти</button>
     </div>
     <p class="reference-note">Бот повинен бути адміністратором каналу з правом публікувати повідомлення. Токен зберігається у зашифрованому вигляді.</p>
+    <div class="section-head"><h2>Рубрики компанії</h2><button class="primary" id="showRubricForm">Додати рубрику</button></div>
+    <div id="rubricForm" class="custom-template" hidden>
+      <label>Назва<input id="rubricName" placeholder="Кейси клієнтів"></label>
+      <label>Slug<input id="rubricSlug" placeholder="customer-cases"></label>
+      <label class="wide">Що можна розповідати<textarea id="rubricDescription" placeholder="Опишіть продукт, аудиторію, факти та теми рубрики"></textarea></label>
+      <label class="wide">Редакційні правила<textarea id="rubricInstructions" placeholder="Тон, структура, обмеження, бажані CTA"></textarea></label>
+      <label class="wide">Посилання за замовчуванням<input id="rubricLink" type="url" placeholder="https://company.com/product"></label>
+      <div class="editor-actions"><button class="primary" id="createRubric">Зберегти рубрику</button><button id="cancelRubric">Скасувати</button></div>
+    </div>
+    <div class="scroll"><table><thead><tr><th>Назва</th><th>Slug</th><th>Опис</th><th>Посилання</th><th>Статус</th><th></th></tr></thead><tbody id="rubrics"></tbody></table></div>
   </section>
 
   <section id="platformView" class="view">
@@ -1404,6 +1670,24 @@ ADMIN_HTML = r"""
       <label>Текст Telegram<textarea id="editorCaption"></textarea></label>
       <div class="formatbar" aria-label="Форматування"><button data-format="b" title="Жирний"><b>B</b></button><button data-format="i" title="Курсив"><i>I</i></button><button data-format="u" title="Підкреслений"><u>U</u></button><button data-format="s" title="Закреслений"><s>S</s></button><button data-format="blockquote" title="Цитата">❞</button><button data-format="code" title="Моноширинний">&lt;/&gt;</button><button data-format="tg-spoiler" title="Прихований">◫</button><button id="insertLink" title="Посилання">↗</button></div>
       <label>Посилання<input id="editorLink" type="url" placeholder="https://voicerhub.com/ua/products/tony"></label>
+      <h3>Версії для соцмереж</h3>
+      <div class="editor-actions" id="socialButtons">
+        <button data-social-generate="instagram">Instagram 1080×1350</button>
+        <button data-social-generate="linkedin">LinkedIn 1200×627</button>
+        <button data-social-generate="facebook">Facebook 1200×630</button>
+        <button data-social-generate="x">X 1600×900</button>
+      </div>
+      <div id="socialVariant" hidden>
+        <div class="editor-actions">
+          <strong id="socialPlatform"></strong>
+          <button id="copySocialText">Копіювати текст</button>
+          <a id="downloadSocialImage" class="button" href="#">Завантажити зображення</a>
+        </div>
+        <img id="socialImage" alt="Версія для соцмережі">
+        <label>Заголовок<input id="socialTitle"></label>
+        <label>Текст<textarea id="socialText"></textarea></label>
+        <button id="saveSocialVariant">Зберегти версію</button>
+      </div>
       <div class="modelbar" id="editorVisualSettings">
         <label>Шаблон картинки<select id="editorTemplate"></select></label>
         <label>Логотип продукту<select id="editorLogo"><option value="">Без логотипа</option></select></label>
@@ -1426,16 +1710,16 @@ ADMIN_HTML = r"""
 <script>
 const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const money=v=>`$${Number(v||0).toFixed(4)}`; const short=v=>v?`${v.slice(0,14)}...`:"—";
-const rubricLabel=v=>({wave:"Voicer Wave",tony:"TONY",voicer:"Voicer",general:"TONY + Voicer"}[v]||v);
+const rubricLabel=v=>state.data?.rubrics?.find(r=>r.slug===v)?.name||v;
 const toneLabel=v=>({expert:"Експертний",sales:"Продаючий",light:"Легкий",news:"Новинний"}[v]||v);
 const statusLabels={suggested:"Запропоновано",selected:"У черзі",queued_text:"Очікує генерації тексту",text_batch:"Генерується текст",queued_image:"Очікує генерації зображення",image_batch:"Генерується зображення",ready:"Готово",draft:"Чернетка",scheduled:"Заплановано",published:"Опубліковано",failed:"Помилка",completed:"Завершено",in_progress:"Виконується",cancelled:"Скасовано",expired:"Термін минув"};
 const busyStatuses=new Set(["selected","queued_text","text_batch","queued_image","image_batch","in_progress"]);
-const state={data:null,me:null,company:null,organizations:[],platformUsage:null,draftId:null,currentDraft:null,referenceIds:new Set(),templateId:localStorage.getItem("templateId")||"editorial-dark",calendarDate:new Date(),ideaPage:1,draftPage:1,jobPage:1,pageSize:12,favoritesOnly:false}; const apiUrl=p=>{const u=new URL(p,location.href);u.username="";u.password="";return u};
+const state={data:null,me:null,company:null,organizations:[],platformUsage:null,draftId:null,currentDraft:null,socialPlatform:null,socialVariants:[],referenceIds:new Set(),templateId:localStorage.getItem("templateId")||"editorial-dark",calendarDate:new Date(),ideaPage:1,draftPage:1,jobPage:1,pageSize:12,favoritesOnly:false}; const apiUrl=p=>{const u=new URL(p,location.href);u.username="";u.password="";return u};
 function errorText(detail){if(typeof detail==="string")return detail;if(Array.isArray(detail))return detail.map(x=>x.msg||x.message||JSON.stringify(x)).join("; ");if(detail&&typeof detail==="object")return detail.message||detail.detail||JSON.stringify(detail);return "Невідома помилка"}
 async function api(path,options={}){options.credentials="same-origin";options.headers={...(options.headers||{}),"X-Requested-With":"VoicerHubAdmin"};if(options.body&&!(options.body instanceof FormData))options.headers["Content-Type"]="application/json";const r=await fetch(apiUrl(path),options);if(!r.ok){let d={};try{d=await r.json()}catch{}const fallback={401:"Потрібно увійти знову",403:"Недостатньо прав",404:"Дані не знайдено",409:"Дію зараз неможливо виконати",422:"Перевірте введені дані",500:"Внутрішня помилка сервера"}[r.status]||`Помилка HTTP ${r.status}`;const detail=d.detail===undefined?fallback:errorText(d.detail);throw new Error(detail)}if(r.status===204)return {};return r.json()}
 function toast(text,error=false){const n=document.querySelector("#notice");n.textContent=errorText(text);n.style.background=error?"#8f1d1d":"#111a2d";n.style.display="block";clearTimeout(n.timer);n.timer=setTimeout(()=>n.style.display="none",5000)}
 async function loading(button,work,label="Виконується"){const old=button.innerHTML;button.disabled=true;button.innerHTML=`<span class="spinner"></span>${label}`;try{return await work()}catch(e){toast(e.message,true);return null}finally{button.disabled=false;button.innerHTML=old}}
-const inferredLink=product=>({tony:"https://voicerhub.com/ua/products/tony",voicer:"https://voicerhub.com/ua/products/voicer"}[product]||"");
+const inferredLink=product=>state.data?.rubrics?.find(r=>r.slug===product)?.default_link||"";
 const generationPayload=(product="",tone="")=>{const modal=document.querySelector("#editor");const inEditor=modal.open;return {text_model:document.querySelector("#textModel").value,image_model:document.querySelector("#imageModel").value,reference_ids:[...state.referenceIds],template_id:inEditor?document.querySelector("#editorTemplate").value:state.templateId,logo_reference_id:Number(inEditor?document.querySelector("#editorLogo").value:document.querySelector("#logoReference").value)||null,company_logo_reference_id:Number(inEditor?document.querySelector("#editorCompanyLogo").value:document.querySelector("#companyLogoReference").value)||null,link_url:(inEditor?document.querySelector("#editorLink").value:document.querySelector("#defaultLink").value)||inferredLink(product),tone:tone||document.querySelector("#ideaTone").value}};
 for(const id of ["textModel","imageModel"]){const el=document.querySelector(`#${id}`);el.value=localStorage.getItem(id)||el.value;el.onchange=()=>localStorage.setItem(id,el.value)}
 document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{document.querySelectorAll(".tab,.view").forEach(x=>x.classList.remove("active"));b.classList.add("active");document.querySelector(`#${b.dataset.view}`).classList.add("active");renderActive(true)});
@@ -1449,6 +1733,7 @@ function renderDrafts(drafts){const filtered=state.favoritesOnly?drafts.filter(d
 function updateDraftStatuses(drafts){for(const d of drafts){const card=document.querySelector(`[data-draft-card="${d.id}"]`);if(card){const el=card.querySelector(".status");el.className=`status ${d.status}`;el.textContent=statusLabels[d.status]||d.status}}}
 function renderUsers(users){document.querySelector("#users").innerHTML=users.map(u=>`<tr><td><strong>${esc(u.username)}</strong></td><td>${u.is_admin?"Адміністратор":"Редактор"}</td><td class="status ${u.active?"ready":"failed"}">${u.active?"Активний":"Заблокований"}</td><td>${esc(new Date(`${u.created_at}Z`).toLocaleDateString("uk-UA"))}</td><td><div class="user-actions"><button data-role-user="${u.id}">${u.is_admin?"Зробити редактором":"Зробити адміністратором"}</button><button data-active-user="${u.id}" class="${u.active?"danger":""}">${u.active?"Заблокувати":"Активувати"}</button><button data-password-user="${u.id}">Новий пароль</button></div></td></tr>`).join("");document.querySelectorAll("[data-role-user]").forEach(b=>b.onclick=async()=>{const u=users.find(x=>x.id===Number(b.dataset.roleUser));await api(`api/users/${u.id}`,{method:"PATCH",body:JSON.stringify({is_admin:!u.is_admin})});refreshUsers()});document.querySelectorAll("[data-active-user]").forEach(b=>b.onclick=async()=>{const u=users.find(x=>x.id===Number(b.dataset.activeUser));await api(`api/users/${u.id}`,{method:"PATCH",body:JSON.stringify({active:!u.active})});refreshUsers()});document.querySelectorAll("[data-password-user]").forEach(b=>b.onclick=async()=>{const password=prompt("Новий пароль, мінімум 10 символів");if(!password)return;await api(`api/users/${b.dataset.passwordUser}/password`,{method:"PUT",body:JSON.stringify({password})});toast("Пароль змінено")})}
 function renderCompany(company){state.company=company;document.querySelector("#currentCompany").textContent=company.name;document.querySelector("#companyCards").innerHTML=`<div class="company-card"><span>Компанія</span><strong>${esc(company.name)}</strong></div><div class="company-card"><span>Користувачі</span><strong>${company.user_count} / ${company.max_users}</strong></div><div class="company-card"><span>Telegram-канали</span><strong>${company.telegram?.configured?"1 підключено":`0 / ${company.max_channels}`}</strong></div><div class="company-card"><span>Публікації цього місяця</span><strong>${company.publication_count} / ${company.monthly_publications}</strong></div><div class="company-card"><span>AI-витрати цього місяця</span><strong>${money(company.ai_spend)} / $${Number(company.monthly_ai_budget).toFixed(0)}</strong></div>`;document.querySelector("#companyChannel").value=company.telegram?.channel_id||""}
+function renderRubrics(items){const active=items.filter(r=>r.active);document.querySelector("#rubrics").innerHTML=items.map(r=>`<tr><td><strong>${esc(r.name)}</strong></td><td class="masked">${esc(r.slug)}</td><td>${esc(r.description.slice(0,160))}</td><td>${r.default_link?`<a href="${esc(r.default_link)}" target="_blank">Відкрити</a>`:"—"}</td><td class="status ${r.active?"ready":"failed"}">${r.active?"Активна":"Вимкнена"}</td><td><button data-toggle-rubric="${r.id}">${r.active?"Вимкнути":"Увімкнути"}</button></td></tr>`).join("")||`<tr><td colspan="6" class="empty">Створіть першу рубрику компанії</td></tr>`;const options=active.map(r=>`<option value="${esc(r.slug)}">${esc(r.name)}</option>`).join("");for(const id of ["ideaProduct","planProduct","materialProduct"]){const select=document.querySelector(`#${id}`),current=select.value;select.innerHTML=`<option value="all">Усі рубрики</option>${options}`;if([...select.options].some(o=>o.value===current))select.value=current}const series=document.querySelector("#seriesProduct"),seriesCurrent=series.value;series.innerHTML=options;if([...series.options].some(o=>o.value===seriesCurrent))series.value=seriesCurrent;syncRubricControls();document.querySelectorAll("[data-toggle-rubric]").forEach(b=>b.onclick=async()=>{const r=items.find(x=>x.id===Number(b.dataset.toggleRubric));await api(`api/rubrics/${r.id}`,{method:"PUT",body:JSON.stringify({name:r.name,description:r.description,instructions:r.instructions,default_link:r.default_link,active:!r.active})});await refresh()})}
 function renderOrganizations(items){state.organizations=items;document.querySelector("#organizations").innerHTML=items.map(o=>`<tr><td>${o.id}</td><td><strong>${esc(o.name)}</strong></td><td class="masked">${esc(o.slug)}</td><td>${o.monthly_publications} публікацій<br>$${Number(o.monthly_ai_budget).toFixed(0)} AI</td><td>${o.user_count} / ${o.max_users}</td><td class="status ${o.active?"ready":"failed"}">${o.active?"Активна":"Заблокована"}</td></tr>`).join("")}
 const number=value=>Number(value||0).toLocaleString("uk-UA");
 function renderPlatformUsage(report){state.platformUsage=report;const t=report.totals;document.querySelector("#platformUsageTotals").innerHTML=`<div class="metric"><span>Витрати</span><strong>${money(t.cost)}</strong></div><div class="metric"><span>Текстові генерації</span><strong>${number(t.text_generations)}</strong></div><div class="metric"><span>Зображення</span><strong>${number(t.image_generations)}</strong></div><div class="metric"><span>Токени</span><strong>${number(t.input_tokens+t.output_tokens)}</strong></div>`;document.querySelector("#companyUsage").innerHTML=report.companies.map(r=>`<tr><td><strong>${esc(r.organization_name)}</strong></td><td>${number(r.text_generations)}</td><td>${number(r.image_generations)}</td><td>${number(r.input_tokens)}</td><td>${number(r.output_tokens)}</td><td>${money(r.cost)}</td></tr>`).join("")||`<tr><td colspan="6" class="empty">Немає використання за цей період</td></tr>`;document.querySelector("#userUsage").innerHTML=report.users.map(r=>`<tr><td>${esc(r.organization_name)}</td><td><strong>${esc(r.username)}</strong></td><td>${number(r.text_generations)}</td><td>${number(r.image_generations)}</td><td>${number(r.input_tokens+r.output_tokens)}</td><td>${money(r.cost)}</td></tr>`).join("")||`<tr><td colspan="6" class="empty">Немає використання за цей період</td></tr>`;document.querySelector("#modelUsage").innerHTML=report.models.map(r=>`<tr><td>${esc(r.organization_name)}</td><td>${r.kind==="text"?"Текст":"Зображення"}</td><td class="masked">${esc(r.model)}</td><td>${number(r.operations)}</td><td>${r.kind==="text"?`${number(r.input_tokens)} / ${number(r.output_tokens)}`:number(r.units)}</td><td>${money(r.cost)}</td></tr>`).join("")||`<tr><td colspan="6" class="empty">Немає використання за цей період</td></tr>`}
@@ -1461,10 +1746,10 @@ async function refreshCompany(){try{renderCompany(await api("api/company"))}catc
 async function refreshOrganizations(){if(!state.me?.is_super_admin)return;try{renderOrganizations(await api("api/organizations"))}catch(e){toast(e.message,true)}}
 async function refreshPlatformUsage(){if(!state.me?.is_super_admin)return;try{renderPlatformUsage(await api(`api/platform/usage?period=${document.querySelector("#usagePeriod").value}`))}catch(e){toast(e.message,true)}}
 function activeView(){return document.querySelector(".view.active")?.id}
-function renderActive(full=false){if(!state.data)return;const view=activeView();if(view==="ideasView"){renderIdeas(state.data.ideas);if(full){renderTemplates(state.data.templates||[]);renderLogoOptions(state.data.references||[]);renderAssets(state.data.references||[])}}else if(view==="draftsView"){if(full)renderDrafts(state.data.drafts);else updateDraftStatuses(state.data.drafts)}else if(view==="calendarView")renderCalendar();else if(view==="opsView")renderOps(state.data);else if(view==="companyView"&&state.company)renderCompany(state.company);else if(view==="platformView"){renderOrganizations(state.organizations);if(state.platformUsage)renderPlatformUsage(state.platformUsage)}}
+function renderActive(full=false){if(!state.data)return;renderRubrics(state.data.rubrics||[]);const view=activeView();if(view==="ideasView"){renderIdeas(state.data.ideas);if(full){renderTemplates(state.data.templates||[]);renderLogoOptions(state.data.references||[]);renderAssets(state.data.references||[])}}else if(view==="draftsView"){if(full)renderDrafts(state.data.drafts);else updateDraftStatuses(state.data.drafts)}else if(view==="calendarView")renderCalendar();else if(view==="opsView")renderOps(state.data);else if(view==="companyView"&&state.company)renderCompany(state.company);else if(view==="platformView"){renderOrganizations(state.organizations);if(state.platformUsage)renderPlatformUsage(state.platformUsage)}}
 async function refresh(background=false){try{if(!state.me){state.me=await api("api/me");document.querySelector("#currentUser").textContent=state.me.username;if(state.me.is_admin){document.querySelector("#userAdmin").hidden=false;await refreshUsers()}if(state.me.is_super_admin){document.querySelector("#platformTab").hidden=false;await refreshOrganizations();await refreshPlatformUsage()}await refreshCompany()}const d=await api("api/dashboard");state.data=d;renderActive(!background);document.querySelector("#updated").textContent=new Date().toLocaleTimeString("uk-UA")}catch(e){if(e.message.includes("увійти"))location.reload();else if(!background)toast(e.message,true)}}
 async function generateIdea(id){const idea=state.data.ideas.find(i=>i.id===id);const button=document.querySelector(`[data-idea="${id}"]`);await loading(button,async()=>{await api(`api/ideas/${id}/generate`,{method:"POST",body:JSON.stringify(generationPayload(idea?.product,idea?.tone))});toast("Пост поставлено в чергу генерації");await refresh()},"Додається")}
-function syncRubricControls(){const wave=document.querySelector("#ideaProduct").value==="wave";document.querySelectorAll(".image-setting:not(#customTemplateForm)").forEach(el=>el.hidden=wave);if(wave)document.querySelector("#customTemplateForm").hidden=true;document.querySelector("#waveCoverNotice").hidden=!wave}
+function syncRubricControls(){const rubric=state.data?.rubrics?.find(r=>r.slug===document.querySelector("#ideaProduct").value);const fixed=!!rubric?.fixed_cover_path;document.querySelectorAll(".image-setting:not(#customTemplateForm)").forEach(el=>el.hidden=fixed);if(fixed)document.querySelector("#customTemplateForm").hidden=true;document.querySelector("#waveCoverNotice").hidden=!fixed}
 document.querySelector("#ideaProduct").onchange=syncRubricControls;
 document.querySelector("#generateIdeas").onclick=async()=>{const b=document.querySelector("#generateIdeas");await loading(b,async()=>{await api("api/ideas/generate",{method:"POST",body:JSON.stringify({product:document.querySelector("#ideaProduct").value,count:Number(document.querySelector("#ideaCount").value),focus:document.querySelector("#ideaFocus").value,text_model:document.querySelector("#textModel").value,tone:document.querySelector("#ideaTone").value})});state.ideaPage=1;toast("Нові теми готові");await refresh()},"Генерується")};
 document.querySelector("#planStart").value=new Date().toISOString().slice(0,10);
@@ -1475,7 +1760,8 @@ document.querySelector("#referenceUpload").onchange=async e=>{const files=[...e.
 document.querySelector("#toggleFavorites").onclick=()=>{state.favoritesOnly=!state.favoritesOnly;state.draftPage=1;document.querySelector("#toggleFavorites").textContent=state.favoritesOnly?"← Усі чернетки":"☆ Показати вдалі приклади";renderDrafts(state.data.drafts)};
 document.querySelector("#generateSelected").onclick=async()=>{const ids=[...document.querySelectorAll(".ideaCheck:checked")].map(x=>x.value);for(const id of ids)await generateIdea(id);if(!ids.length)toast("Оберіть хоча б одну тему")};
 const jsonList=value=>{try{return JSON.parse(value||"[]")}catch{return[]}};
-async function openDraft(id){try{const d=await api(`api/drafts/${id}`);const wave=d.product==="wave";state.draftId=id;state.currentDraft=d;document.querySelector("#editorTitle").value=d.title;document.querySelector("#editorCaption").value=d.caption_html;document.querySelector("#editorLink").value=d.link_url||"";document.querySelector("#titleVariants").innerHTML=jsonList(d.title_options).map(x=>`<button data-title-option="${esc(x)}">${esc(x)}</button>`).join("");document.querySelector("#ctaVariants").innerHTML=jsonList(d.cta_options).map(x=>`<button data-cta-option="${esc(x)}">${esc(x)}</button>`).join("");document.querySelectorAll("[data-title-option]").forEach(b=>b.onclick=()=>document.querySelector("#editorTitle").value=b.dataset.titleOption);document.querySelectorAll("[data-cta-option]").forEach(b=>b.onclick=()=>{const area=document.querySelector("#editorCaption");area.value=`${area.value.trim()}\\n\\n${b.dataset.ctaOption}`});const favorite=document.querySelector("#favoriteDraft");favorite.textContent=d.is_favorite?"★ У прикладах":"☆ До прикладів";favorite.classList.toggle("favorite",!!d.is_favorite);document.querySelector("#editorTemplate").value=state.templateId;document.querySelector("#editorLogo").value=document.querySelector("#logoReference").value;document.querySelector("#editorCompanyLogo").value=document.querySelector("#companyLogoReference").value;document.querySelector("#editorImage").src=`api/drafts/${id}/image`;document.querySelector("#regenImage").hidden=wave;document.querySelector("#editorVisualSettings").hidden=wave;document.querySelector("#cancelSchedule").style.display=d.status==="scheduled"?"inline-block":"none";document.querySelector("#editor").showModal()}catch(e){toast(e.message,true)}}
+function showSocialVariant(v){state.socialPlatform=v.platform;document.querySelector("#socialVariant").hidden=false;document.querySelector("#socialPlatform").textContent=({instagram:"Instagram",linkedin:"LinkedIn",facebook:"Facebook",x:"X"}[v.platform]||v.platform);document.querySelector("#socialTitle").value=v.title;document.querySelector("#socialText").value=v.text_content;document.querySelector("#socialImage").src=`api/drafts/${state.draftId}/social-variants/${v.platform}/image?v=${Date.now()}`;document.querySelector("#downloadSocialImage").href=`api/drafts/${state.draftId}/social-variants/${v.platform}/image?download=true`}
+async function openDraft(id){try{const d=await api(`api/drafts/${id}`);const rubric=state.data?.rubrics?.find(r=>r.slug===d.product);const fixed=!!rubric?.fixed_cover_path;state.draftId=id;state.currentDraft=d;state.socialVariants=await api(`api/drafts/${id}/social-variants`);state.socialPlatform=null;document.querySelector("#socialVariant").hidden=true;document.querySelector("#editorTitle").value=d.title;document.querySelector("#editorCaption").value=d.caption_html;document.querySelector("#editorLink").value=d.link_url||"";document.querySelector("#titleVariants").innerHTML=jsonList(d.title_options).map(x=>`<button data-title-option="${esc(x)}">${esc(x)}</button>`).join("");document.querySelector("#ctaVariants").innerHTML=jsonList(d.cta_options).map(x=>`<button data-cta-option="${esc(x)}">${esc(x)}</button>`).join("");document.querySelectorAll("[data-title-option]").forEach(b=>b.onclick=()=>document.querySelector("#editorTitle").value=b.dataset.titleOption);document.querySelectorAll("[data-cta-option]").forEach(b=>b.onclick=()=>{const area=document.querySelector("#editorCaption");area.value=`${area.value.trim()}\\n\\n${b.dataset.ctaOption}`});const favorite=document.querySelector("#favoriteDraft");favorite.textContent=d.is_favorite?"★ У прикладах":"☆ До прикладів";favorite.classList.toggle("favorite",!!d.is_favorite);document.querySelector("#editorTemplate").value=state.templateId;document.querySelector("#editorLogo").value=document.querySelector("#logoReference").value;document.querySelector("#editorCompanyLogo").value=document.querySelector("#companyLogoReference").value;document.querySelector("#editorImage").src=`api/drafts/${id}/image`;document.querySelector("#regenImage").hidden=fixed;document.querySelector("#editorVisualSettings").hidden=fixed;document.querySelector("#cancelSchedule").style.display=d.status==="scheduled"?"inline-block":"none";document.querySelectorAll("[data-social-generate]").forEach(b=>{const existing=state.socialVariants.find(v=>v.platform===b.dataset.socialGenerate);b.textContent=existing?`Відкрити ${b.dataset.socialGenerate}`:b.textContent});document.querySelector("#editor").showModal()}catch(e){toast(e.message,true)}}
 document.querySelector("#closeEditor").onclick=()=>document.querySelector("#editor").close();
 document.querySelector("#saveDraft").onclick=async()=>{const b=document.querySelector("#saveDraft");await loading(b,async()=>{await api(`api/drafts/${state.draftId}`,{method:"PUT",body:JSON.stringify({title:document.querySelector("#editorTitle").value,caption_html:document.querySelector("#editorCaption").value,link_url:document.querySelector("#editorLink").value})});toast("Зміни збережено");await refresh(true)},"Збереження")};
 document.querySelector("#regenImage").onclick=async()=>{const b=document.querySelector("#regenImage");await loading(b,async()=>{await api(`api/drafts/${state.draftId}/regenerate-image`,{method:"POST",body:JSON.stringify(generationPayload())});document.querySelector("#editor").close();toast("Нова картинка поставлена в чергу");await refresh(true)},"Додається")};
@@ -1492,11 +1778,17 @@ document.querySelector("#logout").onclick=async()=>{await api("api/logout",{meth
 document.querySelector("#createUser").onclick=async()=>{const username=document.querySelector("#newUsername").value;const password=document.querySelector("#newPassword").value;try{await api("api/users",{method:"POST",body:JSON.stringify({username,password,is_admin:document.querySelector("#newIsAdmin").checked})});document.querySelector("#newUsername").value="";document.querySelector("#newPassword").value="";document.querySelector("#newIsAdmin").checked=false;toast("Користувача додано");refreshUsers()}catch(e){toast(e.message)}};
 document.querySelector("#changeOwnPassword").onclick=async()=>{const password=document.querySelector("#ownPassword").value;if(!password)return toast("Введіть новий пароль");try{await api("api/account/password",{method:"PUT",body:JSON.stringify({password})});location.reload()}catch(e){toast(e.message)}};
 document.querySelector("#saveTelegram").onclick=async()=>{const b=document.querySelector("#saveTelegram");await loading(b,async()=>{await api("api/company/telegram",{method:"PUT",body:JSON.stringify({channel_id:document.querySelector("#companyChannel").value,bot_token:document.querySelector("#companyBotToken").value})});document.querySelector("#companyBotToken").value="";await refreshCompany();toast("Telegram-канал підключено")},"Перевіряється")};
+document.querySelector("#showRubricForm").onclick=()=>document.querySelector("#rubricForm").hidden=false;
+document.querySelector("#cancelRubric").onclick=()=>document.querySelector("#rubricForm").hidden=true;
+document.querySelector("#createRubric").onclick=async()=>{const b=document.querySelector("#createRubric");await loading(b,async()=>{await api("api/rubrics",{method:"POST",body:JSON.stringify({name:document.querySelector("#rubricName").value,slug:document.querySelector("#rubricSlug").value,description:document.querySelector("#rubricDescription").value,instructions:document.querySelector("#rubricInstructions").value,default_link:document.querySelector("#rubricLink").value})});for(const id of ["rubricName","rubricSlug","rubricDescription","rubricInstructions","rubricLink"])document.querySelector(`#${id}`).value="";document.querySelector("#rubricForm").hidden=true;toast("Рубрику створено");await refresh()},"Збереження")};
 document.querySelector("#createOrganization").onclick=async()=>{const b=document.querySelector("#createOrganization");await loading(b,async()=>{await api("api/organizations",{method:"POST",body:JSON.stringify({name:document.querySelector("#orgName").value,slug:document.querySelector("#orgSlug").value,owner_username:document.querySelector("#orgOwner").value,owner_password:document.querySelector("#orgPassword").value,max_users:Number(document.querySelector("#orgUsers").value),max_channels:Number(document.querySelector("#orgChannels").value),monthly_publications:Number(document.querySelector("#orgPublications").value),monthly_ai_budget:Number(document.querySelector("#orgBudget").value)})});for(const id of ["orgName","orgSlug","orgOwner","orgPassword"])document.querySelector(`#${id}`).value="";await refreshOrganizations();toast("Компанію та власника створено")},"Створюється")};
 document.querySelector("#usagePeriod").onchange=refreshPlatformUsage;
 document.querySelector("#showCustomTemplate").onclick=()=>document.querySelector("#customTemplateForm").hidden=false;
 document.querySelector("#cancelCustomTemplate").onclick=()=>document.querySelector("#customTemplateForm").hidden=true;
 document.querySelector("#createTemplate").onclick=async()=>{const b=document.querySelector("#createTemplate");await loading(b,async()=>{await api("api/templates",{method:"POST",body:JSON.stringify({name:document.querySelector("#customTemplateName").value,description:document.querySelector("#customTemplateDescription").value,prompt:document.querySelector("#customTemplatePrompt").value,layout:document.querySelector("#customTemplateLayout").value,accent:document.querySelector("#customTemplateAccent").value})});document.querySelector("#customTemplateForm").hidden=true;toast("Шаблон додано. Тепер можна згенерувати його прев’ю.");await refresh()},"Збереження")};
+document.querySelectorAll("[data-social-generate]").forEach(b=>b.onclick=()=>loading(b,async()=>{const platform=b.dataset.socialGenerate;const existing=state.socialVariants.find(v=>v.platform===platform);if(existing){showSocialVariant(existing);return}const v=await api(`api/drafts/${state.draftId}/social-variants`,{method:"POST",body:JSON.stringify({platform,text_model:document.querySelector("#textModel").value,image_model:document.querySelector("#imageModel").value,reference_ids:[...state.referenceIds],template_id:document.querySelector("#editorTemplate").value,logo_reference_id:Number(document.querySelector("#editorLogo").value)||null,company_logo_reference_id:Number(document.querySelector("#editorCompanyLogo").value)||null})});state.socialVariants.push(v);showSocialVariant(v);toast("Версію для соцмережі створено")},"Генерується"));
+document.querySelector("#copySocialText").onclick=async()=>{const v=state.socialVariants.find(x=>x.platform===state.socialPlatform);const hashtags=v?.hashtags?.map(x=>x.startsWith("#")?x:`#${x}`).join(" ")||"";await navigator.clipboard.writeText(`${document.querySelector("#socialTitle").value}\\n\\n${document.querySelector("#socialText").value}${hashtags?`\\n\\n${hashtags}`:""}`);toast("Текст скопійовано")};
+document.querySelector("#saveSocialVariant").onclick=async()=>{const v=await api(`api/drafts/${state.draftId}/social-variants/${state.socialPlatform}`,{method:"PUT",body:JSON.stringify({title:document.querySelector("#socialTitle").value,text_content:document.querySelector("#socialText").value})});state.socialVariants=state.socialVariants.map(x=>x.platform===v.platform?v:x);showSocialVariant(v);toast("Версію збережено")};
 function wrapSelection(tag,attrs=""){const area=document.querySelector("#editorCaption");const start=area.selectionStart,end=area.selectionEnd,selected=area.value.slice(start,end)||"текст";const open=`<${tag}${attrs}>`,close=`</${tag}>`;area.setRangeText(open+selected+close,start,end,"select");area.focus()}
 document.querySelectorAll("[data-format]").forEach(b=>b.onclick=()=>wrapSelection(b.dataset.format));
 document.querySelector("#insertLink").onclick=()=>{const url=prompt("Вставте URL посилання");if(url)wrapSelection("a",` href="${url.replace(/"/g,"&quot;")}"`)};

@@ -15,7 +15,7 @@ from voicerhub_bot.knowledge import (
     PRODUCT_FACTS,
     WAVE_EDITORIAL_RULES,
 )
-from voicerhub_bot.models import BatchRecord, GeneratedPost, GenerationJob, Product
+from voicerhub_bot.models import BatchRecord, GeneratedPost, GenerationJob
 from voicerhub_bot.rendering import render_caption
 from voicerhub_bot.storage import DraftRepository
 from voicerhub_bot.visual_templates import get_visual_template
@@ -37,24 +37,19 @@ class BatchOrchestrator:
         )
 
     async def submit_text(self, job: GenerationJob) -> str:
-        product = Product(job.product)
-        if product == Product.WAVE:
-            facts = "Evergreen, educational and verifiable facts about artificial intelligence."
-            rules = WAVE_EDITORIAL_RULES
+        rubric = self.repository.get_rubric(job.product)
+        fixed_cover = bool(rubric.get("fixed_cover_path"))
+        facts = rubric["description"]
+        rules = rubric.get("instructions") or EDITORIAL_RULES
+        if fixed_cover:
             output_rules = """
-This is a Voicer Wave post. Set product to "wave". Put the first sentence in
+This rubric uses a fixed cover. Put the first sentence in
 lead, one or two short sentences in body, and the final sentence or thoughtful
 question in cta. Include 3 placeholder hashtags only to satisfy the schema;
-they will not be rendered. Use a short generic image_prompt because the fixed
-Voicer Wave cover will be used instead of image generation.
+they will not be rendered. Use a short generic image_prompt because a fixed
+cover will be used instead of image generation.
 """.strip()
         else:
-            facts = (
-                "\n\n".join(PRODUCT_FACTS.values())
-                if product == Product.GENERAL
-                else PRODUCT_FACTS[product.value]
-            )
-            rules = EDITORIAL_RULES
             output_rules = """
 Keep the rendered caption under 850 characters. The image_prompt must be in
 English and must request no text or logos.
@@ -67,12 +62,11 @@ English and must request no text or logos.
             for index, item in enumerate(favorites)
         ) or "No approved examples yet."
         prompt = f"""
-You are the Ukrainian-language editor of the VoicerHub Telegram channel.
+You are a Ukrainian-language social media editor.
 
-Company:
-{COMPANY_CONTEXT}
-
-Approved product facts:
+Rubric name: {rubric["name"]}
+Rubric slug: {rubric["slug"]}
+Approved rubric facts:
 {facts}
 
 Rules:
@@ -104,7 +98,7 @@ destination link is supplied, use it naturally in a short clickable CTA rather
 than displaying the raw URL. Generate 3 genuinely different title_options and
 3 CTA options. The main title and CTA must be the strongest options. Generate
 3 to 5 relevant hashtags automatically. Check Ukrainian spelling and always use
-the exact product spellings Voicer, TONY and VoicerHub.
+the terminology supplied in the rubric facts.
 """.strip()
         schema = GeneratedPost.model_json_schema()
         request = {

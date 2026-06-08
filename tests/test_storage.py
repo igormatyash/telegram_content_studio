@@ -1,5 +1,8 @@
 from pathlib import Path
 
+from PIL import Image
+
+from voicerhub_bot.images import ImageGenerator
 from voicerhub_bot.storage import DraftRepository
 
 
@@ -152,3 +155,48 @@ def test_usage_inherits_user_from_generation_job(tmp_path: Path) -> None:
     assert report["totals"]["output_tokens"] == 80
     assert report["users"][0]["user_id"] == 42
     assert report["users"][0]["text_generations"] == 1
+
+
+def test_custom_rubrics_and_social_variants_are_stored_per_tenant(tmp_path: Path) -> None:
+    repository = DraftRepository(tmp_path / "company.sqlite3")
+    rubric = repository.add_rubric(
+        slug="customer-cases",
+        name="Кейси клієнтів",
+        description="Практичні історії про задачі клієнтів, рішення та отриману користь.",
+        instructions="Не вигадувати назви клієнтів або метрики.",
+        default_link="https://example.com/cases",
+    )
+    draft = repository.create(
+        topic="Автоматизація підтримки",
+        product=rubric["slug"],
+        title="Як команда скоротила ручну роботу",
+        caption_html="<b>Кейс</b>\n\nКорисний приклад.",
+        image_prompt="A customer support automation case study.",
+        image_path="/tmp/telegram.png",
+    )
+
+    variant = repository.save_social_variant(
+        draft_id=draft.id,
+        platform="linkedin",
+        title="Практичний кейс автоматизації",
+        text_content="Готовий професійний текст для LinkedIn.",
+        hashtags=["automation", "cx"],
+        image_prompt="A professional customer experience team.",
+        image_path="/tmp/linkedin.png",
+        text_model="gpt-5.4-mini",
+        image_model="gpt-image-2",
+        created_by_user_id=7,
+    )
+
+    assert repository.get_rubric("customer-cases")["name"] == "Кейси клієнтів"
+    assert variant["hashtags"] == ["automation", "cx"]
+    assert repository.draft_record(draft.id)["image_path"] == "/tmp/telegram.png"
+
+
+def test_social_image_is_cropped_to_exact_platform_size(tmp_path: Path) -> None:
+    source = tmp_path / "social.png"
+    Image.new("RGB", (1024, 1536), "navy").save(source)
+
+    ImageGenerator._fit_output(source, (1080, 1350))
+
+    assert Image.open(source).size == (1080, 1350)

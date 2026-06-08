@@ -21,7 +21,7 @@ class Tone(StrEnum):
 class GeneratedPost(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    product: Product
+    product: str = Field(min_length=1, max_length=60)
     title: str = Field(min_length=8, max_length=90)
     lead: str = Field(min_length=20, max_length=260)
     body: list[str] = Field(min_length=1, max_length=3)
@@ -36,7 +36,7 @@ class GeneratedPost(BaseModel):
 class ContentIdea(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    product: Product
+    product: str = Field(min_length=1, max_length=60)
     title: str = Field(min_length=8, max_length=120)
     angle: str = Field(min_length=20, max_length=300)
     planned_for: str = ""
@@ -55,6 +55,15 @@ class ContentPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     ideas: list[ContentIdea] = Field(min_length=1, max_length=31)
+
+
+class SocialPost(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=3, max_length=160)
+    text: str = Field(min_length=20, max_length=3000)
+    hashtags: list[str] = Field(default_factory=list, max_length=15)
+    image_prompt: str = Field(min_length=30, max_length=900)
 
 
 @dataclass(slots=True)

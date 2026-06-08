@@ -89,6 +89,10 @@ class SaaSWorker:
             }
         )
         repository = DraftRepository(org_settings.database_path)
+        if organization_id == 1:
+            repository.ensure_legacy_rubrics(
+                str(Path(__file__).parent / "assets" / "VoicerWave.jpg")
+            )
         worker = GenerationWorker(org_settings, repository, Bot(token))
         await worker.tick()
 

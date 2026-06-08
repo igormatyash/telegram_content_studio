@@ -50,21 +50,23 @@ class GenerationWorker:
                 post = await self.batches.poll_text(job)
                 if post is None:
                     continue
+                rubric = self.repository.get_rubric(post.product)
+                fixed_cover_path = Path(rubric.get("fixed_cover_path") or "")
                 draft = self.repository.create(
                     topic=job.topic,
-                    product=post.product.value,
+                    product=post.product,
                     title=post.title,
                     caption_html=render_caption(post, job.link_url),
                     image_prompt=json.dumps(post.model_dump(), ensure_ascii=False),
-                    image_path=str(WAVE_COVER_PATH) if post.product.value == "wave" else "",
+                    image_path=str(fixed_cover_path) if fixed_cover_path.is_file() else "",
                     link_url=job.link_url,
                     title_options=post.title_options,
                     cta_options=post.cta_options,
                     tone=job.tone,
                 )
-                if post.product.value == "wave":
-                    if not WAVE_COVER_PATH.is_file():
-                        raise FileNotFoundError("Voicer Wave cover image is missing.")
+                if rubric.get("fixed_cover_path"):
+                    if not fixed_cover_path.is_file():
+                        raise FileNotFoundError("Fixed rubric cover image is missing.")
                     self.repository.update_job(job.id, status="ready", draft_id=draft.id)
                     await self._notify_ready(job.id)
                 else:

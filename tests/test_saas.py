@@ -54,6 +54,20 @@ def test_tenant_repositories_are_isolated(tmp_path) -> None:
     assert [item["title"] for item in first.list_drafts()] == ["VoicerHub title"]
     assert [item["title"] for item in second.list_drafts()] == ["Client title"]
 
+    first.ensure_legacy_rubrics()
+    second.add_rubric(
+        slug="company-news",
+        name="Новини компанії",
+        description="Перевірені новини, оновлення продукту та події цієї компанії.",
+    )
+
+    assert {item["slug"] for item in first.list_rubrics()} == {
+        "tony",
+        "voicer",
+        "wave",
+    }
+    assert [item["slug"] for item in second.list_rubrics()] == ["company-news"]
+
 
 def test_telegram_token_is_encrypted_at_rest(tmp_path) -> None:
     database = tmp_path / "studio.sqlite3"

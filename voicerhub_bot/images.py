@@ -41,11 +41,16 @@ class ImageGenerator:
         logo_path: Path | None = None,
         company_logo_path: Path | None = None,
         template: dict | None = None,
+        size: str = "1536x1024",
+        output_size: tuple[int, int] | None = None,
+        platform: str = "Telegram",
     ) -> tuple[Path, object]:
         selected_model = model or self.image_model
         template = template or get_visual_template(template_id)
         full_prompt = (
-            f"{BASE_VISUAL_RULES}\n\nVisual direction:\n{template['prompt']}"
+            f"{BASE_VISUAL_RULES}\nTarget platform: {platform}. "
+            "Compose the subject for the target aspect ratio.\n\n"
+            f"Visual direction:\n{template['prompt']}"
             f"\n\nSubject:\n{prompt}"
         )
         if reference_paths:
@@ -58,7 +63,7 @@ class ImageGenerator:
                 model=selected_model,
                 image=reference_paths,
                 prompt=full_prompt,
-                size="1536x1024",
+                size=size,
                 quality="medium",
                 output_format="png",
             )
@@ -66,7 +71,7 @@ class ImageGenerator:
             response = await self.client.images.generate(
                 model=selected_model,
                 prompt=full_prompt,
-                size="1536x1024",
+                size=size,
                 quality="medium",
                 output_format="png",
             )
@@ -76,6 +81,8 @@ class ImageGenerator:
         image_bytes = base64.b64decode(encoded_image)
         output_path = self.output_dir / f"{uuid4().hex}.png"
         output_path.write_bytes(image_bytes)
+        if output_size:
+            self._fit_output(output_path, output_size)
         self._apply_branding(
             output_path,
             title,
@@ -85,6 +92,26 @@ class ImageGenerator:
             template=template,
         )
         return output_path, response
+
+    @staticmethod
+    def _fit_output(image_path: Path, output_size: tuple[int, int]) -> None:
+        image = Image.open(image_path).convert("RGB")
+        target_width, target_height = output_size
+        source_ratio = image.width / image.height
+        target_ratio = target_width / target_height
+        if source_ratio > target_ratio:
+            crop_width = int(image.height * target_ratio)
+            left = (image.width - crop_width) // 2
+            image = image.crop((left, 0, left + crop_width, image.height))
+        else:
+            crop_height = int(image.width / target_ratio)
+            top = (image.height - crop_height) // 2
+            image = image.crop((0, top, image.width, top + crop_height))
+        image.resize(output_size, Image.Resampling.LANCZOS).save(
+            image_path,
+            format="PNG",
+            optimize=True,
+        )
 
     def _apply_branding(
         self,

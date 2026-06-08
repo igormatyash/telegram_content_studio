@@ -166,6 +166,42 @@ class DraftRepository:
             )
             connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS content_rubrics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    slug TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    instructions TEXT NOT NULL DEFAULT '',
+                    default_link TEXT NOT NULL DEFAULT '',
+                    fixed_cover_path TEXT,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS social_variants (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    draft_id INTEGER NOT NULL,
+                    platform TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    text_content TEXT NOT NULL,
+                    hashtags TEXT NOT NULL DEFAULT '[]',
+                    image_prompt TEXT NOT NULL,
+                    image_path TEXT NOT NULL,
+                    text_model TEXT NOT NULL,
+                    image_model TEXT NOT NULL,
+                    created_by_user_id INTEGER,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(draft_id, platform),
+                    FOREIGN KEY(draft_id) REFERENCES drafts(id)
+                )
+                """
+            )
+            connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS batch_runs (
                     id TEXT PRIMARY KEY,
                     kind TEXT NOT NULL,
@@ -405,6 +441,221 @@ class DraftRepository:
                 (limit,),
             ).fetchall()
         return [row["title"] for row in rows]
+
+    def ensure_legacy_rubrics(self, wave_cover_path: str = "") -> None:
+        from voicerhub_bot.knowledge import (
+            EDITORIAL_RULES,
+            PRODUCT_FACTS,
+            WAVE_EDITORIAL_RULES,
+        )
+
+        defaults = (
+            (
+                "tony",
+                "TONY",
+                PRODUCT_FACTS["tony"],
+                EDITORIAL_RULES,
+                "https://voicerhub.com/ua/products/tony",
+                "",
+            ),
+            (
+                "voicer",
+                "Voicer",
+                PRODUCT_FACTS["voicer"],
+                EDITORIAL_RULES,
+                "https://voicerhub.com/ua/products/voicer",
+                "",
+            ),
+            (
+                "wave",
+                "Voicer Wave",
+                "Короткі evergreen-факти та спостереження про штучний інтелект.",
+                WAVE_EDITORIAL_RULES,
+                "",
+                wave_cover_path,
+            ),
+        )
+        with self._connect() as connection:
+            connection.executemany(
+                """
+                INSERT INTO content_rubrics (
+                    slug, name, description, instructions, default_link,
+                    fixed_cover_path
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(slug) DO UPDATE SET
+                    name = excluded.name,
+                    description = excluded.description,
+                    instructions = excluded.instructions,
+                    default_link = excluded.default_link,
+                    fixed_cover_path = CASE
+                        WHEN content_rubrics.fixed_cover_path IS NULL
+                          OR content_rubrics.fixed_cover_path = ''
+                        THEN excluded.fixed_cover_path
+                        ELSE content_rubrics.fixed_cover_path
+                    END
+                """,
+                defaults,
+            )
+
+    def add_rubric(
+        self,
+        *,
+        slug: str,
+        name: str,
+        description: str,
+        instructions: str = "",
+        default_link: str = "",
+    ) -> dict:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO content_rubrics (
+                    slug, name, description, instructions, default_link
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (slug, name, description, instructions, default_link),
+            )
+            rubric_id = int(cursor.lastrowid)
+        return self.get_rubric_by_id(rubric_id)
+
+    def update_rubric(
+        self,
+        rubric_id: int,
+        *,
+        name: str,
+        description: str,
+        instructions: str,
+        default_link: str,
+        active: bool,
+    ) -> dict:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE content_rubrics
+                SET name = ?, description = ?, instructions = ?,
+                    default_link = ?, active = ?
+                WHERE id = ?
+                """,
+                (
+                    name,
+                    description,
+                    instructions,
+                    default_link,
+                    int(active),
+                    rubric_id,
+                ),
+            )
+        return self.get_rubric_by_id(rubric_id)
+
+    def get_rubric_by_id(self, rubric_id: int) -> dict:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM content_rubrics WHERE id = ?",
+                (rubric_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"Rubric {rubric_id} not found")
+        return dict(row)
+
+    def get_rubric(self, slug: str) -> dict:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM content_rubrics WHERE slug = ? AND active = 1",
+                (slug,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"Rubric {slug} not found")
+        return dict(row)
+
+    def list_rubrics(self, *, include_inactive: bool = False) -> list[dict]:
+        query = "SELECT * FROM content_rubrics"
+        if not include_inactive:
+            query += " WHERE active = 1"
+        query += " ORDER BY name COLLATE NOCASE"
+        with self._connect() as connection:
+            rows = connection.execute(query).fetchall()
+        return [dict(row) for row in rows]
+
+    def save_social_variant(
+        self,
+        *,
+        draft_id: int,
+        platform: str,
+        title: str,
+        text_content: str,
+        hashtags: list[str],
+        image_prompt: str,
+        image_path: str,
+        text_model: str,
+        image_model: str,
+        created_by_user_id: int | None,
+    ) -> dict:
+        self.draft_record(draft_id)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO social_variants (
+                    draft_id, platform, title, text_content, hashtags,
+                    image_prompt, image_path, text_model, image_model,
+                    created_by_user_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(draft_id, platform) DO UPDATE SET
+                    title = excluded.title,
+                    text_content = excluded.text_content,
+                    hashtags = excluded.hashtags,
+                    image_prompt = excluded.image_prompt,
+                    image_path = excluded.image_path,
+                    text_model = excluded.text_model,
+                    image_model = excluded.image_model,
+                    created_by_user_id = excluded.created_by_user_id,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    draft_id,
+                    platform,
+                    title,
+                    text_content,
+                    json.dumps(hashtags, ensure_ascii=False),
+                    image_prompt,
+                    image_path,
+                    text_model,
+                    image_model,
+                    created_by_user_id,
+                ),
+            )
+        return self.get_social_variant(draft_id, platform)
+
+    def get_social_variant(self, draft_id: int, platform: str) -> dict:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM social_variants
+                WHERE draft_id = ? AND platform = ?
+                """,
+                (draft_id, platform),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"Social variant {platform} not found")
+        result = dict(row)
+        result["hashtags"] = json.loads(result["hashtags"] or "[]")
+        return result
+
+    def list_social_variants(self, draft_id: int) -> list[dict]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM social_variants
+                WHERE draft_id = ?
+                ORDER BY platform
+                """,
+                (draft_id,),
+            ).fetchall()
+        results = []
+        for row in rows:
+            item = dict(row)
+            item["hashtags"] = json.loads(item["hashtags"] or "[]")
+            results.append(item)
+        return results
 
     def create_job(
         self,

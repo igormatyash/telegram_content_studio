@@ -11,6 +11,7 @@ import httpx
 from openai import AsyncOpenAI
 
 from voicerhub_bot.config import Settings
+from voicerhub_bot.models import SocialPost
 from voicerhub_bot.rendering import MAX_CAPTION_LENGTH, sanitize_telegram_html
 
 
@@ -19,6 +20,33 @@ TONE_GUIDANCE = {
     "sales": "Продаючий: фокус на бізнес-користі та м'якому заклику до дії без тиску.",
     "light": "Легкий: прості речення, жива аналогія, теплий тон без фамільярності.",
     "news": "Новинний: головний факт на початку, контекст і значення для бізнесу.",
+}
+
+SOCIAL_PLATFORM_RULES = {
+    "instagram": {
+        "label": "Instagram",
+        "text": "Живий текст до 1800 символів, сильний перший рядок, короткі абзаци, доречні emoji, до 10 хештегів. Не використовуй HTML.",
+        "api_size": "1024x1536",
+        "output_size": (1080, 1350),
+    },
+    "linkedin": {
+        "label": "LinkedIn",
+        "text": "Професійний текст до 2200 символів: теза, практичний контекст, висновок і м'який CTA. До 5 хештегів. Не використовуй HTML.",
+        "api_size": "1536x1024",
+        "output_size": (1200, 627),
+    },
+    "facebook": {
+        "label": "Facebook",
+        "text": "Зрозумілий текст до 2000 символів, розмовний вступ, користь, короткий CTA, до 5 хештегів. Не використовуй HTML.",
+        "api_size": "1536x1024",
+        "output_size": (1200, 630),
+    },
+    "x": {
+        "label": "X",
+        "text": "Один самодостатній допис до 260 символів разом із хештегами. Один чіткий факт або висновок. Не використовуй HTML.",
+        "api_size": "1536x1024",
+        "output_size": (1600, 900),
+    },
 }
 
 
@@ -199,6 +227,50 @@ class EditorialTools:
         usage = response.usage
         return (
             shorten_caption(text),
+            int(getattr(usage, "input_tokens", 0) or 0),
+            int(getattr(usage, "output_tokens", 0) or 0),
+        )
+
+    async def adapt_for_social(
+        self,
+        *,
+        title: str,
+        telegram_text: str,
+        platform: str,
+        rubric: dict,
+        link_url: str,
+        model: str,
+    ) -> tuple[SocialPost, int, int]:
+        rules = SOCIAL_PLATFORM_RULES[platform]
+        response = await self.client.responses.parse(
+            model=model,
+            input=f"""
+Адаптуй матеріал українською для {rules["label"]}.
+
+Рубрика: {rubric["name"]}
+Опис і дозволені факти: {rubric["description"]}
+Редакційні правила: {rubric.get("instructions") or "Точно, корисно, без вигаданих фактів."}
+Правила платформи: {rules["text"]}
+Посилання: {link_url or "немає"}
+
+Збережи зміст, але перепиши структуру під платформу. Текст має бути готовим
+до ручного копіювання. Якщо є посилання, встав його природно як звичайний URL.
+Поверни окремо заголовок, готовий текст без HTML, список хештегів та англомовний
+image_prompt без написів, логотипів і водяних знаків.
+
+Вихідний заголовок:
+{title}
+
+Вихідний Telegram-текст:
+{telegram_text}
+""".strip(),
+            text_format=SocialPost,
+        )
+        if response.output_parsed is None:
+            raise ValueError("Модель не повернула версію для соцмережі")
+        usage = response.usage
+        return (
+            response.output_parsed,
             int(getattr(usage, "input_tokens", 0) or 0),
             int(getattr(usage, "output_tokens", 0) or 0),
         )
