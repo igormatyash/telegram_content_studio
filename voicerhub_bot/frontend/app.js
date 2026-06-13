@@ -12,6 +12,7 @@ const state = {
   settingsTab: "workspace",
   calendarDate: new Date(),
   onboardingStep: 1,
+  usage: null,
 };
 const titles = {
   home: ["Головна", "Огляд вашого контенту та найближчих дій."],
@@ -108,6 +109,15 @@ function applyIdentity() {
   document.querySelectorAll(".pipeline-only").forEach(node => node.hidden = kanban);
   document.querySelector("#draftsNavLabel").textContent = kanban ? "Дошка" : "Чернетки";
   document.querySelector("#analyticsNavLabel").textContent = kanban ? "Аналітика" : "Витрати";
+  const readOnly = role === "viewer";
+  document.body.classList.toggle("read-only", readOnly);
+  [
+    "#createButton","#generateIdeas","#manualIdea","#manualDraft",
+    "#calendarSchedule","#planForm button[type=submit]",
+  ].forEach(selector => {
+    const node = document.querySelector(selector);
+    if (node) node.hidden = readOnly;
+  });
 }
 
 function renderHome() {
@@ -236,12 +246,10 @@ function renderAnalytics() {
   const daily = [...(state.data.daily||[])].reverse();
   const max = Math.max(...daily.map(x=>Number(x.cost)),.01);
   document.querySelector("#usageChart").innerHTML = daily.length ? daily.map(x=>`<div class="chart-bar" title="${x.day}: ${money(x.cost)}" style="height:${Math.max(3,Number(x.cost)/max*100)}%"></div>`).join("") : `<p class="muted">Дані з’являться після першої AI-генерації.</p>`;
-  const models = {};
-  jobs.forEach(x => {models[x.text_model||"text"]=(models[x.text_model||"text"]||0)+1;if(x.image_model)models[x.image_model]=(models[x.image_model]||0)+1;});
-  document.querySelector("#modelUsage").innerHTML = Object.entries(models).map(([name,count])=>`<div class="usage-row"><span>${esc(name)}</span><strong>${count}</strong></div>`).join("")||'<p class="muted">Немає даних.</p>';
-  const rubrics = {};
-  drafts.forEach(x=>rubrics[x.product]=(rubrics[x.product]||0)+1);
-  document.querySelector("#rubricUsage").innerHTML = Object.entries(rubrics).sort((a,b)=>b[1]-a[1]).slice(0,6).map(([slug,count])=>`<div class="usage-row"><span>${esc((state.data.rubrics||[]).find(x=>x.slug===slug)?.name||slug)}</span><strong>${count}</strong></div>`).join("")||'<p class="muted">Немає даних.</p>';
+  const models = state.usage?.models || [];
+  document.querySelector("#modelUsage").innerHTML = models.map(row=>`<div class="usage-row"><span>${esc(row.model)}<small class="muted" style="display:block">${row.operations} операцій</small></span><strong>${money(row.cost)}</strong></div>`).join("")||'<p class="muted">Немає даних.</p>';
+  const rubrics = state.usage?.rubrics || [];
+  document.querySelector("#rubricUsage").innerHTML = rubrics.map(row=>`<div class="usage-row"><span>${esc((state.data.rubrics||[]).find(x=>x.slug===row.rubric_slug)?.name||row.rubric_slug)}</span><strong>${money(row.cost)}</strong></div>`).join("")||'<p class="muted">Немає даних.</p>';
 }
 
 function renderSettings() {
@@ -357,8 +365,8 @@ function bindEditorActions() {
 
 async function refresh(background = false) {
   try {
-    const [me, company, data] = await Promise.all([api("api/me"),api("api/company"),api("api/dashboard")]);
-    state.me=me;state.company=company;state.data=data;
+    const [me, company, data, usage] = await Promise.all([api("api/me"),api("api/company"),api("api/dashboard"),api("api/usage")]);
+    state.me=me;state.company=company;state.data=data;state.usage=usage;
     if (me.is_admin) state.users=await api("api/users");
     applyIdentity();renderCurrent();
     if (!background && company.settings && !["completed","skipped"].includes(company.settings.onboarding_status) && me.is_admin) showOnboarding(Math.max(1,Number(company.settings.onboarding_step||0)+1));
@@ -386,9 +394,13 @@ document.querySelector("#onboardingNext").onclick=event=>loading(event.currentTa
 document.querySelector("#skipOnboarding").onclick=async()=>{await api("api/onboarding/skip",{method:"POST"});document.querySelector("#onboardingOverlay").hidden=true;};
 document.querySelectorAll("[data-brand-tab]").forEach(node=>node.onclick=()=>{state.brandTab=node.dataset.brandTab;document.querySelectorAll("[data-brand-tab]").forEach(x=>x.classList.toggle("active",x===node));renderBrand();});
 document.querySelectorAll("[data-settings]").forEach(node=>node.onclick=()=>{state.settingsTab=node.dataset.settings;document.querySelectorAll("[data-settings]").forEach(x=>x.classList.toggle("active",x===node));renderSettings();});
-document.querySelector("#searchButton").onclick=()=>showForm("Пошук",`<label class="wide">Ідеї, чернетки та розділи<input name="query" autofocus></label><div class="wide" id="searchResults"></div>`,async()=>{});
+document.querySelector("#searchButton").onclick=()=>{
+  showForm("Пошук",`<label class="wide">Ідеї, чернетки та розділи<input name="query" id="globalSearch" autofocus></label><div class="wide stack" id="searchResults"></div>`,async()=>{});
+  const input=document.querySelector("#globalSearch"),results=document.querySelector("#searchResults");
+  input.oninput=()=>{const query=input.value.trim().toLowerCase();if(!query){results.innerHTML="";return}const rows=[...(state.data.ideas||[]).map(x=>({...x,type:"Ідея",view:"ideas"})),...(state.data.drafts||[]).map(x=>({...x,type:"Чернетка",view:"drafts"}))].filter(x=>`${x.title} ${x.angle||""} ${plain(x.caption_html||"")}`.toLowerCase().includes(query)).slice(0,8);results.innerHTML=rows.map(x=>`<button type="button" class="quick-action" data-search-view="${x.view}" data-search-draft="${x.type==="Чернетка"?x.id:""}"><span class="pill ${x.type==="Ідея"?"idea":"draft"}">${x.type}</span><span>${esc(x.title)}</span></button>`).join("")||'<p class="muted">Нічого не знайдено.</p>';results.querySelectorAll("button").forEach(button=>button.onclick=()=>{document.querySelector("#formOverlay").hidden=true;if(button.dataset.searchDraft)openEditor(Number(button.dataset.searchDraft));else setView(button.dataset.searchView);});};
+};
 document.querySelector("#createButton").onclick=()=>setView("ideas");
-document.querySelector("#notificationsButton").onclick=()=>{const failed=(state.data?.jobs||[]).filter(x=>x.status==="failed");toast(failed.length?`Помилок генерації: ${failed.length}`:"Нових сповіщень немає",!!failed.length);};
+document.querySelector("#notificationsButton").onclick=()=>{const failed=(state.data?.jobs||[]).filter(x=>x.status==="failed");const expiry=state.company?.plan_expires_at?Math.ceil((new Date(state.company.plan_expires_at)-new Date())/86400000):null;const messages=[];if(failed.length)messages.push(`Помилок генерації: ${failed.length}`);if(state.company?.plan_code==="trial"&&expiry!==null)messages.push(`Trial: ${Math.max(0,expiry)} дн.`);const spend=Number(state.company?.ai_spend||0),budget=Number(state.company?.monthly_ai_budget||0);if(budget&&spend/budget>=.7)messages.push(`Використано ${Math.round(spend/budget*100)}% AI-бюджету`);toast(messages.join(" · ")||"Нових сповіщень немає",!!failed.length);};
 document.querySelector("#exportPlan").onclick=()=>exportCsv("content-plan.csv",(state.data.ideas||[]).filter(x=>x.plan_id),["planned_for","title","product","status"]);
 document.querySelector("#exportDrafts").onclick=()=>exportCsv("drafts.csv",state.data.drafts||[],["id","title","product","status","scheduled_at"]);
 document.querySelector("#exportUsage").onclick=()=>exportCsv("usage.csv",state.data.daily||[],["day","cost"]);

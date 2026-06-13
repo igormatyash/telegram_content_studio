@@ -267,6 +267,21 @@ textarea { min-height: 112px; resize: vertical; }
 .asset-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 10px; }
 .asset-card { overflow: hidden; }
 .asset-card img { width: 100%; aspect-ratio: 1; object-fit: contain; background: #f1f5f9; }
+.read-only #saveBrandProfile,
+.read-only #saveTone,
+.read-only #addRubric,
+.read-only #saveWorkspaceMode,
+.read-only #inviteUser,
+.read-only #saveTelegram,
+.read-only #changePassword,
+.read-only #saveDraft,
+.read-only #regenText,
+.read-only #proofreadDraft,
+.read-only #scheduleDraft,
+.read-only #cancelSchedule,
+.read-only #publishDraft,
+.read-only [data-generate-idea] { display: none !important; }
+.mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px 0; }
 
 @media (max-width: 1100px) {
   .metrics { grid-template-columns: repeat(3, 1fr); }

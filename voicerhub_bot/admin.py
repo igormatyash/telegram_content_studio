@@ -1348,6 +1348,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ]
         return data
 
+    @app.get("/api/usage")
+    def workspace_usage(
+        period: str = "month",
+        user: dict = Depends(authorize),
+    ) -> dict:
+        now = datetime.now(timezone.utc)
+        if period == "7d":
+            since = now - timedelta(days=7)
+        elif period == "month":
+            since = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        elif period == "all":
+            since = None
+        else:
+            raise HTTPException(status_code=422, detail="Невідомий період")
+        since_value = since.strftime("%Y-%m-%d %H:%M:%S") if since else None
+        report = repository.usage_summary(since=since_value)
+        names = {row["id"]: row for row in auth.list_users(organization_id(user))}
+        return {
+            **report,
+            "users": [
+                {
+                    **row,
+                    "username": names.get(row["user_id"], {}).get(
+                        "username",
+                        "system",
+                    ),
+                    "display_name": names.get(row["user_id"], {}).get(
+                        "display_name",
+                        "System",
+                    ),
+                }
+                for row in report["users"]
+            ],
+            "rubrics": repository.usage_by_rubric(since=since_value),
+        }
+
     def record_text_usage(
         model: str,
         input_tokens: int,

@@ -294,3 +294,56 @@ def test_invitation_reset_and_trial_workspace_flows(tmp_path) -> None:
     )
     assert trial.status_code == 200
     assert trial.json()["plan_code"] == "trial"
+
+
+def test_modular_frontend_routes_manual_content_and_usage(tmp_path) -> None:
+    client = make_client(tmp_path)
+    assert login(client).status_code == 200
+    headers = {"X-Requested-With": "VoicerHubAdmin"}
+    assert client.get("/static/styles.css").status_code == 200
+    assert client.get("/static/app.js").status_code == 200
+    assert "static/app.js" in client.get("/").text
+
+    rubric = client.post(
+        "/api/rubrics",
+        headers=headers,
+        json={
+            "name": "Експертні матеріали",
+            "slug": "expert",
+            "description": "Практичні експертні матеріали для цільової аудиторії.",
+            "instructions": "",
+            "default_link": "",
+        },
+    )
+    assert rubric.status_code == 200
+    idea = client.post(
+        "/api/ideas",
+        headers=headers,
+        json={
+            "title": "Ручна ідея",
+            "angle": "Практичний кут подачі",
+            "product": "expert",
+        },
+    )
+    assert idea.status_code == 200
+    draft = client.post(
+        "/api/drafts",
+        headers=headers,
+        json={
+            "title": "Ручна чернетка",
+            "visual_title": "Ручна чернетка",
+            "caption_html": (
+                "<b>Ручна чернетка</b>\n\n"
+                "Достатньо довгий текст публікації."
+            ),
+            "product": "expert",
+            "link_url": "",
+        },
+    )
+    assert draft.status_code == 200
+    assert client.get(
+        f"/workspace/voicerhub/drafts/{draft.json()['id']}"
+    ).status_code == 200
+    usage = client.get("/api/usage", headers=headers)
+    assert usage.status_code == 200
+    assert {"totals", "models", "users", "rubrics"} <= usage.json().keys()
