@@ -29,6 +29,36 @@ def test_legacy_company_migration_preserves_users(tmp_path) -> None:
     assert auth.authenticate("owner", "owner-password")["organization_id"] == 1
 
 
+def test_organization_onboarding_settings_survive_reinitialization(tmp_path) -> None:
+    database = tmp_path / "settings.sqlite3"
+    key = Fernet.generate_key().decode()
+    saas = SaasRepository(database, key)
+    organization = saas.create_organization(
+        name="New Workspace",
+        slug="new-workspace",
+        max_users=10,
+        max_channels=1,
+        monthly_publications=30,
+        monthly_ai_budget=20,
+    )
+    defaults = saas.organization_settings(organization["id"])
+    assert defaults["onboarding_status"] == "not_started"
+    assert defaults["workspace_mode"] == "pipeline"
+
+    saas.update_organization_settings(
+        organization["id"],
+        onboarding_status="in_progress",
+        onboarding_step=3,
+        workspace_mode="kanban",
+        tone_of_voice="Лаконічно та професійно",
+    )
+    saas = SaasRepository(database, key)
+    restored = saas.organization_settings(organization["id"])
+    assert restored["onboarding_step"] == 3
+    assert restored["workspace_mode"] == "kanban"
+    assert restored["tone_of_voice"] == "Лаконічно та професійно"
+
+
 def test_tenant_repositories_are_isolated(tmp_path) -> None:
     router = TenantRepository(
         tmp_path / "legacy.sqlite3",

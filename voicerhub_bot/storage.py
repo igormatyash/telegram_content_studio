@@ -3,7 +3,13 @@ import sqlite3
 from contextvars import ContextVar
 from pathlib import Path
 
-from voicerhub_bot.models import BatchRecord, Draft, GenerationJob
+from voicerhub_bot.models import (
+    CONTENT_STATUSES,
+    CONTENT_STATUS_TRANSITIONS,
+    BatchRecord,
+    Draft,
+    GenerationJob,
+)
 
 
 TENANT_TABLES = (
@@ -16,6 +22,8 @@ TENANT_TABLES = (
     "social_variants",
     "batch_runs",
     "usage_events",
+    "content_plans",
+    "content_series",
 )
 
 
@@ -253,6 +261,34 @@ class DraftRepository:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS content_plans (
+                    id TEXT PRIMARY KEY,
+                    period TEXT NOT NULL,
+                    start_date TEXT NOT NULL,
+                    posts INTEGER NOT NULL,
+                    objective TEXT NOT NULL DEFAULT '',
+                    create_as TEXT NOT NULL DEFAULT 'ideas',
+                    rubric_slugs TEXT NOT NULL DEFAULT '[]',
+                    channel_ids TEXT NOT NULL DEFAULT '[]',
+                    created_by_user_id INTEGER,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS content_series (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    parts INTEGER NOT NULL,
+                    rubric_slug TEXT NOT NULL DEFAULT '',
+                    created_by_user_id INTEGER,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
             self._ensure_column(connection, "usage_events", "user_id", "INTEGER")
             for table in TENANT_TABLES:
                 self._ensure_column(
@@ -282,6 +318,12 @@ class DraftRepository:
                     END
                     """
                 )
+            connection.execute(
+                """
+                UPDATE content_ideas SET status = 'idea'
+                WHERE status IN ('suggested', 'selected')
+                """
+            )
             connection.execute(
                 """
                 UPDATE usage_events
@@ -453,12 +495,31 @@ class DraftRepository:
                 (scheduled_at, draft_id),
             )
 
+    def transition_draft(self, draft_id: int, status: str) -> dict:
+        if status not in CONTENT_STATUSES - {"idea"}:
+            raise ValueError("Unsupported content status")
+        draft = self.draft_record(draft_id)
+        current = draft["status"]
+        if current == status:
+            return draft
+        if status not in CONTENT_STATUS_TRANSITIONS.get(current, set()):
+            raise ValueError(f"Invalid content transition: {current} -> {status}")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE drafts SET status = ?
+                WHERE id = ? AND organization_id = ?
+                """,
+                (status, draft_id, self.organization_id),
+            )
+        return self.draft_record(draft_id)
+
     def cancel_schedule(self, draft_id: int) -> None:
         with self._connect() as connection:
             connection.execute(
                 """
                 UPDATE drafts
-                SET status = 'draft', scheduled_at = NULL
+                SET status = 'ready', scheduled_at = NULL
                 WHERE id = ? AND status = 'scheduled'
                 """,
                 (draft_id,),
@@ -879,10 +940,10 @@ class DraftRepository:
                 cursor = connection.execute(
                     """
                     INSERT INTO content_ideas (
-                        product, title, angle, planned_for, tone, series_id,
+                        product, title, angle, status, planned_for, tone, series_id,
                         series_title, series_part, source_url, duplicate_score,
                         duplicate_of, plan_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, 'idea', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         idea["product"],
@@ -901,6 +962,84 @@ class DraftRepository:
                 )
                 ids.append(int(cursor.lastrowid))
         return [self.get_idea(idea_id) for idea_id in ids]
+
+    def create_content_plan(
+        self,
+        *,
+        plan_id: str,
+        period: str,
+        start_date: str,
+        posts: int,
+        objective: str,
+        create_as: str,
+        rubric_slugs: list[str],
+        channel_ids: list[str],
+        created_by_user_id: int | None,
+    ) -> dict:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO content_plans (
+                    id, period, start_date, posts, objective, create_as,
+                    rubric_slugs, channel_ids, created_by_user_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    plan_id,
+                    period,
+                    start_date,
+                    posts,
+                    objective,
+                    create_as,
+                    json.dumps(rubric_slugs, ensure_ascii=False),
+                    json.dumps(channel_ids, ensure_ascii=False),
+                    created_by_user_id,
+                ),
+            )
+        return self.get_content_plan(plan_id)
+
+    def get_content_plan(self, plan_id: str) -> dict:
+        with self._connect() as connection:
+            row = self._ensure_owned(connection, "content_plans", plan_id)
+        return dict(row)
+
+    def list_content_plans(self) -> list[dict]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM content_plans WHERE organization_id = ?
+                ORDER BY created_at DESC
+                """,
+                (self.organization_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def create_content_series(
+        self,
+        *,
+        series_id: str,
+        title: str,
+        parts: int,
+        rubric_slug: str,
+        created_by_user_id: int | None,
+    ) -> dict:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO content_series (
+                    id, title, parts, rubric_slug, created_by_user_id
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    series_id,
+                    title,
+                    parts,
+                    rubric_slug,
+                    created_by_user_id,
+                ),
+            )
+            row = self._ensure_owned(connection, "content_series", series_id)
+        return dict(row)
 
     def get_idea(self, idea_id: int) -> dict:
         with self._connect() as connection:
@@ -949,8 +1088,11 @@ class DraftRepository:
         idea = self.get_idea(idea_id)
         with self._connect() as connection:
             connection.execute(
-                "UPDATE content_ideas SET status = 'selected' WHERE id = ?",
-                (idea_id,),
+                """
+                UPDATE content_ideas SET status = 'idea'
+                WHERE id = ? AND organization_id = ?
+                """,
+                (idea_id, self.organization_id),
             )
         topic = f"{idea['title']}. {idea['angle']}"
         return self.create_job(

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from PIL import Image
+import pytest
 
 from voicerhub_bot.images import ImageGenerator
 from voicerhub_bot.storage import DraftRepository
@@ -56,6 +57,48 @@ def test_ideas_editing_and_schedule(tmp_path: Path) -> None:
     assert record["status"] == "scheduled"
     assert record["scheduled_at"] == "2030-01-01T10:00:00Z"
     assert record["link_url"] == "https://voicerhub.com/ua/products/tony"
+
+
+def test_content_status_transitions_and_plans_are_persisted(tmp_path: Path) -> None:
+    repository = DraftRepository(tmp_path / "workflow.sqlite3", organization_id=4)
+    draft = repository.create(
+        topic="Workflow",
+        product="general",
+        title="Чернетка для команди",
+        caption_html="<b>Чернетка</b>\n\nТекст для перевірки редактором.",
+        image_prompt="A detailed editorial workflow illustration.",
+        image_path="/tmp/post.png",
+    )
+
+    assert repository.transition_draft(draft.id, "review")["status"] == "review"
+    assert repository.transition_draft(draft.id, "needs_changes")["status"] == "needs_changes"
+    assert repository.transition_draft(draft.id, "draft")["status"] == "draft"
+    assert repository.transition_draft(draft.id, "ready")["status"] == "ready"
+    with pytest.raises(ValueError, match="Invalid content transition"):
+        repository.transition_draft(draft.id, "published")
+
+    plan = repository.create_content_plan(
+        plan_id="plan-test",
+        period="week",
+        start_date="2030-01-01",
+        posts=5,
+        objective="Запуск нового продукту",
+        create_as="ideas",
+        rubric_slugs=["general"],
+        channel_ids=["@example"],
+        created_by_user_id=12,
+    )
+    assert plan["organization_id"] == 4
+    assert repository.list_content_plans()[0]["id"] == "plan-test"
+    series = repository.create_content_series(
+        series_id="series-test",
+        title="П’ять кроків",
+        parts=5,
+        rubric_slug="general",
+        created_by_user_id=12,
+    )
+    assert series["organization_id"] == 4
+    assert series["parts"] == 5
 
 
 def test_idea_status_follows_active_job_before_draft(tmp_path: Path) -> None:

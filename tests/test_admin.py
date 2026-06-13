@@ -182,3 +182,60 @@ def test_material_import_rejects_local_address(tmp_path) -> None:
 
     assert response.status_code == 422
     assert "локальні адреси" in response.json()["detail"].lower()
+
+
+def test_onboarding_mode_status_api_and_editor_route(tmp_path) -> None:
+    client = make_client(tmp_path)
+    assert login(client).status_code == 200
+    headers = {"X-Requested-With": "VoicerHubAdmin"}
+
+    restarted = client.post("/api/onboarding/restart", headers=headers)
+    assert restarted.status_code == 200
+    assert restarted.json()["onboarding_status"] == "not_started"
+    company = client.put(
+        "/api/onboarding/company",
+        headers=headers,
+        json={
+            "name": "Editorial Team",
+            "slug": "editorial-team",
+            "primary_language": "uk",
+            "brand_primary_color": "#10bfae",
+        },
+    )
+    assert company.status_code == 200
+    assert company.json()["settings"]["onboarding_step"] == 2
+    mode = client.put(
+        "/api/workspace/mode",
+        headers=headers,
+        json={"workspace_mode": "kanban"},
+    )
+    assert mode.status_code == 200
+    assert mode.json()["workspace_mode"] == "kanban"
+
+    repository = DraftRepository(tmp_path / "admin.sqlite3")
+    draft = repository.create(
+        topic="Статуси",
+        product="tony",
+        title="Матеріал для рев’ю",
+        caption_html="<b>Матеріал</b>\n\nТекст для редакційної перевірки.",
+        image_prompt="A detailed editorial review scene.",
+        image_path="/tmp/review.png",
+    )
+    changed = client.post(
+        f"/api/drafts/{draft.id}/status",
+        headers=headers,
+        json={"status": "review"},
+    )
+    assert changed.status_code == 200
+    assert changed.json()["status"] == "review"
+    invalid = client.post(
+        f"/api/drafts/{draft.id}/status",
+        headers=headers,
+        json={"status": "published"},
+    )
+    assert invalid.status_code == 409
+
+    route = client.get(f"/workspace/editorial-team/drafts/{draft.id}")
+    assert route.status_code == 200
+    assert "data-kanban-label=\"Дошка\"" in route.text
+    assert "Налаштування workspace" in route.text

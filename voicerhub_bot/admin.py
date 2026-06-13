@@ -55,6 +55,9 @@ class ContentPlanRequest(BaseModel):
     start_date: date
     focus: str = Field(default="", max_length=500)
     text_model: str = "gpt-5.4-mini"
+    create_as: str = Field(default="ideas", pattern=r"^(ideas|drafts)$")
+    rubric_slugs: list[str] = Field(default_factory=list, max_length=20)
+    channel_ids: list[str] = Field(default_factory=list, max_length=5)
 
 
 class SeriesRequest(BaseModel):
@@ -231,6 +234,44 @@ class WorkspaceSelectRequest(BaseModel):
     organization_id: int = Field(ge=1)
 
 
+class WorkspaceModeRequest(BaseModel):
+    workspace_mode: str = Field(pattern=r"^(pipeline|kanban)$")
+
+
+class OnboardingCompanyRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=100)
+    slug: str = Field(min_length=2, max_length=60)
+    primary_language: str = Field(default="uk", pattern=r"^[a-z]{2}$")
+    brand_primary_color: str = Field(
+        default="",
+        pattern=r"^(|#[0-9A-Fa-f]{6})$",
+    )
+    brand_logo_asset_id: int | None = None
+
+
+class OnboardingBrandRequest(BaseModel):
+    company_description: str = Field(default="", max_length=5000)
+    tone_of_voice: str = Field(default="", max_length=3000)
+    key_services: str = Field(default="", max_length=3000)
+    forbidden_phrases: str = Field(default="", max_length=3000)
+    website_url: str = Field(default="", max_length=500)
+
+
+class OnboardingRubricItem(BaseModel):
+    name: str = Field(min_length=2, max_length=80)
+    description: str = Field(min_length=10, max_length=3000)
+
+
+class OnboardingRubricsRequest(BaseModel):
+    rubrics: list[OnboardingRubricItem] = Field(min_length=1, max_length=10)
+
+
+class ContentStatusRequest(BaseModel):
+    status: str = Field(
+        pattern=r"^(draft|review|needs_changes|ready|scheduled|published)$"
+    )
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     settings.prepare_directories()
@@ -398,6 +439,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             repository.use(int(user.get("organization_id") or 1))
         return ADMIN_HTML if user else LOGIN_HTML
 
+    @app.get(
+        "/workspace/{org_slug}/drafts/{draft_id}",
+        response_class=HTMLResponse,
+    )
+    def draft_editor_page(
+        org_slug: str,
+        draft_id: int,
+        voicerhub_session: str | None = Cookie(default=None),
+    ) -> str:
+        user = auth.session_user(voicerhub_session)
+        if user is None:
+            return LOGIN_HTML
+        if user.get("organization_slug") != org_slug:
+            raise HTTPException(status_code=404, detail="Чернетку не знайдено")
+        repository.for_organization(organization_id(user)).draft_record(draft_id)
+        return ADMIN_HTML
+
     @app.post("/api/login")
     def login(payload: LoginRequest, response: Response) -> dict:
         user = auth.authenticate(payload.username, payload.password)
@@ -438,8 +496,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def select_workspace(
         payload: WorkspaceSelectRequest,
         voicerhub_session: str | None = Cookie(default=None),
-        _: dict = Depends(authorize_write),
+        x_requested_with: str | None = Header(default=None),
+        _: dict = Depends(authorize),
     ) -> dict:
+        if x_requested_with != "VoicerHubAdmin":
+            raise HTTPException(status_code=403, detail="Missing request guard")
         try:
             auth.select_session_organization(
                 voicerhub_session,
@@ -455,6 +516,121 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=401, detail="Authentication required")
         repository.use(organization_id(user))
         return user
+
+    @app.get("/api/onboarding")
+    def onboarding_state(user: dict = Depends(authorize)) -> dict:
+        return saas.organization_settings(organization_id(user))
+
+    @app.put("/api/onboarding/company")
+    def onboarding_company(
+        payload: OnboardingCompanyRequest,
+        user: dict = Depends(authorize_admin),
+    ) -> dict:
+        if payload.brand_logo_asset_id is not None:
+            repository.get_reference(payload.brand_logo_asset_id)
+        try:
+            company = saas.update_organization(
+                organization_id(user),
+                name=payload.name,
+                slug=payload.slug,
+            )
+        except Exception as exc:
+            if "UNIQUE constraint failed" in str(exc):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Такий slug уже використовується",
+                ) from exc
+            raise
+        settings_row = saas.update_organization_settings(
+            organization_id(user),
+            onboarding_status="in_progress",
+            onboarding_step=2,
+            primary_language=payload.primary_language,
+            brand_primary_color=payload.brand_primary_color,
+            brand_logo_asset_id=payload.brand_logo_asset_id,
+        )
+        return {"company": company, "settings": settings_row}
+
+    @app.put("/api/onboarding/brand")
+    def onboarding_brand(
+        payload: OnboardingBrandRequest,
+        user: dict = Depends(authorize_admin),
+    ) -> dict:
+        if payload.website_url and not payload.website_url.startswith(
+            ("http://", "https://")
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Посилання має починатися з http:// або https://",
+            )
+        return saas.update_organization_settings(
+            organization_id(user),
+            onboarding_status="in_progress",
+            onboarding_step=3,
+            **payload.model_dump(),
+        )
+
+    @app.post("/api/onboarding/rubrics")
+    def onboarding_rubrics(
+        payload: OnboardingRubricsRequest,
+        user: dict = Depends(authorize_admin),
+    ) -> dict:
+        created = []
+        for item in payload.rubrics:
+            slug = re.sub(r"[^a-z0-9-]+", "-", item.name.lower()).strip("-")
+            if not slug:
+                slug = f"rubric-{uuid4().hex[:8]}"
+            try:
+                created.append(
+                    repository.add_rubric(
+                        slug=slug,
+                        name=item.name.strip(),
+                        description=item.description.strip(),
+                    )
+                )
+            except Exception as exc:
+                if "UNIQUE constraint failed" not in str(exc):
+                    raise
+        saas.update_organization_settings(
+            organization_id(user),
+            onboarding_status="in_progress",
+            onboarding_step=5,
+            initial_rubrics_created=1,
+        )
+        return {"rubrics": created}
+
+    @app.post("/api/onboarding/skip")
+    def skip_onboarding(user: dict = Depends(authorize_admin)) -> dict:
+        return saas.update_organization_settings(
+            organization_id(user),
+            onboarding_status="skipped",
+        )
+
+    @app.post("/api/onboarding/restart")
+    def restart_onboarding(user: dict = Depends(authorize_admin)) -> dict:
+        return saas.update_organization_settings(
+            organization_id(user),
+            onboarding_status="not_started",
+            onboarding_step=0,
+        )
+
+    @app.post("/api/onboarding/complete")
+    def complete_onboarding(user: dict = Depends(authorize_admin)) -> dict:
+        return saas.update_organization_settings(
+            organization_id(user),
+            onboarding_status="completed",
+            onboarding_step=5,
+        )
+
+    @app.put("/api/workspace/mode")
+    def update_workspace_mode(
+        payload: WorkspaceModeRequest,
+        user: dict = Depends(authorize_admin),
+    ) -> dict:
+        return saas.update_organization_settings(
+            organization_id(user),
+            workspace_mode=payload.workspace_mode,
+        )
 
     @app.get("/api/users")
     def users(user: dict = Depends(authorize_admin)) -> list[dict]:
@@ -635,6 +811,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             }
         return {
             **company,
+            "settings": saas.organization_settings(current_organization_id),
             "telegram": telegram_connection,
             "user_count": len(saas.member_ids(current_organization_id)),
             "ai_spend": repository.current_month_cost(),
@@ -758,6 +935,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             user["id"],
             "telegram.connected",
             payload.channel_id,
+        )
+        saas.update_organization_settings(
+            organization_id,
+            onboarding_status="in_progress",
+            onboarding_step=4,
         )
         return connection
 
@@ -916,7 +1098,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         record_text_usage(payload.text_model, input_tokens, output_tokens, user["id"])
         plan_id = f"plan-{uuid4().hex[:10]}"
-        return {"plan_id": plan_id, "ideas": save_ideas(plan.ideas, plan_id=plan_id)}
+        saved = save_ideas(plan.ideas, plan_id=plan_id)
+        repository.create_content_plan(
+            plan_id=plan_id,
+            period=payload.period,
+            start_date=payload.start_date.isoformat(),
+            posts=payload.posts,
+            objective=payload.focus,
+            create_as=payload.create_as,
+            rubric_slugs=payload.rubric_slugs,
+            channel_ids=payload.channel_ids,
+            created_by_user_id=user["id"],
+        )
+        jobs = []
+        if payload.create_as == "drafts":
+            for idea in saved:
+                jobs.append(
+                    repository.select_idea(
+                        idea["id"],
+                        text_model=payload.text_model,
+                        created_by_user_id=user["id"],
+                        generation_mode="fast",
+                    ).id
+                )
+        saas.update_organization_settings(
+            organization_id(user),
+            onboarding_status="in_progress",
+            onboarding_step=5,
+            first_content_plan_created=1,
+        )
+        return {"plan_id": plan_id, "ideas": saved, "job_ids": jobs}
 
     @app.post("/api/series/generate")
     async def generate_series(
@@ -938,6 +1149,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         record_text_usage(payload.text_model, input_tokens, output_tokens, user["id"])
         series_id = f"series-{uuid4().hex[:10]}"
+        repository.create_content_series(
+            series_id=series_id,
+            title=payload.topic,
+            parts=payload.parts,
+            rubric_slug=payload.product,
+            created_by_user_id=user["id"],
+        )
         return {
             "series_id": series_id,
             "ideas": save_ideas(
@@ -1497,6 +1715,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return repository.draft_record(draft_id)
 
+    @app.post("/api/drafts/{draft_id}/status")
+    def change_draft_status(
+        draft_id: int,
+        payload: ContentStatusRequest,
+        _: dict = Depends(authorize_write),
+    ) -> dict:
+        if payload.status in {"scheduled", "published"}:
+            raise HTTPException(
+                status_code=409,
+                detail="Для цього статусу використайте планування або публікацію",
+            )
+        try:
+            return repository.transition_draft(draft_id, payload.status)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Чернетку не знайдено",
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.post("/api/drafts/{draft_id}/regenerate-image")
     def regenerate_image(
         draft_id: int,
@@ -1557,6 +1796,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict:
         ensure_publication_quota()
         draft = repository.draft_record(draft_id)
+        if draft["status"] not in {"ready", "scheduled"}:
+            raise HTTPException(
+                status_code=409,
+                detail="Спочатку позначте пост як готовий",
+            )
         image_path = Path(draft["image_path"])
         if not draft["image_path"] or not image_path.is_file():
             raise HTTPException(status_code=409, detail="Image is not ready")
@@ -1580,6 +1824,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         _: str = Depends(authorize_write),
     ) -> dict:
         scheduled_at = payload.scheduled_at
+        draft = repository.draft_record(draft_id)
+        if draft["status"] not in {"ready", "scheduled"}:
+            raise HTTPException(
+                status_code=409,
+                detail="Запланувати можна лише готовий або вже запланований пост",
+            )
         if scheduled_at.tzinfo is None:
             scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
         scheduled_at = scheduled_at.astimezone(timezone.utc)
@@ -1595,7 +1845,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         _: str = Depends(authorize_write),
     ) -> dict:
         repository.cancel_schedule(draft_id)
-        return {"status": "draft"}
+        return {"status": "ready"}
 
     @app.get("/health")
     def health() -> dict:
@@ -1679,13 +1929,13 @@ ADMIN_HTML = r"""
     .metrics{border:0;background:transparent;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}.metric{position:relative;overflow:hidden;border:1px solid rgba(203,213,225,.78);border-radius:8px}.metric::after{content:"";position:absolute;inset:0 auto 0 -50%;width:22%;background:linear-gradient(90deg,transparent,rgba(255,255,255,.75),transparent);transform:translateX(-100%);animation:shimmer 6s ease-in-out infinite}.metric strong{font-size:28px}
     .ideas{border:0;background:transparent;display:grid;gap:10px}.idea{position:relative;grid-template-columns:26px 110px minmax(240px,1fr) auto;background:#fff;border:1px solid rgba(203,213,225,.78);border-radius:8px;box-shadow:var(--shadow-sm);overflow:hidden;transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease}.idea:hover{transform:translateY(-2px);box-shadow:var(--shadow);border-color:rgba(16,191,174,.42)}.idea::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:linear-gradient(180deg,var(--cyan),var(--blue));opacity:.85}.badge,.meta-chip{border-radius:999px}.badge{background:#eef6ff;color:#1d4ed8;letter-spacing:.03em}
     .templates{grid-template-columns:repeat(4,minmax(210px,1fr))}.template{border-radius:8px;min-height:230px;box-shadow:var(--shadow-sm);transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease}.template:hover,.draft:hover,.asset:hover,.planning-panel:hover{transform:translateY(-2px);box-shadow:var(--shadow)}.template.selected{border-color:var(--cyan);box-shadow:0 0 0 4px rgba(16,191,174,.10),var(--shadow)}.template img{filter:saturate(1.06) contrast(1.02)}.template-copy strong{color:#111827}.assets{grid-template-columns:repeat(6,minmax(145px,1fr))}.asset{border-radius:8px;transition:transform .18s ease,box-shadow .18s ease}.asset.selected{box-shadow:0 0 0 4px rgba(16,191,174,.10)}
-    .drafts{grid-template-columns:repeat(3,minmax(280px,1fr));gap:18px}.draft{border-radius:8px;transition:transform .18s ease,box-shadow .18s ease}.draft img{filter:saturate(1.04)}.draft-body{padding:16px}.draft h3{font-size:17px}.draft p{line-height:1.55}
+    .drafts{grid-template-columns:repeat(3,minmax(280px,1fr));gap:18px}.draft{border-radius:8px;transition:transform .18s ease,box-shadow .18s ease}.draft img{filter:saturate(1.04)}.draft-body{padding:16px}.draft h3{font-size:17px}.draft p{line-height:1.55}.kanban{display:grid;grid-template-columns:repeat(5,minmax(230px,1fr));gap:12px;overflow-x:auto;align-items:start}.kanban-column{min-height:220px;padding:12px;border:1px solid var(--line);border-radius:8px;background:#eef3f8}.kanban-column h3{margin:0 0 10px}.kanban-card{margin-bottom:10px;padding:12px;border:1px solid var(--line);border-radius:8px;background:#fff;box-shadow:var(--shadow-sm)}.kanban-card h4{margin:8px 0}.kanban-card p{max-height:64px;overflow:hidden;color:var(--muted)}.home-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.home-card{padding:20px;border:1px solid var(--line);border-radius:8px;background:#fff;box-shadow:var(--shadow-sm)}.home-card strong{display:block;margin-top:8px;font-size:26px}.onboarding-modal{width:min(720px,calc(100vw - 28px));padding:0}.onboarding-body{padding:24px}.onboarding-progress{display:flex;gap:6px;margin:12px 0 22px}.onboarding-progress span{height:5px;flex:1;border-radius:99px;background:#dbe3ee}.onboarding-progress span.active{background:var(--cyan)}.onboarding-fields{display:grid;grid-template-columns:1fr 1fr;gap:12px}.onboarding-fields .wide{grid-column:1/-1}.onboarding-actions{display:flex;justify-content:space-between;gap:10px;margin-top:22px}
     .calendar{border:0;gap:10px;background:transparent;grid-template-columns:repeat(7,minmax(0,1fr))}.weekday{border:0;border-radius:8px;background:#eaf0f7}.day{border:1px solid rgba(203,213,225,.78);border-radius:8px;background:rgba(255,255,255,.88);box-shadow:var(--shadow-sm);transition:transform .16s ease,box-shadow .16s ease}.day:hover{transform:translateY(-2px);box-shadow:var(--shadow)}.day.today{box-shadow:0 0 0 3px rgba(16,191,174,.18),var(--shadow-sm)}.calendar-item{border-radius:7px;border-left:0;background:linear-gradient(135deg,#ecfdf5,#eef6ff);box-shadow:inset 0 0 0 1px rgba(16,191,174,.16);transition:transform .15s ease,box-shadow .15s ease}.calendar-item:hover{transform:translateY(-1px);box-shadow:0 8px 20px rgba(15,23,42,.10)}.calendar-item.published{background:linear-gradient(135deg,#eff6ff,#f5f3ff)}.calendar-item.planned{background:linear-gradient(135deg,#fff7ed,#fefce8)}
     th{background:#f4f7fb;color:#64748b;font-size:11px;letter-spacing:.04em;text-transform:uppercase}td{background:rgba(255,255,255,.78)}tbody tr{transition:background .16s ease}tbody tr:hover td{background:#f8fbff}.scroll{border-radius:8px;overflow:auto;box-shadow:var(--shadow-sm)}.scroll table{box-shadow:none}.status.busy{animation:glow 2s ease-in-out infinite}.notice{border-radius:8px;box-shadow:var(--shadow);animation:rise .22s ease both}
     dialog{border-radius:8px;box-shadow:0 30px 110px rgba(15,23,42,.42)}.editor-head{background:linear-gradient(135deg,#0f172a,#111827);color:#fff}.editor-head button{color:#fff;background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.16)}.editor-grid{background:#f8fafc}.editor-grid img{border-radius:8px;box-shadow:var(--shadow-sm)}#socialVariant{border-radius:8px;background:#fff;box-shadow:var(--shadow-sm)}
     .pricing-button{display:inline-flex;align-items:center;gap:8px;color:#fff!important;border:1px solid rgba(16,191,174,.42)!important;background:linear-gradient(135deg,#0f766e,#2563eb)!important;box-shadow:0 12px 28px rgba(37,99,235,.20)}.pricing-button::before{content:"★";color:#fde68a}.pricing-modal{width:min(1120px,calc(100vw - 28px));max-height:92vh;padding:0;overflow:auto}.pricing-head{display:flex;align-items:flex-start;justify-content:space-between;padding:24px 26px 18px;border-bottom:1px solid var(--line);background:#fff}.pricing-head h2{margin:0;font-size:25px}.pricing-head p{margin:5px 0 0;color:var(--muted)}.pricing-content{padding:22px 26px 26px;background:#f6f8fc}.pricing-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.price-card{position:relative;display:flex;flex-direction:column;min-height:430px;padding:20px;border:1px solid #dbe3ee;border-radius:8px;background:#fff;box-shadow:var(--shadow-sm)}.price-card.popular{border-color:var(--cyan);box-shadow:0 0 0 3px rgba(16,191,174,.10),var(--shadow)}.popular-label{position:absolute;right:14px;top:14px;padding:4px 8px;border-radius:999px;background:#dcfce7;color:#087f6f;font-size:10px;font-weight:900;text-transform:uppercase}.price-card h3{margin:0;font-size:20px}.price-card .tagline{min-height:44px;color:var(--muted)}.price{display:flex;align-items:baseline;gap:7px;margin:14px 0}.price strong{font-size:34px}.price span{color:var(--muted)}.plan-limits{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px}.plan-limit{padding:9px;border-radius:8px;background:#f3f6fb}.plan-limit strong,.plan-limit span{display:block}.plan-limit span{color:var(--muted);font-size:11px}.plan-features{display:grid;gap:8px;margin:0 0 18px;padding:0;list-style:none}.plan-features li{position:relative;padding-left:20px}.plan-features li::before{content:"✓";position:absolute;left:0;color:var(--cyan);font-weight:900}.price-card button{margin-top:auto;width:100%}.billing-note{display:flex;justify-content:space-between;gap:16px;margin-top:16px;padding:14px 16px;border:1px solid #dbe3ee;border-radius:8px;background:#fff;color:var(--muted)}.billing-note strong{color:var(--ink)}.current-plan{color:var(--cyan);font-weight:800}
     @media(max-width:1100px){.app-shell{grid-template-columns:1fr}.sidebar{position:static;height:auto}.tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))}.tab:hover{transform:translateY(-1px)}.sidebar-foot{display:none}.modelbar{grid-template-columns:1fr 1fr}.topbar{position:static}.templates{grid-template-columns:repeat(3,1fr)}}
-    @media(max-width:950px){.drafts{grid-template-columns:repeat(2,1fr)}.editor-grid{grid-template-columns:1fr}.toolbar,.user-create,.planning-grid,.company-form{grid-template-columns:1fr 1fr}.company-grid{grid-template-columns:repeat(2,1fr)}.toolbar label:nth-child(4){grid-column:1/-1}.assets,.templates{grid-template-columns:repeat(3,1fr)}.calendar-wrap{overflow-x:auto}.calendar{min-width:900px}.pricing-grid{grid-template-columns:1fr}.price-card{min-height:0}}
+    @media(max-width:950px){.drafts{grid-template-columns:repeat(2,1fr)}.editor-grid{grid-template-columns:1fr}.toolbar,.user-create,.planning-grid,.company-form{grid-template-columns:1fr 1fr}.company-grid{grid-template-columns:repeat(2,1fr)}.toolbar label:nth-child(4){grid-column:1/-1}.assets,.templates{grid-template-columns:repeat(3,1fr)}.calendar-wrap{overflow-x:auto}.calendar{min-width:900px}.pricing-grid{grid-template-columns:1fr}.price-card{min-height:0}.home-grid{grid-template-columns:1fr}}
     @media(max-width:620px){main,.topbar{padding-left:14px;padding-right:14px}.sidebar{min-width:0}.brand h1{font-size:14px}.topbar{align-items:flex-start;flex-direction:column}.topbar>div:first-child{min-width:0}.topbar p{white-space:normal}.account{gap:6px;flex-wrap:wrap}.account #updated{display:none}.tabs{display:flex;max-width:100%;overflow-x:auto;flex-direction:row}.tab{width:auto;flex:0 0 auto;padding:11px 12px}.toolbar,.modelbar,.user-create,.brand-options,.custom-template,.planning-grid,.variants,.company-grid,.company-form{grid-template-columns:1fr}.toolbar label:nth-child(4),.custom-template .wide,.company-form .wide{grid-column:auto}.drafts{grid-template-columns:1fr}.metrics{grid-template-columns:1fr 1fr}.idea{grid-template-columns:24px 74px minmax(0,1fr)}.idea .editor-actions{grid-column:2/-1}.assets,.templates{grid-template-columns:repeat(2,minmax(0,1fr))}.scroll{overflow-x:auto}.scroll table{min-width:780px}}
     @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
   </style>
@@ -1695,13 +1945,14 @@ ADMIN_HTML = r"""
   <aside class="sidebar">
     <div class="brand"><span class="brand-mark"></span><div><h1>CONTENT STUDIO</h1><span>AI publishing workspace</span></div></div>
     <nav class="tabs">
-      <button class="tab active" data-view="ideasView">Теми</button>
-      <button class="tab" data-view="planningView">Планування</button>
-      <button class="tab" data-view="draftsView">Редактор</button>
+      <button class="tab active" data-view="homeView" data-pipeline-label="Головна" data-kanban-hidden="true">Головна</button>
+      <button class="tab" data-view="ideasView" data-pipeline-label="Ідеї" data-kanban-label="Бібліотека ідей">Ідеї</button>
+      <button class="tab" data-view="planningView" data-pipeline-label="Контент-план" data-kanban-hidden="true">Контент-план</button>
+      <button class="tab" data-view="draftsView" data-pipeline-label="Чернетки" data-kanban-label="Дошка">Чернетки</button>
       <button class="tab" data-view="calendarView">Календар</button>
-      <button class="tab" data-view="opsView">Черга та витрати</button>
-      <button class="tab" data-view="companyView">Компанія</button>
-      <button class="tab" id="usersTab" data-view="usersView">Доступ</button>
+      <button class="tab" data-view="opsView" data-pipeline-label="Витрати" data-kanban-label="Аналітика">Витрати</button>
+      <button class="tab" data-view="companyView">Бренд</button>
+      <button class="tab" id="usersTab" data-view="usersView">Налаштування</button>
       <button class="tab" id="platformTab" data-view="platformView" hidden>Платформа</button>
     </nav>
     <div class="sidebar-foot"><strong id="sidebarCompany">VoicerHub</strong><span>Content operations center</span></div>
@@ -1713,7 +1964,15 @@ ADMIN_HTML = r"""
     </header>
 <main>
 
-  <section id="ideasView" class="view active">
+  <section id="homeView" class="view active">
+    <div class="home-grid">
+      <article class="home-card"><span>Ідеї</span><strong id="homeIdeas">0</strong><button data-home-view="ideasView">Відкрити бібліотеку</button></article>
+      <article class="home-card"><span>Чернетки в роботі</span><strong id="homeDrafts">0</strong><button data-home-view="draftsView">Відкрити чернетки</button></article>
+      <article class="home-card"><span>Заплановано</span><strong id="homeScheduled">0</strong><button data-home-view="calendarView">Відкрити календар</button></article>
+    </div>
+  </section>
+
+  <section id="ideasView" class="view">
     <div class="toolbar">
       <label>Рубрика<select id="ideaProduct"></select></label>
       <label>Кількість<input id="ideaCount" type="number" min="1" max="12" value="6"></label>
@@ -1851,6 +2110,12 @@ ADMIN_HTML = r"""
 
   <section id="companyView" class="view">
     <div class="company-grid" id="companyCards"></div>
+    <h2>Режим робочого простору</h2>
+    <div class="company-form">
+      <label>Навігація<select id="workspaceMode"><option value="pipeline">Pipeline</option><option value="kanban">Kanban</option></select></label>
+      <button class="primary" id="saveWorkspaceMode">Зберегти режим</button>
+      <button id="restartOnboarding">Повторити onboarding</button>
+    </div>
     <h2>Telegram-канал</h2>
     <div class="company-form">
       <label class="wide">Канал або ID<input id="companyChannel" placeholder="@company_channel або -100..."></label>
@@ -1969,6 +2234,14 @@ ADMIN_HTML = r"""
     </div>
   </div>
 </dialog>
+<dialog id="onboarding" class="onboarding-modal">
+  <div class="pricing-head"><div><h2>Налаштування workspace</h2><p id="onboardingSubtitle"></p></div><button id="skipOnboarding">Пропустити</button></div>
+  <div class="onboarding-body">
+    <div id="onboardingProgress" class="onboarding-progress"></div>
+    <div id="onboardingContent"></div>
+    <div class="onboarding-actions"><button id="onboardingBack">Назад</button><button class="primary" id="onboardingNext">Продовжити</button></div>
+  </div>
+</dialog>
 <div id="notice" class="notice"></div>
 
 <script>
@@ -1976,10 +2249,10 @@ const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&
 const money=v=>`$${Number(v||0).toFixed(4)}`; const short=v=>v?`${v.slice(0,14)}...`:"—";
 const rubricLabel=v=>state.data?.rubrics?.find(r=>r.slug===v)?.name||v;
 const toneLabel=v=>({expert:"Експертний",sales:"Продаючий",light:"Легкий",news:"Новинний"}[v]||v);
-const statusLabels={suggested:"Запропоновано",selected:"У черзі",queued_text:"Очікує генерації тексту",text_batch:"Генерується текст",queued_image:"Очікує генерації зображення",image_batch:"Генерується зображення",ready:"Готово",draft:"Чернетка",scheduled:"Заплановано",published:"Опубліковано",failed:"Помилка",completed:"Завершено",in_progress:"Виконується",cancelled:"Скасовано",expired:"Термін минув"};
+const statusLabels={idea:"Ідея",suggested:"Ідея",selected:"У черзі",queued_text:"Очікує генерації тексту",text_batch:"Генерується текст",queued_image:"Очікує генерації зображення",image_batch:"Генерується зображення",review:"На перевірці",needs_changes:"Потрібні зміни",ready:"Готово",draft:"Чернетка",scheduled:"Заплановано",published:"Опубліковано",failed:"Помилка",completed:"Завершено",in_progress:"Виконується",cancelled:"Скасовано",expired:"Термін минув"};
 const busyStatuses=new Set(["selected","queued_text","text_batch","queued_image","image_batch","in_progress"]);
-const viewMeta={ideasView:["Теми","Плануйте і запускайте AI-публікації з одного робочого центру."],planningView:["Планування","Створюйте контент-плани, серії та матеріали на основі сайту."],draftsView:["Редактор","Перевіряйте тексти, візуали та версії для соціальних мереж."],calendarView:["Календар","Контролюйте ритм публікацій і майбутнє навантаження."],opsView:["Черга та витрати","Слідкуйте за генераціями, Batch-завданнями і бюджетом."],companyView:["Компанія","Керуйте каналом, рубриками та корпоративним контекстом."],usersView:["Доступ","Керуйте користувачами, ролями та паролями."],platformView:["Платформа","Контролюйте компанії, використання AI та загальні ліміти."]};
-const state={data:null,me:null,company:null,pricing:null,organizations:[],platformUsage:null,draftId:null,currentDraft:null,socialPlatform:null,socialVariants:[],referenceIds:new Set(),templateId:localStorage.getItem("templateId")||"editorial-dark",calendarDate:new Date(),ideaPage:1,draftPage:1,jobPage:1,pageSize:12,favoritesOnly:false}; const apiUrl=p=>{const u=new URL(p,location.href);u.username="";u.password="";return u};
+const viewMeta={homeView:["Головна","Короткий огляд поточного workspace."],ideasView:["Ідеї","Зберігайте й перетворюйте ідеї на чернетки."],planningView:["Контент-план","Створюйте контент-плани, серії та матеріали на основі сайту."],draftsView:["Чернетки","Перевіряйте тексти, візуали та рух матеріалів."],calendarView:["Календар","Контролюйте ритм публікацій і майбутнє навантаження."],opsView:["Витрати","Слідкуйте за генераціями, Batch-завданнями і бюджетом."],companyView:["Бренд","Керуйте брендом, каналом, рубриками та режимом workspace."],usersView:["Налаштування","Керуйте користувачами, ролями та паролями."],platformView:["Платформа","Контролюйте компанії, використання AI та загальні ліміти."]};
+const state={data:null,me:null,company:null,pricing:null,organizations:[],platformUsage:null,draftId:null,currentDraft:null,socialPlatform:null,socialVariants:[],referenceIds:new Set(),templateId:localStorage.getItem("templateId")||"editorial-dark",calendarDate:new Date(),ideaPage:1,draftPage:1,jobPage:1,pageSize:12,favoritesOnly:false,onboardingStep:1,routeDraftOpened:false}; const apiUrl=p=>{const u=new URL(p,location.href);u.username="";u.password="";return u};
 function errorText(detail){if(typeof detail==="string")return detail;if(Array.isArray(detail))return detail.map(x=>x.msg||x.message||JSON.stringify(x)).join("; ");if(detail&&typeof detail==="object")return detail.message||detail.detail||JSON.stringify(detail);return "Невідома помилка"}
 async function api(path,options={}){options.credentials="same-origin";options.headers={...(options.headers||{}),"X-Requested-With":"VoicerHubAdmin"};if(options.body&&!(options.body instanceof FormData))options.headers["Content-Type"]="application/json";const r=await fetch(apiUrl(path),options);if(!r.ok){let d={};try{d=await r.json()}catch{}const fallback={401:"Потрібно увійти знову",403:"Недостатньо прав",404:"Дані не знайдено",409:"Дію зараз неможливо виконати",422:"Перевірте введені дані",500:"Внутрішня помилка сервера"}[r.status]||`Помилка HTTP ${r.status}`;const detail=d.detail===undefined?fallback:errorText(d.detail);throw new Error(detail)}if(r.status===204)return {};return r.json()}
 function toast(text,error=false){const n=document.querySelector("#notice");n.textContent=errorText(text);n.style.background=error?"#8f1d1d":"#111a2d";n.style.display="block";clearTimeout(n.timer);n.timer=setTimeout(()=>n.style.display="none",5000)}
@@ -1989,16 +2262,22 @@ const generationPayload=(product="",tone="")=>{const modal=document.querySelecto
 for(const id of ["textModel","imageModel","generationMode"]){const el=document.querySelector(`#${id}`);el.value=localStorage.getItem(id)||el.value;el.onchange=()=>localStorage.setItem(id,el.value)}
 function setViewMeta(view){const meta=viewMeta[view]||[view,""];document.querySelector("#viewTitle").textContent=meta[0];document.querySelector("#viewSubtitle").textContent=meta[1]}
 document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{document.querySelectorAll(".tab,.view").forEach(x=>x.classList.remove("active"));b.classList.add("active");document.querySelector(`#${b.dataset.view}`).classList.add("active");setViewMeta(b.dataset.view);renderActive(true)});
+document.querySelectorAll("[data-home-view]").forEach(b=>b.onclick=()=>document.querySelector(`[data-view="${b.dataset.homeView}"]`).click());
+function applyWorkspaceMode(){const mode=state.company?.settings?.workspace_mode||"pipeline";document.querySelector("#workspaceMode").value=mode;document.querySelectorAll(".tab[data-view]").forEach(tab=>{const hidden=mode==="kanban"&&tab.dataset.kanbanHidden==="true";tab.hidden=hidden||tab.id==="platformTab"&&!state.me?.is_super_admin;if(mode==="kanban"&&tab.dataset.kanbanLabel)tab.textContent=tab.dataset.kanbanLabel;if(mode==="pipeline"&&tab.dataset.pipelineLabel)tab.textContent=tab.dataset.pipelineLabel});if(document.querySelector(".tab.active")?.hidden)document.querySelector('[data-view="draftsView"]').click()}
+function applyRoleAccess(){if(state.me?.role!=="viewer")return;for(const id of ["generateIdeas","generateSelected","generatePlan","generateSeries","importMaterial","showCustomTemplate","referenceUpload","saveWorkspaceMode","restartOnboarding","saveTelegram","showRubricForm","createUser","saveDraft","regenImage","regenText","proofreadDraft","favoriteDraft","publishNow","scheduleDraft","cancelSchedule"])document.querySelector(`#${id}`)?.setAttribute("hidden","");document.querySelectorAll("[data-social-generate]").forEach(button=>button.hidden=true)}
 const paginate=(items,page,size)=>items.slice((page-1)*size,page*size);
 function pagination(id,total,page,setter){const pages=Math.max(1,Math.ceil(total/state.pageSize));page=Math.min(page,pages);document.querySelector(`#${id}`).innerHTML=total>state.pageSize?`<button data-page-prev ${page<=1?"disabled":""}>←</button><span>Сторінка ${page} з ${pages}</span><button data-page-next ${page>=pages?"disabled":""}>→</button>`:"";document.querySelector(`#${id} [data-page-prev]`)?.addEventListener("click",()=>setter(page-1));document.querySelector(`#${id} [data-page-next]`)?.addEventListener("click",()=>setter(page+1))}
-function renderIdeas(ideas){const page=paginate(ideas,state.ideaPage,state.pageSize);document.querySelector("#ideas").innerHTML=page.length?page.map(i=>{const busy=busyStatuses.has(i.status);const done=["ready","draft","scheduled","published"].includes(i.status);const duplicate=Number(i.duplicate_score||0)>=.62;return `<div class="idea"><input class="ideaCheck" type="checkbox" value="${i.id}" ${i.status!=="suggested"?"disabled":""}><span class="badge">${esc(rubricLabel(i.product))}</span><div><strong>${esc(i.series_part?`${i.series_part}/${i.series_title} · ${i.title}`:i.title)}</strong><p>${esc(i.angle)}</p><div class="idea-meta"><span class="meta-chip">${esc(toneLabel(i.tone))}</span>${i.planned_for?`<span class="meta-chip">${esc(new Date(`${i.planned_for}T12:00:00`).toLocaleDateString("uk-UA"))}</span>`:""}${i.source_url?`<span class="meta-chip">Матеріал із сайту</span>`:""}${duplicate?`<span class="meta-chip warn">Схожість ${Math.round(i.duplicate_score*100)}%</span>`:""}</div><span class="status ${esc(i.status)} ${busy?"busy":""}">${esc(statusLabels[i.status]||i.status)}</span></div><div class="editor-actions">${done&&i.draft_id?`<button data-open-idea="${i.draft_id}">Відкрити пост</button>`:`<button data-idea="${i.id}" ${i.status!=="suggested"?"disabled":""}>${i.status==="suggested"?"Створити пост":esc(statusLabels[i.status]||i.status)}</button>`}<button class="danger" data-delete-idea="${i.id}" title="Видалити тему">✕</button></div></div>`}).join(""):`<div class="empty">Згенеруйте перший набір тем</div>`;pagination("ideasPagination",ideas.length,state.ideaPage,p=>{state.ideaPage=p;renderIdeas(ideas)});document.querySelectorAll("[data-idea]").forEach(b=>b.onclick=()=>generateIdea(Number(b.dataset.idea)));document.querySelectorAll("[data-open-idea]").forEach(b=>b.onclick=()=>openDraft(b.dataset.openIdea));document.querySelectorAll("[data-delete-idea]").forEach(b=>b.onclick=async()=>{if(!confirm("Видалити цю тему зі списку?"))return;try{await api(`api/ideas/${b.dataset.deleteIdea}`,{method:"DELETE"});await refresh()}catch(e){toast(e.message,true)}})}
+function renderIdeas(ideas){const page=paginate(ideas,state.ideaPage,state.pageSize);const writable=state.me?.role!=="viewer";document.querySelector("#ideas").innerHTML=page.length?page.map(i=>{const busy=busyStatuses.has(i.status);const available=["idea","suggested"].includes(i.status);const done=["ready","draft","review","needs_changes","scheduled","published"].includes(i.status);const duplicate=Number(i.duplicate_score||0)>=.62;return `<div class="idea"><input class="ideaCheck" type="checkbox" value="${i.id}" ${!available||!writable?"disabled":""}><span class="badge">${esc(rubricLabel(i.product))}</span><div><strong>${esc(i.series_part?`${i.series_part}/${i.series_title} · ${i.title}`:i.title)}</strong><p>${esc(i.angle)}</p><div class="idea-meta"><span class="meta-chip">${esc(toneLabel(i.tone))}</span>${i.planned_for?`<span class="meta-chip">${esc(new Date(`${i.planned_for}T12:00:00`).toLocaleDateString("uk-UA"))}</span>`:""}${i.source_url?`<span class="meta-chip">Матеріал із сайту</span>`:""}${duplicate?`<span class="meta-chip warn">Схожість ${Math.round(i.duplicate_score*100)}%</span>`:""}</div><span class="status ${esc(i.status)} ${busy?"busy":""}">${esc(statusLabels[i.status]||i.status)}</span></div><div class="editor-actions">${done&&i.draft_id?`<button data-open-idea="${i.draft_id}">Відкрити пост</button>`:writable?`<button data-idea="${i.id}" ${available?"":"disabled"}>${available?"Створити чернетку":esc(statusLabels[i.status]||i.status)}</button>`:""}${writable?`<button class="danger" data-delete-idea="${i.id}" title="Видалити тему">✕</button>`:""}</div></div>`}).join(""):`<div class="empty">Тут поки порожньо. Створіть перші ідеї або контент-план.</div>`;pagination("ideasPagination",ideas.length,state.ideaPage,p=>{state.ideaPage=p;renderIdeas(ideas)});document.querySelectorAll("[data-idea]").forEach(b=>b.onclick=()=>generateIdea(Number(b.dataset.idea)));document.querySelectorAll("[data-open-idea]").forEach(b=>b.onclick=()=>openDraft(b.dataset.openIdea));document.querySelectorAll("[data-delete-idea]").forEach(b=>b.onclick=async()=>{if(!confirm("Видалити цю тему зі списку?"))return;try{await api(`api/ideas/${b.dataset.deleteIdea}`,{method:"DELETE"});await refresh()}catch(e){toast(e.message,true)}})}
 function renderTemplates(templates){document.querySelector("#templates").innerHTML=templates.map(t=>`<article class="template ${t.id===state.templateId?"selected":""}" data-template="${esc(t.id)}">${t.has_preview?`<img src="api/templates/${esc(t.id)}/preview?v=2" alt="${esc(t.name)}">`:`<div class="empty">Прев’ю ще немає</div>`}<span class="template-copy"><strong>${esc(t.name)}</strong><span>${esc(t.description)}</span></span>${t.custom?`<span class="template-actions">${!t.has_preview?`<button data-preview-template="${esc(t.id)}">Створити прев’ю</button>`:""}<button class="danger" data-delete-template="${esc(t.id)}">Видалити</button></span>`:""}</article>`).join("");const editorSelect=document.querySelector("#editorTemplate");const current=editorSelect.value;editorSelect.innerHTML=templates.map(t=>`<option value="${esc(t.id)}">${esc(t.name)}</option>`).join("");editorSelect.value=templates.some(t=>t.id===current)?current:state.templateId;document.querySelectorAll("[data-template]").forEach(card=>card.onclick=e=>{if(e.target.closest("[data-preview-template],[data-delete-template]"))return;state.templateId=card.dataset.template;localStorage.setItem("templateId",state.templateId);renderTemplates(templates)});document.querySelectorAll("[data-preview-template]").forEach(b=>b.onclick=()=>loading(b,async()=>{await api(`api/templates/${b.dataset.previewTemplate}/generate-preview`,{method:"POST"});await refresh()},"Генерується"));document.querySelectorAll("[data-delete-template]").forEach(b=>b.onclick=async()=>{if(!confirm("Видалити цей шаблон?"))return;try{await api(`api/templates/${b.dataset.deleteTemplate}`,{method:"DELETE"});if(state.templateId===b.dataset.deleteTemplate)state.templateId="editorial-dark";await refresh()}catch(e){toast(e.message,true)}})}
 function renderLogoOptions(assets){for(const id of ["logoReference","editorLogo","companyLogoReference","editorCompanyLogo"]){const select=document.querySelector(`#${id}`);const current=select.value;const company=id.toLowerCase().includes("company");select.innerHTML=`<option value="">${company?"Без логотипа компанії":"Без логотипа продукту"}</option>`+assets.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join("");if(assets.some(a=>String(a.id)===current))select.value=current}}
 function renderAssets(assets){const valid=new Set(assets.map(a=>a.id));for(const id of state.referenceIds)if(!valid.has(id))state.referenceIds.delete(id);document.querySelector("#assets").innerHTML=assets.length?assets.map(a=>`<article class="asset ${state.referenceIds.has(a.id)?"selected":""}" data-asset="${a.id}"><img src="api/references/${a.id}/image" alt="${esc(a.name)}"><div class="asset-info"><input type="checkbox" ${state.referenceIds.has(a.id)?"checked":""}><span title="${esc(a.name)}">${esc(a.name)}</span><button class="asset-delete" data-delete-asset="${a.id}" title="Видалити">✕</button></div></article>`).join(""):`<div class="empty">Додайте логотипи продуктів, скриншоти або приклади стилю</div>`;document.querySelectorAll("[data-asset]").forEach(card=>card.onclick=e=>{if(e.target.closest("[data-delete-asset]"))return;const id=Number(card.dataset.asset);if(state.referenceIds.has(id))state.referenceIds.delete(id);else if(state.referenceIds.size>=16)return toast("Можна обрати не більше 16 матеріалів");else state.referenceIds.add(id);renderAssets(state.data.references)});document.querySelectorAll("[data-delete-asset]").forEach(b=>b.onclick=async()=>{if(!confirm("Видалити цей бренд-матеріал?"))return;await api(`api/references/${b.dataset.deleteAsset}`,{method:"DELETE"});state.referenceIds.delete(Number(b.dataset.deleteAsset));refresh()})}
-function renderDrafts(drafts){const filtered=state.favoritesOnly?drafts.filter(d=>d.is_favorite):drafts;const page=paginate(filtered,state.draftPage,state.pageSize);document.querySelector("#drafts").innerHTML=page.length?page.map(d=>`<article class="draft" data-draft-card="${d.id}">${d.image_path?`<img src="api/drafts/${d.id}/image" alt="">`:`<div class="empty"><span class="spinner"></span>Зображення генерується</div>`}<div class="draft-body"><div class="draft-meta"><span class="badge">${esc(rubricLabel(d.product))}${d.is_favorite?" · ★":""}</span><span class="status ${esc(d.status)}">${esc(statusLabels[d.status]||d.status)}</span></div><h3>${esc(d.title)}</h3><p>${esc(d.caption_html.replace(/<[^>]+>/g,""))}</p><button data-draft="${d.id}">Відкрити редактор</button></div></article>`).join(""):`<div class="empty">${state.favoritesOnly?"Вдалих прикладів ще немає":"Готових чернеток поки немає"}</div>`;pagination("draftsPagination",filtered.length,state.draftPage,p=>{state.draftPage=p;renderDrafts(drafts)});document.querySelectorAll("[data-draft]").forEach(b=>b.onclick=()=>openDraft(b.dataset.draft))}
+const draftTransitions={draft:["review","ready"],review:["needs_changes","ready"],needs_changes:["draft"],ready:["draft"],scheduled:["ready"],published:[]};
+async function changeDraftStatus(id,status){try{await api(`api/drafts/${id}/status`,{method:"POST",body:JSON.stringify({status})});toast(`Статус: ${statusLabels[status]}`);await refresh()}catch(e){toast(e.message,true)}}
+function statusActions(d){if(state.me?.role==="viewer")return "";return (draftTransitions[d.status]||[]).map(status=>`<button data-status-draft="${d.id}" data-status="${status}">${esc(statusLabels[status])}</button>`).join("")}
+function renderDrafts(drafts){const filtered=state.favoritesOnly?drafts.filter(d=>d.is_favorite):drafts;const kanban=state.company?.settings?.workspace_mode==="kanban";const container=document.querySelector("#drafts");container.className=kanban?"kanban":"drafts";if(kanban){const columns=["draft","review","needs_changes","ready","scheduled"];container.innerHTML=columns.map(status=>{const items=filtered.filter(d=>d.status===status);return `<section class="kanban-column"><h3>${esc(statusLabels[status])} · ${items.length}</h3>${items.map(d=>`<article class="kanban-card" data-draft-card="${d.id}"><span class="badge">${esc(rubricLabel(d.product))}</span><h4>${esc(d.title)}</h4><p>${esc(d.caption_html.replace(/<[^>]+>/g,""))}</p><div class="editor-actions"><button data-draft="${d.id}">Відкрити</button>${statusActions(d)}</div></article>`).join("")||`<div class="empty">Немає матеріалів</div>`}</section>`}).join("");document.querySelector("#draftsPagination").innerHTML=""}else{const page=paginate(filtered,state.draftPage,state.pageSize);container.innerHTML=page.length?page.map(d=>`<article class="draft" data-draft-card="${d.id}">${d.image_path?`<img src="api/drafts/${d.id}/image" alt="">`:`<div class="empty"><span class="spinner"></span>Зображення генерується</div>`}<div class="draft-body"><div class="draft-meta"><span class="badge">${esc(rubricLabel(d.product))}${d.is_favorite?" · ★":""}</span><span class="status ${esc(d.status)}">${esc(statusLabels[d.status]||d.status)}</span></div><h3>${esc(d.title)}</h3><p>${esc(d.caption_html.replace(/<[^>]+>/g,""))}</p><div class="editor-actions"><button data-draft="${d.id}">Відкрити редактор</button>${statusActions(d)}</div></div></article>`).join(""):`<div class="empty">${state.favoritesOnly?"Вдалих прикладів ще немає":"Чернеток ще немає. Створіть їх з бібліотеки ідей."}</div>`;pagination("draftsPagination",filtered.length,state.draftPage,p=>{state.draftPage=p;renderDrafts(drafts)})}document.querySelectorAll("[data-draft]").forEach(b=>b.onclick=()=>openDraft(b.dataset.draft));document.querySelectorAll("[data-status-draft]").forEach(b=>b.onclick=()=>changeDraftStatus(b.dataset.statusDraft,b.dataset.status))}
 function updateDraftStatuses(drafts){for(const d of drafts){const card=document.querySelector(`[data-draft-card="${d.id}"]`);if(card){const el=card.querySelector(".status");el.className=`status ${d.status}`;el.textContent=statusLabels[d.status]||d.status}}}
 function renderUsers(users){document.querySelector("#users").innerHTML=users.map(u=>`<tr><td><strong>${esc(u.username)}</strong></td><td>${u.is_admin?"Адміністратор":"Редактор"}</td><td class="status ${u.active?"ready":"failed"}">${u.active?"Активний":"Заблокований"}</td><td>${esc(new Date(`${u.created_at}Z`).toLocaleDateString("uk-UA"))}</td><td><div class="user-actions"><button data-role-user="${u.id}">${u.is_admin?"Зробити редактором":"Зробити адміністратором"}</button><button data-active-user="${u.id}" class="${u.active?"danger":""}">${u.active?"Заблокувати":"Активувати"}</button><button data-password-user="${u.id}">Новий пароль</button></div></td></tr>`).join("");document.querySelectorAll("[data-role-user]").forEach(b=>b.onclick=async()=>{const u=users.find(x=>x.id===Number(b.dataset.roleUser));await api(`api/users/${u.id}`,{method:"PATCH",body:JSON.stringify({is_admin:!u.is_admin})});refreshUsers()});document.querySelectorAll("[data-active-user]").forEach(b=>b.onclick=async()=>{const u=users.find(x=>x.id===Number(b.dataset.activeUser));await api(`api/users/${u.id}`,{method:"PATCH",body:JSON.stringify({active:!u.active})});refreshUsers()});document.querySelectorAll("[data-password-user]").forEach(b=>b.onclick=async()=>{const password=prompt("Новий пароль, мінімум 10 символів");if(!password)return;await api(`api/users/${b.dataset.passwordUser}/password`,{method:"PUT",body:JSON.stringify({password})});toast("Пароль змінено")})}
-function renderCompany(company){state.company=company;document.querySelector("#currentCompany").textContent=company.name;document.querySelector("#sidebarCompany").textContent=company.name;document.querySelector("#companyCards").innerHTML=`<div class="company-card"><span>Компанія</span><strong>${esc(company.name)}</strong></div><div class="company-card"><span>Користувачі</span><strong>${company.user_count} / ${company.max_users}</strong></div><div class="company-card"><span>Telegram-канали</span><strong>${company.telegram?.configured?"1 підключено":`0 / ${company.max_channels}`}</strong></div><div class="company-card"><span>Публікації цього місяця</span><strong>${company.publication_count} / ${company.monthly_publications}</strong></div><div class="company-card"><span>AI-витрати цього місяця</span><strong>${money(company.ai_spend)} / $${Number(company.monthly_ai_budget).toFixed(0)}</strong></div>`;document.querySelector("#companyChannel").value=company.telegram?.channel_id||""}
+function renderCompany(company){state.company=company;document.querySelector("#currentCompany").textContent=company.name;document.querySelector("#sidebarCompany").textContent=company.name;document.querySelector("#companyCards").innerHTML=`<div class="company-card"><span>Компанія</span><strong>${esc(company.name)}</strong></div><div class="company-card"><span>Користувачі</span><strong>${company.user_count} / ${company.max_users}</strong></div><div class="company-card"><span>Telegram-канали</span><strong>${company.telegram?.configured?"1 підключено":`0 / ${company.max_channels}`}</strong></div><div class="company-card"><span>Публікації цього місяця</span><strong>${company.publication_count} / ${company.monthly_publications}</strong></div><div class="company-card"><span>AI-витрати цього місяця</span><strong>${money(company.ai_spend)} / $${Number(company.monthly_ai_budget).toFixed(0)}</strong></div>`;document.querySelector("#companyChannel").value=company.telegram?.channel_id||"";applyWorkspaceMode()}
 function renderPricing(data){state.pricing=data;const expires=data.expires_at?new Date(data.expires_at).toLocaleDateString("uk-UA"):"";document.querySelector("#pricingGrid").innerHTML=data.plans.map(plan=>{const current=data.current_plan===plan.code;return `<article class="price-card ${plan.popular?"popular":""}">${plan.popular?`<span class="popular-label">Найпопулярніший</span>`:""}<h3>${esc(plan.name)}</h3><p class="tagline">${esc(plan.tagline)}</p><div class="price"><strong>${number(plan.stars)} ★</strong><span>/ 30 днів</span></div><div class="plan-limits"><div class="plan-limit"><strong>${number(plan.publications)}</strong><span>публікацій / місяць</span></div><div class="plan-limit"><strong>${number(plan.users)}</strong><span>користувачів</span></div><div class="plan-limit"><strong>${number(plan.channels)}</strong><span>Telegram-канал</span></div><div class="plan-limit"><strong>$${Number(plan.ai_budget).toFixed(0)}</strong><span>AI-бюджет / місяць</span></div></div><ul class="plan-features">${plan.features.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>${current?`<button disabled class="current-plan">Поточний тариф${expires?` · до ${expires}`:""}</button>`:`<button class="${plan.popular?"success":"primary"}" data-buy-plan="${esc(plan.code)}" ${state.me?.is_admin?"":"disabled"}>${state.me?.is_admin?"Оплатити в Telegram":"Доступно адміністратору"}</button>`}</article>`}).join("");document.querySelectorAll("[data-buy-plan]").forEach(button=>button.onclick=()=>buyPlan(button,button.dataset.buyPlan))}
 async function buyPlan(button,planCode){const popup=window.open("about:blank","_blank");const result=await loading(button,()=>api("api/billing/checkout",{method:"POST",body:JSON.stringify({plan_code:planCode})}),"Створюється рахунок");if(!result){popup?.close();return}if(popup)popup.location=result.invoice_url;else location.href=result.invoice_url;toast("Рахунок відкрито в Telegram")}
 function renderRubrics(items){const active=items.filter(r=>r.active);document.querySelector("#rubrics").innerHTML=items.map(r=>`<tr><td><strong>${esc(r.name)}</strong></td><td class="masked">${esc(r.slug)}</td><td>${esc(r.description.slice(0,160))}</td><td>${r.default_link?`<a href="${esc(r.default_link)}" target="_blank">Відкрити</a>`:"—"}</td><td class="status ${r.active?"ready":"failed"}">${r.active?"Активна":"Вимкнена"}</td><td><button data-toggle-rubric="${r.id}">${r.active?"Вимкнути":"Увімкнути"}</button></td></tr>`).join("")||`<tr><td colspan="6" class="empty">Створіть першу рубрику компанії</td></tr>`;const options=active.map(r=>`<option value="${esc(r.slug)}">${esc(r.name)}</option>`).join("");for(const id of ["ideaProduct","planProduct","materialProduct"]){const select=document.querySelector(`#${id}`),current=select.value;select.innerHTML=`<option value="all">Усі рубрики</option>${options}`;if([...select.options].some(o=>o.value===current))select.value=current}const series=document.querySelector("#seriesProduct"),seriesCurrent=series.value;series.innerHTML=options;if([...series.options].some(o=>o.value===seriesCurrent))series.value=seriesCurrent;syncRubricControls();document.querySelectorAll("[data-toggle-rubric]").forEach(b=>b.onclick=async()=>{const r=items.find(x=>x.id===Number(b.dataset.toggleRubric));await api(`api/rubrics/${r.id}`,{method:"PUT",body:JSON.stringify({name:r.name,description:r.description,instructions:r.instructions,default_link:r.default_link,active:!r.active})});await refresh()})}
@@ -2015,9 +2294,13 @@ async function refreshCompany(){try{renderCompany(await api("api/company"))}catc
 async function refreshOrganizations(){if(!state.me?.is_super_admin)return;try{renderOrganizations(await api("api/organizations"))}catch(e){toast(e.message,true)}}
 async function refreshPlatformUsage(){if(!state.me?.is_super_admin)return;try{renderPlatformUsage(await api(`api/platform/usage?period=${document.querySelector("#usagePeriod").value}`))}catch(e){toast(e.message,true)}}
 function activeView(){return document.querySelector(".view.active")?.id}
-function renderActive(full=false){if(!state.data)return;renderRubrics(state.data.rubrics||[]);const view=activeView();if(view==="ideasView"){renderIdeas(state.data.ideas);if(full){renderTemplates(state.data.templates||[]);renderLogoOptions(state.data.references||[]);renderAssets(state.data.references||[])}}else if(view==="draftsView"){if(full)renderDrafts(state.data.drafts);else updateDraftStatuses(state.data.drafts)}else if(view==="calendarView")renderCalendar();else if(view==="opsView")renderOps(state.data);else if(view==="companyView"&&state.company)renderCompany(state.company);else if(view==="platformView"){renderOrganizations(state.organizations);if(state.platformUsage)renderPlatformUsage(state.platformUsage)}}
+function renderHome(){const ideas=state.data?.ideas||[],drafts=state.data?.drafts||[];document.querySelector("#homeIdeas").textContent=ideas.filter(i=>["idea","suggested"].includes(i.status)).length;document.querySelector("#homeDrafts").textContent=drafts.filter(d=>["draft","review","needs_changes","ready"].includes(d.status)).length;document.querySelector("#homeScheduled").textContent=drafts.filter(d=>d.status==="scheduled").length}
+function renderActive(full=false){if(!state.data)return;renderRubrics(state.data.rubrics||[]);renderHome();const view=activeView();if(view==="ideasView"){renderIdeas(state.data.ideas);if(full){renderTemplates(state.data.templates||[]);renderLogoOptions(state.data.references||[]);renderAssets(state.data.references||[])}}else if(view==="draftsView"){if(full||state.company?.settings?.workspace_mode==="kanban")renderDrafts(state.data.drafts);else updateDraftStatuses(state.data.drafts)}else if(view==="calendarView")renderCalendar();else if(view==="opsView")renderOps(state.data);else if(view==="companyView"&&state.company)renderCompany(state.company);else if(view==="platformView"){renderOrganizations(state.organizations);if(state.platformUsage)renderPlatformUsage(state.platformUsage)}}
 function renderWorkspaceSelector(){const select=document.querySelector("#workspaceSelect");const rows=state.me?.workspaces||[];select.hidden=rows.length<2&&!state.me?.is_super_admin;select.innerHTML=rows.map(x=>`<option value="${x.id}" ${Number(state.me.organization_id)===Number(x.id)?"selected":""}>Workspace: ${esc(x.name)}</option>`).join("")}
-async function refresh(background=false){try{if(!state.me){state.me=await api("api/me");document.querySelector("#currentUser").textContent=state.me.username;renderWorkspaceSelector();if(state.me.is_admin){document.querySelector("#userAdmin").hidden=false;await refreshUsers()}if(state.me.is_super_admin){document.querySelector("#platformTab").hidden=false;await refreshOrganizations();await refreshPlatformUsage()}await refreshCompany()}const d=await api("api/dashboard");state.data=d;renderActive(!background);document.querySelector("#updated").textContent=new Date().toLocaleTimeString("uk-UA")}catch(e){if(e.message.includes("увійти"))location.reload();else if(!background)toast(e.message,true)}}
+function onboardingMarkup(step){const settings=state.company?.settings||{};const company=state.company||{};const rubrics=state.data?.rubrics||[];const titles=["Компанія","Бренд","Telegram","Рубрики","Перший контент-план"];document.querySelector("#onboardingSubtitle").textContent=`Крок ${step} з 5 · ${titles[step-1]}`;document.querySelector("#onboardingProgress").innerHTML=[1,2,3,4,5].map(x=>`<span class="${x<=step?"active":""}"></span>`).join("");document.querySelector("#onboardingBack").disabled=step===1;document.querySelector("#onboardingNext").textContent=step===5?"Завершити":"Продовжити";if(step===1)return `<div class="onboarding-fields"><label>Назва компанії<input id="obName" value="${esc(company.name||"")}"></label><label>Slug<input id="obSlug" value="${esc(company.slug||"workspace")}"></label><label>Мова<select id="obLanguage"><option value="uk">Українська</option><option value="en">English</option></select></label><label>Основний колір<input id="obColor" type="color" value="${esc(settings.brand_primary_color||"#10bfae")}"></label></div>`;if(step===2)return `<div class="onboarding-fields"><label class="wide">Опис компанії<textarea id="obDescription">${esc(settings.company_description||"")}</textarea></label><label class="wide">Tone of voice<textarea id="obTone">${esc(settings.tone_of_voice||"")}</textarea></label><label>Ключові послуги<textarea id="obServices">${esc(settings.key_services||"")}</textarea></label><label>Заборонені фрази<textarea id="obForbidden">${esc(settings.forbidden_phrases||"")}</textarea></label><label class="wide">Сайт<input id="obWebsite" type="url" value="${esc(settings.website_url||"")}"></label></div>`;if(step===3)return `<div class="onboarding-fields"><label class="wide">Канал або ID<input id="obChannel" value="${esc(company.telegram?.channel_id||"")}" placeholder="@company_channel"></label><label class="wide">Токен бота<input id="obToken" type="password" placeholder="Можна пропустити цей крок"></label></div>`;if(step===4)return `<div class="onboarding-fields"><label class="wide">Початкові рубрики, по одній у рядку<textarea id="obRubrics" placeholder="Експертні матеріали&#10;Кейси клієнтів&#10;Новини компанії">${rubrics.map(r=>r.name).join("\n")}</textarea></label></div>`;return `<div class="onboarding-fields"><label>Період<select id="obPeriod"><option value="week">Тиждень</option><option value="month">Місяць</option></select></label><label>Кількість постів<input id="obPosts" type="number" min="1" max="31" value="5"></label><label>Створити як<select id="obCreateAs"><option value="ideas">Ідеї</option><option value="drafts">Чернетки в черзі</option></select></label><label class="wide">Мета плану<textarea id="obFocus" placeholder="Що має дати цей контент-план"></textarea></label></div>`}
+function showOnboarding(step=1){state.onboardingStep=Math.max(1,Math.min(5,step));document.querySelector("#onboardingContent").innerHTML=onboardingMarkup(state.onboardingStep);const modal=document.querySelector("#onboarding");if(!modal.open)modal.showModal()}
+async function saveOnboardingStep(){const step=state.onboardingStep;if(step===1){await api("api/onboarding/company",{method:"PUT",body:JSON.stringify({name:document.querySelector("#obName").value,slug:document.querySelector("#obSlug").value,primary_language:document.querySelector("#obLanguage").value,brand_primary_color:document.querySelector("#obColor").value,brand_logo_asset_id:null})})}else if(step===2){await api("api/onboarding/brand",{method:"PUT",body:JSON.stringify({company_description:document.querySelector("#obDescription").value,tone_of_voice:document.querySelector("#obTone").value,key_services:document.querySelector("#obServices").value,forbidden_phrases:document.querySelector("#obForbidden").value,website_url:document.querySelector("#obWebsite").value})})}else if(step===3){const token=document.querySelector("#obToken").value;if(token)await api("api/company/telegram",{method:"PUT",body:JSON.stringify({channel_id:document.querySelector("#obChannel").value,bot_token:token})})}else if(step===4){const rubrics=document.querySelector("#obRubrics").value.split("\n").map(name=>name.trim()).filter(Boolean).map(name=>({name,description:`Матеріали та публікації для рубрики «${name}».`}));if(rubrics.length)await api("api/onboarding/rubrics",{method:"POST",body:JSON.stringify({rubrics})})}else{await api("api/content-plan/generate",{method:"POST",body:JSON.stringify({period:document.querySelector("#obPeriod").value,start_date:new Date().toISOString().slice(0,10),posts:Number(document.querySelector("#obPosts").value),product:"all",focus:document.querySelector("#obFocus").value,text_model:document.querySelector("#textModel").value,create_as:document.querySelector("#obCreateAs").value,rubric_slugs:[],channel_ids:[]})});await api("api/onboarding/complete",{method:"POST"});document.querySelector("#onboarding").close();state.company=null;await refreshCompany();await refresh();return}state.onboardingStep++;showOnboarding(state.onboardingStep)}
+async function refresh(background=false){try{if(!state.me){state.me=await api("api/me");document.querySelector("#currentUser").textContent=state.me.username;renderWorkspaceSelector();applyRoleAccess();if(state.me.is_admin){document.querySelector("#userAdmin").hidden=false;await refreshUsers()}if(state.me.is_super_admin){document.querySelector("#platformTab").hidden=false;await refreshOrganizations();await refreshPlatformUsage()}await refreshCompany()}const d=await api("api/dashboard");state.data=d;renderActive(!background);document.querySelector("#updated").textContent=new Date().toLocaleTimeString("uk-UA");const settings=state.company?.settings;if(!background&&state.me?.is_admin&&settings&&!["completed","skipped"].includes(settings.onboarding_status))showOnboarding(Math.max(1,Number(settings.onboarding_step||0)+1));if(!state.routeDraftOpened){const parts=location.pathname.split("/").filter(Boolean);if(parts.length===4&&parts[0]==="workspace"&&parts[2]==="drafts"&&Number(parts[3])){state.routeDraftOpened=true;await openDraft(parts[3],false)}}}catch(e){if(e.message.includes("увійти"))location.reload();else if(!background)toast(e.message,true)}}
 async function generateIdea(id){const idea=state.data.ideas.find(i=>i.id===id);const button=document.querySelector(`[data-idea="${id}"]`);await loading(button,async()=>{await api(`api/ideas/${id}/generate`,{method:"POST",body:JSON.stringify(generationPayload(idea?.product,idea?.tone))});toast("Пост поставлено в чергу генерації");await refresh()},"Додається")}
 function syncRubricControls(){const rubric=state.data?.rubrics?.find(r=>r.slug===document.querySelector("#ideaProduct").value);const fixed=!!rubric?.fixed_cover_path;document.querySelectorAll(".image-setting:not(#customTemplateForm)").forEach(el=>el.hidden=fixed);if(fixed)document.querySelector("#customTemplateForm").hidden=true;document.querySelector("#waveCoverNotice").hidden=!fixed}
 document.querySelector("#ideaProduct").onchange=syncRubricControls;
@@ -2031,8 +2314,11 @@ document.querySelector("#toggleFavorites").onclick=()=>{state.favoritesOnly=!sta
 document.querySelector("#generateSelected").onclick=async()=>{const ids=[...document.querySelectorAll(".ideaCheck:checked")].map(x=>x.value);for(const id of ids)await generateIdea(id);if(!ids.length)toast("Оберіть хоча б одну тему")};
 const jsonList=value=>{try{return JSON.parse(value||"[]")}catch{return[]}};
 function showSocialVariant(v){state.socialPlatform=v.platform;document.querySelector("#socialVariant").hidden=false;document.querySelector("#socialPlatform").textContent=({instagram:"Instagram",linkedin:"LinkedIn",facebook:"Facebook",x:"X"}[v.platform]||v.platform);document.querySelector("#socialTitle").value=v.title;document.querySelector("#socialText").value=v.text_content;document.querySelector("#socialImage").src=`api/drafts/${state.draftId}/social-variants/${v.platform}/image?v=${Date.now()}`;document.querySelector("#downloadSocialImage").href=`api/drafts/${state.draftId}/social-variants/${v.platform}/image?download=true`}
-async function openDraft(id){try{const d=await api(`api/drafts/${id}`);const rubric=state.data?.rubrics?.find(r=>r.slug===d.product);const fixed=!!rubric?.fixed_cover_path;state.draftId=id;state.currentDraft=d;state.socialVariants=await api(`api/drafts/${id}/social-variants`);state.socialPlatform=null;document.querySelector("#socialVariant").hidden=true;document.querySelector("#editorTitle").value=d.title;document.querySelector("#editorCaption").value=d.caption_html;document.querySelector("#editorLink").value=d.link_url||"";document.querySelector("#titleVariants").innerHTML=jsonList(d.title_options).map(x=>`<button data-title-option="${esc(x)}">${esc(x)}</button>`).join("");document.querySelector("#ctaVariants").innerHTML=jsonList(d.cta_options).map(x=>`<button data-cta-option="${esc(x)}">${esc(x)}</button>`).join("");document.querySelectorAll("[data-title-option]").forEach(b=>b.onclick=()=>document.querySelector("#editorTitle").value=b.dataset.titleOption);document.querySelectorAll("[data-cta-option]").forEach(b=>b.onclick=()=>{const area=document.querySelector("#editorCaption");area.value=`${area.value.trim()}\\n\\n${b.dataset.ctaOption}`});const favorite=document.querySelector("#favoriteDraft");favorite.textContent=d.is_favorite?"★ У прикладах":"☆ До прикладів";favorite.classList.toggle("favorite",!!d.is_favorite);document.querySelector("#editorTemplate").value=state.templateId;document.querySelector("#editorLogo").value=document.querySelector("#logoReference").value;document.querySelector("#editorCompanyLogo").value=document.querySelector("#companyLogoReference").value;document.querySelector("#editorImage").src=`api/drafts/${id}/image`;document.querySelector("#regenImage").hidden=fixed;document.querySelector("#editorVisualSettings").hidden=fixed;document.querySelector("#cancelSchedule").style.display=d.status==="scheduled"?"inline-block":"none";document.querySelectorAll("[data-social-generate]").forEach(b=>{const existing=state.socialVariants.find(v=>v.platform===b.dataset.socialGenerate);b.textContent=existing?`Відкрити ${b.dataset.socialGenerate}`:b.textContent});document.querySelector("#editor").showModal()}catch(e){toast(e.message,true)}}
-document.querySelector("#closeEditor").onclick=()=>document.querySelector("#editor").close();
+async function openDraft(id,navigate=true){try{const d=await api(`api/drafts/${id}`);const rubric=state.data?.rubrics?.find(r=>r.slug===d.product);const fixed=!!rubric?.fixed_cover_path;state.draftId=id;state.currentDraft=d;state.socialVariants=await api(`api/drafts/${id}/social-variants`);state.socialPlatform=null;document.querySelector("#socialVariant").hidden=true;document.querySelector("#editorTitle").value=d.title;document.querySelector("#editorCaption").value=d.caption_html;document.querySelector("#editorLink").value=d.link_url||"";document.querySelector("#titleVariants").innerHTML=jsonList(d.title_options).map(x=>`<button data-title-option="${esc(x)}">${esc(x)}</button>`).join("");document.querySelector("#ctaVariants").innerHTML=jsonList(d.cta_options).map(x=>`<button data-cta-option="${esc(x)}">${esc(x)}</button>`).join("");document.querySelectorAll("[data-title-option]").forEach(b=>b.onclick=()=>document.querySelector("#editorTitle").value=b.dataset.titleOption);document.querySelectorAll("[data-cta-option]").forEach(b=>b.onclick=()=>{const area=document.querySelector("#editorCaption");area.value=`${area.value.trim()}\\n\\n${b.dataset.ctaOption}`});const favorite=document.querySelector("#favoriteDraft");favorite.textContent=d.is_favorite?"★ У прикладах":"☆ До прикладів";favorite.classList.toggle("favorite",!!d.is_favorite);document.querySelector("#editorTemplate").value=state.templateId;document.querySelector("#editorLogo").value=document.querySelector("#logoReference").value;document.querySelector("#editorCompanyLogo").value=document.querySelector("#companyLogoReference").value;document.querySelector("#editorImage").src=`api/drafts/${id}/image`;document.querySelector("#regenImage").hidden=fixed;document.querySelector("#editorVisualSettings").hidden=fixed;document.querySelector("#cancelSchedule").style.display=d.status==="scheduled"?"inline-block":"none";document.querySelector("#scheduleDraft").disabled=d.status!=="ready";document.querySelector("#publishNow").disabled=!["ready","scheduled"].includes(d.status);document.querySelectorAll("[data-social-generate]").forEach(b=>{const existing=state.socialVariants.find(v=>v.platform===b.dataset.socialGenerate);b.textContent=existing?`Відкрити ${b.dataset.socialGenerate}`:b.textContent});if(navigate)history.pushState({draftId:id},"",`/workspace/${state.me.organization_slug}/drafts/${id}`);document.querySelector("#editor").showModal()}catch(e){toast(e.message,true)}}
+function closeEditor(){document.querySelector("#editor").close();if(location.pathname.includes("/drafts/"))history.pushState({},"","/")}
+document.querySelector("#closeEditor").onclick=closeEditor;
+document.querySelector("#editor").addEventListener("cancel",event=>{event.preventDefault();closeEditor()});
+window.addEventListener("popstate",()=>{if(!location.pathname.includes("/drafts/")&&document.querySelector("#editor").open)document.querySelector("#editor").close()});
 document.querySelector("#saveDraft").onclick=async()=>{const b=document.querySelector("#saveDraft");await loading(b,async()=>{await api(`api/drafts/${state.draftId}`,{method:"PUT",body:JSON.stringify({title:document.querySelector("#editorTitle").value,caption_html:document.querySelector("#editorCaption").value,link_url:document.querySelector("#editorLink").value})});toast("Зміни збережено");await refresh(true)},"Збереження")};
 document.querySelector("#regenImage").onclick=async()=>{const b=document.querySelector("#regenImage");await loading(b,async()=>{await api(`api/drafts/${state.draftId}/regenerate-image`,{method:"POST",body:JSON.stringify(generationPayload())});document.querySelector("#editor").close();toast("Нова картинка поставлена в чергу");await refresh(true)},"Додається")};
 document.querySelector("#regenText").onclick=async()=>{const b=document.querySelector("#regenText");await loading(b,async()=>{await api(`api/drafts/${state.draftId}/regenerate-text`,{method:"POST",body:JSON.stringify(generationPayload())});document.querySelector("#editor").close();toast("Нова версія тексту поставлена в чергу");await refresh(true)},"Додається")};
@@ -2046,6 +2332,11 @@ document.querySelector("#calendarNext").onclick=()=>{state.calendarDate=new Date
 document.querySelector("#calendarToday").onclick=()=>{state.calendarDate=new Date();renderCalendar()};
 document.querySelector("#logout").onclick=async()=>{await api("api/logout",{method:"POST"});location.reload()};
 document.querySelector("#workspaceSelect").onchange=async e=>{await api("api/workspace/select",{method:"POST",body:JSON.stringify({organization_id:Number(e.target.value)})});location.reload()};
+document.querySelector("#saveWorkspaceMode").onclick=async()=>{const mode=document.querySelector("#workspaceMode").value;await api("api/workspace/mode",{method:"PUT",body:JSON.stringify({workspace_mode:mode})});state.company.settings.workspace_mode=mode;applyWorkspaceMode();renderActive(true);toast("Режим workspace збережено")};
+document.querySelector("#restartOnboarding").onclick=async()=>{await api("api/onboarding/restart",{method:"POST"});state.company.settings.onboarding_status="not_started";state.company.settings.onboarding_step=0;showOnboarding(1)};
+document.querySelector("#skipOnboarding").onclick=async()=>{await api("api/onboarding/skip",{method:"POST"});state.company.settings.onboarding_status="skipped";document.querySelector("#onboarding").close();toast("Onboarding можна запустити знову в налаштуваннях бренду")};
+document.querySelector("#onboardingBack").onclick=()=>showOnboarding(state.onboardingStep-1);
+document.querySelector("#onboardingNext").onclick=async()=>{const b=document.querySelector("#onboardingNext");await loading(b,saveOnboardingStep,state.onboardingStep===5?"Створюється":"Зберігається")};
 document.querySelector("#openPricing").onclick=async()=>{try{const data=await api("api/plans");renderPricing(data);document.querySelector("#pricing").showModal()}catch(e){toast(e.message,true)}};
 document.querySelector("#closePricing").onclick=()=>document.querySelector("#pricing").close();
 document.querySelector("#createUser").onclick=async()=>{const username=document.querySelector("#newUsername").value;const password=document.querySelector("#newPassword").value;try{await api("api/users",{method:"POST",body:JSON.stringify({username,password,is_admin:document.querySelector("#newIsAdmin").checked})});document.querySelector("#newUsername").value="";document.querySelector("#newPassword").value="";document.querySelector("#newIsAdmin").checked=false;toast("Користувача додано");refreshUsers()}catch(e){toast(e.message)}};

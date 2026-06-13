@@ -111,6 +111,24 @@ class SaasRepository:
                     FOREIGN KEY (order_id) REFERENCES billing_orders(id),
                     FOREIGN KEY (organization_id) REFERENCES organizations(id)
                 );
+                CREATE TABLE IF NOT EXISTS organization_settings (
+                    organization_id INTEGER PRIMARY KEY,
+                    onboarding_status TEXT NOT NULL DEFAULT 'not_started',
+                    onboarding_step INTEGER NOT NULL DEFAULT 0,
+                    workspace_mode TEXT NOT NULL DEFAULT 'pipeline',
+                    primary_language TEXT NOT NULL DEFAULT 'uk',
+                    brand_primary_color TEXT NOT NULL DEFAULT '',
+                    brand_logo_asset_id INTEGER,
+                    tone_of_voice TEXT NOT NULL DEFAULT '',
+                    company_description TEXT NOT NULL DEFAULT '',
+                    forbidden_phrases TEXT NOT NULL DEFAULT '',
+                    key_services TEXT NOT NULL DEFAULT '',
+                    website_url TEXT NOT NULL DEFAULT '',
+                    initial_rubrics_created INTEGER NOT NULL DEFAULT 0,
+                    first_content_plan_created INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (organization_id) REFERENCES organizations(id)
+                );
                 """
             )
             self._ensure_column(connection, "organizations", "plan_code", "TEXT NOT NULL DEFAULT 'custom'")
@@ -160,6 +178,14 @@ class SaasRepository:
                 """,
                 (channel_id,),
             )
+            connection.execute(
+                """
+                INSERT INTO organization_settings (
+                    organization_id, onboarding_status, onboarding_step
+                ) VALUES (1, 'completed', 5)
+                ON CONFLICT(organization_id) DO NOTHING
+                """
+            )
             users = connection.execute(
                 "SELECT id, is_admin FROM users ORDER BY id"
             ).fetchall()
@@ -205,6 +231,13 @@ class SaasRepository:
                 ),
             )
             organization_id = int(cursor.lastrowid)
+            connection.execute(
+                """
+                INSERT INTO organization_settings (organization_id)
+                VALUES (?)
+                """,
+                (organization_id,),
+            )
         return self.get_organization(organization_id)
 
     def get_organization(self, organization_id: int) -> dict:
@@ -216,6 +249,91 @@ class SaasRepository:
         if row is None:
             raise KeyError(f"Organization {organization_id} not found")
         return dict(row)
+
+    def update_organization(
+        self,
+        organization_id: int,
+        *,
+        name: str,
+        slug: str,
+    ) -> dict:
+        normalized = re.sub(r"[^a-z0-9-]+", "-", slug.lower()).strip("-")
+        if not name.strip() or not normalized:
+            raise ValueError("Organization name and slug are required")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE organizations SET name = ?, slug = ?
+                WHERE id = ?
+                """,
+                (name.strip(), normalized, organization_id),
+            )
+        return self.get_organization(organization_id)
+
+    def organization_settings(self, organization_id: int) -> dict:
+        self.get_organization(organization_id)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO organization_settings (organization_id)
+                VALUES (?)
+                ON CONFLICT(organization_id) DO NOTHING
+                """,
+                (organization_id,),
+            )
+            row = connection.execute(
+                """
+                SELECT * FROM organization_settings
+                WHERE organization_id = ?
+                """,
+                (organization_id,),
+            ).fetchone()
+        return dict(row)
+
+    def update_organization_settings(
+        self,
+        organization_id: int,
+        **values: object,
+    ) -> dict:
+        allowed = {
+            "onboarding_status",
+            "onboarding_step",
+            "workspace_mode",
+            "primary_language",
+            "brand_primary_color",
+            "brand_logo_asset_id",
+            "tone_of_voice",
+            "company_description",
+            "forbidden_phrases",
+            "key_services",
+            "website_url",
+            "initial_rubrics_created",
+            "first_content_plan_created",
+        }
+        unknown = set(values) - allowed
+        if unknown:
+            raise ValueError(f"Unsupported organization settings: {unknown}")
+        if values:
+            assignments = [f"{key} = ?" for key in values]
+            params = [*values.values(), organization_id]
+            with self._connect() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO organization_settings (organization_id)
+                    VALUES (?)
+                    ON CONFLICT(organization_id) DO NOTHING
+                    """,
+                    (organization_id,),
+                )
+                connection.execute(
+                    f"""
+                    UPDATE organization_settings
+                    SET {", ".join(assignments)}, updated_at = CURRENT_TIMESTAMP
+                    WHERE organization_id = ?
+                    """,
+                    params,
+                )
+        return self.organization_settings(organization_id)
 
     def list_organizations(self) -> list[dict]:
         with self._connect() as connection:
