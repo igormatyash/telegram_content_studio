@@ -5,12 +5,15 @@ import json
 from pathlib import Path
 from uuid import uuid4
 import re
+from urllib.parse import urlencode
 
+import httpx
 import uvicorn
 from openai import AsyncOpenAI
 from fastapi import Cookie, Depends, FastAPI, File, Header, HTTPException, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel, Field
 from telegram import Bot
@@ -46,6 +49,21 @@ class IdeaRequest(BaseModel):
     focus: str = Field(default="", max_length=500)
     text_model: str = "gpt-5.4-mini"
     tone: str = "expert"
+
+
+class ManualIdeaRequest(BaseModel):
+    title: str = Field(min_length=3, max_length=180)
+    angle: str = Field(default="", max_length=1000)
+    product: str
+    planned_for: date | None = None
+
+
+class ManualDraftRequest(BaseModel):
+    title: str = Field(min_length=3, max_length=120)
+    visual_title: str = Field(default="", max_length=120)
+    caption_html: str = Field(min_length=20, max_length=MAX_CAPTION_LENGTH)
+    product: str
+    link_url: str = Field(default="", max_length=500)
 
 
 class ContentPlanRequest(BaseModel):
@@ -196,6 +214,7 @@ class UserCreateRequest(BaseModel):
     password: str = Field(min_length=10, max_length=200)
     is_admin: bool = False
     role: str | None = Field(default=None, pattern=r"^(admin|editor|viewer)$")
+    email: str | None = Field(default=None, max_length=254)
 
 
 class UserUpdateRequest(BaseModel):
@@ -206,6 +225,32 @@ class UserUpdateRequest(BaseModel):
 
 class PasswordRequest(BaseModel):
     password: str = Field(min_length=10, max_length=200)
+
+
+class PasswordResetLinkRequest(BaseModel):
+    user_id: int = Field(ge=1)
+
+
+class PasswordResetCompleteRequest(BaseModel):
+    token: str = Field(min_length=20, max_length=200)
+    password: str = Field(min_length=10, max_length=200)
+
+
+class InvitationRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    role: str = Field(default="editor", pattern=r"^(admin|editor|viewer)$")
+
+
+class InvitationAcceptRequest(BaseModel):
+    token: str = Field(min_length=20, max_length=200)
+    username: str = Field(min_length=3, max_length=50, pattern=r"^[A-Za-z0-9._-]+$")
+    password: str = Field(min_length=10, max_length=200)
+    display_name: str = Field(default="", max_length=100)
+
+
+class TrialWorkspaceRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=100)
+    slug: str = Field(min_length=2, max_length=60, pattern=r"^[A-Za-z0-9-]+$")
 
 
 class OrganizationCreateRequest(BaseModel):
@@ -291,6 +336,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     editorial_tools = EditorialTools(settings)
     billing = BillingService(saas, settings.telegram_bot_token)
     app = FastAPI(title=settings.product_name, docs_url=None, redoc_url=None)
+    frontend_dir = Path(__file__).parent / "frontend"
+    app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
+
+    def frontend_html(name: str) -> str:
+        markup = (frontend_dir / name).read_text(encoding="utf-8")
+        return markup.replace("__BASE_PATH__", settings.admin_base_path.rstrip("/")).replace(
+            "__GOOGLE_ENABLED__",
+            str(bool(settings.google_client_id and settings.google_client_secret)).lower(),
+        )
+
+    def public_url(path: str = "") -> str:
+        base = settings.public_app_url.rstrip("/")
+        if not base:
+            base = settings.admin_base_path.rstrip("/")
+        return f"{base}/{path.lstrip('/')}"
 
     def organization_dirs(organization_id: int) -> tuple[Path, Path]:
         if organization_id == 1:
@@ -439,7 +499,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         user = auth.session_user(voicerhub_session)
         if user:
             repository.use(int(user.get("organization_id") or 1))
-        return ADMIN_HTML if user else LOGIN_HTML
+        return frontend_html("app.html") if user else frontend_html("login.html")
+
+    @app.get("/invite", response_class=HTMLResponse)
+    def invitation_page() -> str:
+        return frontend_html("action.html").replace("__ACTION__", "invite")
+
+    @app.get("/reset-password", response_class=HTMLResponse)
+    def password_reset_page() -> str:
+        return frontend_html("action.html").replace("__ACTION__", "reset")
 
     @app.get(
         "/workspace/{org_slug}/drafts/{draft_id}",
@@ -456,11 +524,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if user.get("organization_slug") != org_slug:
             raise HTTPException(status_code=404, detail="Чернетку не знайдено")
         repository.for_organization(organization_id(user)).draft_record(draft_id)
-        return ADMIN_HTML
+        return frontend_html("app.html")
 
     @app.post("/api/login")
     def login(payload: LoginRequest, response: Response) -> dict:
         user = auth.authenticate(payload.username, payload.password)
+        if user is None and "@" in payload.username:
+            email_user = auth.find_by_email(payload.username)
+            if email_user:
+                user = auth.authenticate(email_user["username"], payload.password)
         if user is None:
             raise HTTPException(status_code=401, detail="Невірний логін або пароль")
         token = auth.create_session(user["id"])
@@ -473,6 +545,157 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             secure=settings.session_cookie_secure,
         )
         return {"user": user}
+
+    @app.get("/api/auth/google/start")
+    def google_login_start(invite: str | None = None) -> RedirectResponse:
+        if not settings.google_client_id or not settings.google_client_secret:
+            raise HTTPException(status_code=404, detail="Google login is not configured")
+        state = auth.create_oauth_state(invite)
+        redirect_uri = settings.google_redirect_uri or public_url("api/auth/google/callback")
+        query = urlencode(
+            {
+                "client_id": settings.google_client_id,
+                "redirect_uri": redirect_uri,
+                "response_type": "code",
+                "scope": "openid email profile",
+                "state": state,
+                "prompt": "select_account",
+            }
+        )
+        return RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{query}")
+
+    @app.get("/api/auth/google/callback")
+    async def google_login_callback(
+        code: str,
+        state: str,
+        response: Response,
+    ) -> RedirectResponse:
+        try:
+            oauth_state = auth.consume_oauth_state(state)
+        except KeyError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        redirect_uri = settings.google_redirect_uri or public_url(
+            "api/auth/google/callback"
+        )
+        async with httpx.AsyncClient(timeout=20) as client:
+            token_response = await client.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "code": code,
+                    "client_id": settings.google_client_id,
+                    "client_secret": settings.google_client_secret,
+                    "redirect_uri": redirect_uri,
+                    "grant_type": "authorization_code",
+                },
+            )
+            if token_response.status_code >= 400:
+                raise HTTPException(status_code=401, detail="Google authorization failed")
+            access_token = token_response.json().get("access_token")
+            profile_response = await client.get(
+                "https://openidconnect.googleapis.com/v1/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            if profile_response.status_code >= 400:
+                raise HTTPException(status_code=401, detail="Google profile failed")
+        profile = profile_response.json()
+        if not profile.get("email_verified"):
+            raise HTTPException(status_code=403, detail="Google email is not verified")
+        user = auth.find_by_google_subject(profile["sub"])
+        if user is None:
+            user = auth.find_by_email(profile["email"])
+        if user is None:
+            username_base = re.sub(
+                r"[^A-Za-z0-9._-]+",
+                ".",
+                profile["email"].split("@", 1)[0],
+            ).strip(".") or "google.user"
+            username = username_base
+            suffix = 1
+            while True:
+                try:
+                    user = auth.create_user(
+                        username,
+                        uuid4().hex + uuid4().hex,
+                        is_admin=False,
+                        email=profile["email"],
+                        google_subject=profile["sub"],
+                        display_name=profile.get("name", ""),
+                        avatar_url=profile.get("picture", ""),
+                    )
+                    break
+                except Exception as exc:
+                    if "UNIQUE constraint failed: users.username" not in str(exc):
+                        raise
+                    suffix += 1
+                    username = f"{username_base}.{suffix}"
+        else:
+            user = auth.link_google_identity(
+                user["id"],
+                subject=profile["sub"],
+                email=profile["email"],
+                display_name=profile.get("name", ""),
+                avatar_url=profile.get("picture", ""),
+            )
+        if oauth_state.get("invite_token_hash"):
+            try:
+                invitation = auth.action_token_hash(
+                    oauth_state["invite_token_hash"],
+                    "workspace_invite",
+                )
+                if invitation is None:
+                    raise KeyError("Invitation not found")
+                if invitation.get("email", "").lower() != profile["email"].lower():
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Google email does not match invitation",
+                    )
+                saas.upsert_member(
+                    int(invitation["organization_id"]),
+                    user["id"],
+                    invitation["role"],
+                )
+                auth.consume_action_token_hash(
+                    oauth_state["invite_token_hash"],
+                    "workspace_invite",
+                )
+            except KeyError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invitation is invalid or expired",
+                ) from exc
+        session = auth.create_session(user["id"])
+        if oauth_state.get("invite_token_hash"):
+            auth.select_session_organization(
+                session,
+                int(invitation["organization_id"]),
+            )
+        redirect = RedirectResponse(public_url(), status_code=303)
+        redirect.set_cookie(
+            "voicerhub_session",
+            session,
+            max_age=SESSION_DAYS * 24 * 60 * 60,
+            httponly=True,
+            samesite="lax",
+            secure=settings.session_cookie_secure,
+        )
+        return redirect
+
+    @app.get("/api/auth/config")
+    def auth_config() -> dict:
+        return {
+            "google_enabled": bool(
+                settings.google_client_id and settings.google_client_secret
+            )
+        }
+
+    @app.post("/api/password-reset/complete")
+    def complete_password_reset(payload: PasswordResetCompleteRequest) -> dict:
+        try:
+            token = auth.consume_action_token(payload.token, "password_reset")
+        except KeyError as exc:
+            raise HTTPException(status_code=400, detail="Посилання недійсне") from exc
+        auth.set_password(int(token["user_id"]), payload.password)
+        return {"ok": True}
 
     @app.post("/api/logout")
     def logout(
@@ -493,6 +716,71 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 platform_admin=bool(user.get("is_super_admin")),
             ),
         }
+
+    @app.post("/api/account/trial-workspace")
+    def create_trial_workspace(
+        payload: TrialWorkspaceRequest,
+        voicerhub_session: str | None = Cookie(default=None),
+        user: dict = Depends(authorize_write),
+    ) -> dict:
+        try:
+            organization = saas.create_trial_organization(
+                name=payload.name,
+                slug=payload.slug,
+            )
+            saas.add_member(organization["id"], user["id"], "owner")
+            repository.for_organization(organization["id"])
+            auth.select_session_organization(
+                voicerhub_session,
+                organization["id"],
+            )
+        except (ValueError, Exception) as exc:
+            if "UNIQUE constraint" in str(exc):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Workspace з таким slug вже існує",
+                ) from exc
+            if isinstance(exc, ValueError):
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            raise
+        return organization
+
+    @app.post("/api/invitations/accept")
+    def accept_invitation(payload: InvitationAcceptRequest, response: Response) -> dict:
+        token = auth.action_token(payload.token, "workspace_invite")
+        if token is None:
+            raise HTTPException(status_code=400, detail="Запрошення недійсне")
+        try:
+            existing = auth.find_by_email(token["email"])
+            if existing:
+                user = existing
+            else:
+                user = auth.create_user(
+                    payload.username,
+                    payload.password,
+                    is_admin=token["role"] == "admin",
+                    email=token["email"],
+                    display_name=payload.display_name,
+                )
+            saas.upsert_member(
+                int(token["organization_id"]),
+                user["id"],
+                token["role"],
+            )
+            auth.consume_action_token(payload.token, "workspace_invite")
+            session = auth.create_session(user["id"])
+            auth.select_session_organization(session, int(token["organization_id"]))
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        response.set_cookie(
+            "voicerhub_session",
+            session,
+            max_age=SESSION_DAYS * 24 * 60 * 60,
+            httponly=True,
+            samesite="lax",
+            secure=settings.session_cookie_secure,
+        )
+        return {"user": auth.session_user(session)}
 
     @app.post("/api/workspace/select")
     def select_workspace(
@@ -657,11 +945,63 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 is_admin=role == "admin",
                 organization_id=organization_id(current),
                 role=role,
+                email=payload.email,
             )
         except Exception as exc:
             if "UNIQUE constraint failed" in str(exc):
                 raise HTTPException(status_code=409, detail="Такий логін вже існує") from exc
             raise
+
+    @app.post("/api/invitations")
+    def create_invitation(
+        payload: InvitationRequest,
+        current: dict = Depends(authorize_admin),
+    ) -> dict:
+        company = saas.get_organization(organization_id(current))
+        if len(saas.member_ids(organization_id(current))) >= company["max_users"]:
+            raise HTTPException(
+                status_code=409,
+                detail="Досягнуто ліміт користувачів компанії",
+            )
+        token = auth.create_action_token(
+            "workspace_invite",
+            organization_id=organization_id(current),
+            email=payload.email,
+            role=payload.role,
+            created_by_user_id=current["id"],
+            lifetime_hours=72,
+        )
+        saas.audit(
+            organization_id(current),
+            current["id"],
+            "workspace.invitation_created",
+            payload.email,
+        )
+        return {
+            "email": payload.email.lower(),
+            "role": payload.role,
+            "expires_in_hours": 72,
+            "url": public_url(f"invite?token={token}"),
+        }
+
+    @app.post("/api/password-reset/link")
+    def create_password_reset_link(
+        payload: PasswordResetLinkRequest,
+        current: dict = Depends(authorize_admin),
+    ) -> dict:
+        ensure_organization_user(current, payload.user_id)
+        auth.get_user(payload.user_id)
+        token = auth.create_action_token(
+            "password_reset",
+            user_id=payload.user_id,
+            organization_id=organization_id(current),
+            created_by_user_id=current["id"],
+            lifetime_hours=2,
+        )
+        return {
+            "expires_in_hours": 2,
+            "url": public_url(f"reset-password?token={token}"),
+        }
 
     @app.get("/api/organizations")
     def organizations(_: dict = Depends(authorize_super_admin)) -> list[dict]:
@@ -1078,6 +1418,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         record_text_usage(payload.text_model, input_tokens, output_tokens, user["id"])
         saved = save_ideas(ideas.ideas, forced_tone=payload.tone)
         return {"ideas": saved}
+
+    @app.post("/api/ideas")
+    def create_manual_idea(
+        payload: ManualIdeaRequest,
+        user: dict = Depends(authorize_write),
+    ) -> dict:
+        validate_rubric(payload.product)
+        rows = repository.add_ideas(
+            [
+                {
+                    "product": payload.product,
+                    "title": payload.title.strip(),
+                    "angle": payload.angle.strip(),
+                    "planned_for": (
+                        payload.planned_for.isoformat()
+                        if payload.planned_for
+                        else None
+                    ),
+                    "tone": "expert",
+                    "created_by_user_id": user["id"],
+                }
+            ]
+        )
+        return rows[0]
 
     @app.post("/api/content-plan/generate")
     async def generate_content_plan(
@@ -1506,6 +1870,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return repository.set_draft_favorite(draft_id, payload.favorite)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Чернетку не знайдено") from exc
+
+    @app.post("/api/drafts")
+    def create_manual_draft(
+        payload: ManualDraftRequest,
+        user: dict = Depends(authorize_write),
+    ) -> dict:
+        validate_rubric(payload.product)
+        caption_html = canonicalize_draft_caption(
+            payload.caption_html,
+            payload.title,
+            payload.link_url,
+        )
+        draft = repository.create(
+            topic=payload.title,
+            product=payload.product,
+            title=payload.title,
+            visual_title=payload.visual_title,
+            caption_html=caption_html,
+            image_prompt=(
+                "A polished editorial visual for a professional social media post."
+            ),
+            image_path="",
+            link_url=payload.link_url,
+            tone="expert",
+        )
+        return repository.draft_record(draft.id)
 
     @app.post("/api/drafts/{draft_id}/proofread")
     async def proofread_draft(

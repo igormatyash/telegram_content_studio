@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Content Studio</title>
+  <link rel="stylesheet" href="__BASE_PATH__/static/styles.css">
+</head>
+<body class="auth-page" data-action="__ACTION__" data-base-path="__BASE_PATH__" data-google-enabled="__GOOGLE_ENABLED__">
+  <main class="auth-frame" style="grid-template-columns:1fr">
+    <section class="auth-panel" style="max-width:620px;width:100%;margin:auto">
+      <div class="auth-brand"><span class="brand-mark"></span>Content Studio</div>
+      <div class="eyebrow" id="eyebrow">Безпечний доступ</div>
+      <h1 id="title">Завантаження…</h1>
+      <p class="muted" id="subtitle"></p>
+      <form class="auth-form" id="actionForm">
+        <div id="inviteFields">
+          <label>Ваше ім’я<input id="displayName" autocomplete="name"></label>
+          <label>Логін<input id="username" autocomplete="username"></label>
+        </div>
+        <label>Новий пароль<input id="password" type="password" autocomplete="new-password" minlength="10" required></label>
+        <button class="primary" type="submit">Продовжити</button>
+        <div class="form-error" id="error" role="alert"></div>
+      </form>
+      <div id="inviteGoogle" hidden>
+        <div class="divider">або</div>
+        <a class="button oauth-button" id="inviteGoogleLink">G&nbsp;&nbsp;Продовжити з Google</a>
+      </div>
+    </section>
+  </main>
+  <script src="__BASE_PATH__/static/action.js" defer></script>
+</body>
+</html>

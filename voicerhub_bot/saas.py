@@ -1,6 +1,6 @@
 import re
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -240,6 +240,27 @@ class SaasRepository:
             )
         return self.get_organization(organization_id)
 
+    def create_trial_organization(self, *, name: str, slug: str) -> dict:
+        organization = self.create_organization(
+            name=name,
+            slug=slug,
+            max_users=3,
+            max_channels=1,
+            monthly_publications=30,
+            monthly_ai_budget=8,
+        )
+        expires_at = datetime.now(timezone.utc) + timedelta(days=14)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE organizations
+                SET plan_code = 'trial', plan_expires_at = ?
+                WHERE id = ?
+                """,
+                (expires_at.isoformat(), organization["id"]),
+            )
+        return self.get_organization(organization["id"])
+
     def get_organization(self, organization_id: int) -> dict:
         with self._connect() as connection:
             row = connection.execute(
@@ -370,6 +391,14 @@ class SaasRepository:
                 """,
                 (organization_id, user_id, role),
             )
+
+    def upsert_member(self, organization_id: int, user_id: int, role: str) -> None:
+        if role not in ROLES:
+            raise ValueError("Unsupported organization role")
+        existing = self.role_for_user(organization_id, user_id)
+        if existing:
+            return
+        self.add_member(organization_id, user_id, role)
 
     def membership_for_user(self, user_id: int) -> dict | None:
         memberships = self.memberships_for_user(user_id)

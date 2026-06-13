@@ -239,3 +239,58 @@ def test_onboarding_mode_status_api_and_editor_route(tmp_path) -> None:
     assert route.status_code == 200
     assert "data-kanban-label=\"Дошка\"" in route.text
     assert "Налаштування workspace" in route.text
+
+
+def test_invitation_reset_and_trial_workspace_flows(tmp_path) -> None:
+    client = make_client(tmp_path)
+    assert login(client).status_code == 200
+    headers = {"X-Requested-With": "VoicerHubAdmin"}
+
+    invitation = client.post(
+        "/api/invitations",
+        headers=headers,
+        json={"email": "invitee@example.com", "role": "editor"},
+    )
+    assert invitation.status_code == 200
+    token = invitation.json()["url"].split("token=", 1)[1]
+
+    accepted = TestClient(client.app).post(
+        "/api/invitations/accept",
+        json={
+            "token": token,
+            "username": "invitee",
+            "password": "invitee-password",
+            "display_name": "Invited Editor",
+        },
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["user"]["email"] == "invitee@example.com"
+    assert client.post(
+        "/api/invitations/accept",
+        json={
+            "token": token,
+            "username": "invitee2",
+            "password": "invitee-password",
+        },
+    ).status_code == 400
+
+    user_id = accepted.json()["user"]["id"]
+    reset = client.post(
+        "/api/password-reset/link",
+        headers=headers,
+        json={"user_id": user_id},
+    )
+    assert reset.status_code == 200
+    reset_token = reset.json()["url"].split("token=", 1)[1]
+    assert client.post(
+        "/api/password-reset/complete",
+        json={"token": reset_token, "password": "replacement-password"},
+    ).status_code == 200
+
+    trial = client.post(
+        "/api/account/trial-workspace",
+        headers=headers,
+        json={"name": "Self Serve", "slug": "self-serve"},
+    )
+    assert trial.status_code == 200
+    assert trial.json()["plan_code"] == "trial"
