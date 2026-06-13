@@ -86,7 +86,7 @@ class GenerationWorker:
                     await self.batches.submit_image(job, post)
                 else:
                     image_path, response = await self.batches.branding.generate(
-                        post.title,
+                        draft.visual_title,
                         post.image_prompt,
                         model=job.image_model,
                         reference_paths=[Path(item["path"]) for item in references],
@@ -116,7 +116,7 @@ class GenerationWorker:
         for job in self.repository.jobs_with_status("image_batch"):
             try:
                 draft = self.repository.get(job.draft_id)
-                image_path = await self.batches.poll_image(job, draft.title)
+                image_path = await self.batches.poll_image(job, draft.visual_title)
                 if image_path is None:
                     continue
                 self.repository.set_draft_image(draft.id, str(image_path))
@@ -136,6 +136,7 @@ class GenerationWorker:
             topic=job.topic,
             product=job.product,
             title=post.title,
+            visual_title=post.visual_title,
             caption_html=render_caption(post, job.link_url),
             image_prompt=json.dumps(post.model_dump(), ensure_ascii=False),
             image_path=str(fixed_cover_path) if fixed_cover_path.is_file() else "",

@@ -10,6 +10,7 @@ from voicerhub_bot.models import (
     Draft,
     GenerationJob,
 )
+from voicerhub_bot.text_utils import strip_emoji
 
 
 TENANT_TABLES = (
@@ -99,6 +100,9 @@ class DraftRepository:
             self._ensure_column(connection, "generation_jobs", "idea_id", "INTEGER")
             self._ensure_column(
                 connection, "drafts", "link_url", "TEXT NOT NULL DEFAULT ''"
+            )
+            self._ensure_column(
+                connection, "drafts", "visual_title", "TEXT NOT NULL DEFAULT ''"
             )
             self._ensure_column(
                 connection, "drafts", "title_options", "TEXT NOT NULL DEFAULT '[]'"
@@ -228,6 +232,12 @@ class DraftRepository:
                 )
                 """
             )
+            self._ensure_column(
+                connection,
+                "social_variants",
+                "visual_title",
+                "TEXT NOT NULL DEFAULT ''",
+            )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS batch_runs (
@@ -324,6 +334,28 @@ class DraftRepository:
                 WHERE status IN ('suggested', 'selected')
                 """
             )
+            draft_titles = connection.execute(
+                """
+                SELECT id, title FROM drafts
+                WHERE visual_title IS NULL OR visual_title = ''
+                """
+            ).fetchall()
+            for row in draft_titles:
+                connection.execute(
+                    "UPDATE drafts SET visual_title = ? WHERE id = ?",
+                    (strip_emoji(row["title"]) or "Заголовок", row["id"]),
+                )
+            social_titles = connection.execute(
+                """
+                SELECT id, title FROM social_variants
+                WHERE visual_title IS NULL OR visual_title = ''
+                """
+            ).fetchall()
+            for row in social_titles:
+                connection.execute(
+                    "UPDATE social_variants SET visual_title = ? WHERE id = ?",
+                    (strip_emoji(row["title"]) or "Заголовок", row["id"]),
+                )
             connection.execute(
                 """
                 UPDATE usage_events
@@ -371,6 +403,7 @@ class DraftRepository:
         topic: str,
         product: str,
         title: str,
+        visual_title: str | None = None,
         caption_html: str,
         image_prompt: str,
         image_path: str,
@@ -383,14 +416,15 @@ class DraftRepository:
             cursor = connection.execute(
                 """
                 INSERT INTO drafts (
-                    topic, product, title, caption_html, image_prompt, image_path,
+                    topic, product, title, visual_title, caption_html, image_prompt, image_path,
                     link_url, title_options, cta_options, tone
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     topic,
                     product,
                     title,
+                    strip_emoji(visual_title or title) or "Заголовок",
                     caption_html,
                     image_prompt,
                     image_path,
@@ -411,6 +445,7 @@ class DraftRepository:
             topic=row["topic"],
             product=row["product"],
             title=row["title"],
+            visual_title=row["visual_title"] or strip_emoji(row["title"]),
             caption_html=row["caption_html"],
             image_prompt=row["image_prompt"],
             image_path=row["image_path"],
@@ -450,6 +485,7 @@ class DraftRepository:
         draft_id: int,
         *,
         title: str,
+        visual_title: str | None = None,
         caption_html: str,
         link_url: str = "",
     ) -> None:
@@ -457,10 +493,16 @@ class DraftRepository:
             connection.execute(
                 """
                 UPDATE drafts
-                SET title = ?, caption_html = ?, link_url = ?
+                SET title = ?, visual_title = ?, caption_html = ?, link_url = ?
                 WHERE id = ? AND status != 'published'
                 """,
-                (title, caption_html, link_url, draft_id),
+                (
+                    title,
+                    strip_emoji(visual_title or title) or "Заголовок",
+                    caption_html,
+                    link_url,
+                    draft_id,
+                ),
             )
 
     def set_draft_favorite(self, draft_id: int, favorite: bool) -> dict:
@@ -763,6 +805,7 @@ class DraftRepository:
         draft_id: int,
         platform: str,
         title: str,
+        visual_title: str | None = None,
         text_content: str,
         hashtags: list[str],
         image_prompt: str,
@@ -776,12 +819,13 @@ class DraftRepository:
             connection.execute(
                 """
                 INSERT INTO social_variants (
-                    draft_id, platform, title, text_content, hashtags,
+                    draft_id, platform, title, visual_title, text_content, hashtags,
                     image_prompt, image_path, text_model, image_model,
                     created_by_user_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(draft_id, platform) DO UPDATE SET
                     title = excluded.title,
+                    visual_title = excluded.visual_title,
                     text_content = excluded.text_content,
                     hashtags = excluded.hashtags,
                     image_prompt = excluded.image_prompt,
@@ -795,6 +839,7 @@ class DraftRepository:
                     draft_id,
                     platform,
                     title,
+                    strip_emoji(visual_title or title) or "Заголовок",
                     text_content,
                     json.dumps(hashtags, ensure_ascii=False),
                     image_prompt,

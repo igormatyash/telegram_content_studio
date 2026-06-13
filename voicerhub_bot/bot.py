@@ -164,11 +164,12 @@ class EditorialBot:
 
         if post is None:
             raise RuntimeError("Post generation returned no result.")
-        image_path = await self.images.generate(post.title, post.image_prompt)
+        image_path = await self.images.generate(post.visual_title, post.image_prompt)
         return self.repository.create(
             topic=topic,
             product=post.product.value,
             title=post.title,
+            visual_title=post.visual_title,
             caption_html=caption,
             image_prompt=post.image_prompt,
             image_path=str(image_path),

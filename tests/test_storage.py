@@ -1,4 +1,5 @@
 from pathlib import Path
+import sqlite3
 
 from PIL import Image
 import pytest
@@ -24,6 +25,49 @@ def test_draft_lifecycle(tmp_path: Path) -> None:
     repository.mark_published(draft.id)
 
     assert repository.get(draft.id).status == "published"
+
+
+def test_visual_title_backfill_is_idempotent_for_legacy_database(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "legacy-visual-title.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            CREATE TABLE drafts (
+                id INTEGER PRIMARY KEY,
+                topic TEXT NOT NULL,
+                product TEXT NOT NULL,
+                title TEXT NOT NULL,
+                caption_html TEXT NOT NULL,
+                image_prompt TEXT NOT NULL,
+                image_path TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'draft',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                published_at TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO drafts (
+                topic, product, title, caption_html, image_prompt, image_path
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "Legacy",
+                "general",
+                "Український заголовок 🚀",
+                "<b>Текст</b>",
+                "A detailed legacy image prompt.",
+                "",
+            ),
+        )
+
+    DraftRepository(database)
+    repository = DraftRepository(database)
+
+    assert repository.draft_record(1)["visual_title"] == "Український заголовок"
 
 
 def test_ideas_editing_and_schedule(tmp_path: Path) -> None:
@@ -257,7 +301,7 @@ def test_custom_rubrics_and_social_variants_are_stored_per_tenant(tmp_path: Path
     draft = repository.create(
         topic="Автоматизація підтримки",
         product=rubric["slug"],
-        title="Як команда скоротила ручну роботу",
+        title="Як команда скоротила ручну роботу 🚀",
         caption_html="<b>Кейс</b>\n\nКорисний приклад.",
         image_prompt="A customer support automation case study.",
         image_path="/tmp/telegram.png",
@@ -266,7 +310,7 @@ def test_custom_rubrics_and_social_variants_are_stored_per_tenant(tmp_path: Path
     variant = repository.save_social_variant(
         draft_id=draft.id,
         platform="linkedin",
-        title="Практичний кейс автоматизації",
+        title="Практичний кейс автоматизації 🔥",
         text_content="Готовий професійний текст для LinkedIn.",
         hashtags=["automation", "cx"],
         image_prompt="A professional customer experience team.",
@@ -278,6 +322,10 @@ def test_custom_rubrics_and_social_variants_are_stored_per_tenant(tmp_path: Path
 
     assert repository.get_rubric("customer-cases")["name"] == "Кейси клієнтів"
     assert variant["hashtags"] == ["automation", "cx"]
+    assert variant["visual_title"] == "Практичний кейс автоматизації"
+    assert repository.draft_record(draft.id)["visual_title"] == (
+        "Як команда скоротила ручну роботу"
+    )
     assert repository.draft_record(draft.id)["image_path"] == "/tmp/telegram.png"
 
 

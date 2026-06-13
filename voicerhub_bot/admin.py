@@ -117,6 +117,7 @@ class SocialVariantRequest(BaseModel):
 
 class SocialVariantUpdateRequest(BaseModel):
     title: str = Field(min_length=3, max_length=160)
+    visual_title: str = Field(default="", max_length=160)
     text_content: str = Field(min_length=20, max_length=3000)
 
 
@@ -157,6 +158,7 @@ def _validate_generation(payload: GenerationRequest, repository: DraftRepository
 
 class DraftEditRequest(BaseModel):
     title: str = Field(min_length=3, max_length=120)
+    visual_title: str = Field(default="", max_length=120)
     caption_html: str = Field(min_length=20, max_length=MAX_CAPTION_LENGTH)
     link_url: str = Field(default="", max_length=500)
 
@@ -1524,6 +1526,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         repository.update_draft(
             draft_id,
             title=draft["title"],
+            visual_title=draft["visual_title"],
             caption_html=caption,
             link_url=draft["link_url"],
         )
@@ -1605,7 +1608,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         image_path, response = await image_generator_for(
             organization_id(user)
         ).generate(
-            social.title,
+            social.visual_title,
             social.image_prompt,
             model=payload.image_model,
             reference_paths=[Path(item["path"]) for item in references],
@@ -1632,6 +1635,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             draft_id=draft_id,
             platform=payload.platform,
             title=social.title,
+            visual_title=social.visual_title,
             text_content=social.text,
             hashtags=social.hashtags,
             image_prompt=social.image_prompt,
@@ -1656,6 +1660,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             draft_id=draft_id,
             platform=platform,
             title=payload.title.strip(),
+            visual_title=payload.visual_title.strip(),
             text_content=payload.text_content.strip(),
             hashtags=current["hashtags"],
             image_prompt=current["image_prompt"],
@@ -1710,6 +1715,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         repository.update_draft(
             draft_id,
             title=title,
+            visual_title=payload.visual_title,
             caption_html=caption_html,
             link_url=link_url,
         )
@@ -2192,6 +2198,8 @@ ADMIN_HTML = r"""
     <div><img id="editorImage" alt="Зображення поста"><div class="editor-actions"><button id="regenImage">↻ Інша картинка</button></div></div>
     <div>
       <label>Заголовок<input id="editorTitle"></label>
+      <label>Заголовок на візуалі<input id="editorVisualTitle"><small>Без emoji. Можна зробити коротшим за заголовок поста.</small></label>
+      <button id="syncVisualTitle">Оновити із заголовка поста</button>
       <div class="variants">
         <div><label>Варіанти заголовка</label><div id="titleVariants" class="variant-list"></div></div>
         <div><label>Варіанти CTA</label><div id="ctaVariants" class="variant-list"></div></div>
@@ -2214,6 +2222,7 @@ ADMIN_HTML = r"""
         </div>
         <img id="socialImage" alt="Версія для соцмережі">
         <label>Заголовок<input id="socialTitle"></label>
+        <label>Заголовок на візуалі<input id="socialVisualTitle"></label>
         <label>Текст<textarea id="socialText"></textarea></label>
         <button id="saveSocialVariant">Зберегти версію</button>
       </div>
@@ -2313,13 +2322,15 @@ document.querySelector("#referenceUpload").onchange=async e=>{const files=[...e.
 document.querySelector("#toggleFavorites").onclick=()=>{state.favoritesOnly=!state.favoritesOnly;state.draftPage=1;document.querySelector("#toggleFavorites").textContent=state.favoritesOnly?"← Усі чернетки":"☆ Показати вдалі приклади";renderDrafts(state.data.drafts)};
 document.querySelector("#generateSelected").onclick=async()=>{const ids=[...document.querySelectorAll(".ideaCheck:checked")].map(x=>x.value);for(const id of ids)await generateIdea(id);if(!ids.length)toast("Оберіть хоча б одну тему")};
 const jsonList=value=>{try{return JSON.parse(value||"[]")}catch{return[]}};
-function showSocialVariant(v){state.socialPlatform=v.platform;document.querySelector("#socialVariant").hidden=false;document.querySelector("#socialPlatform").textContent=({instagram:"Instagram",linkedin:"LinkedIn",facebook:"Facebook",x:"X"}[v.platform]||v.platform);document.querySelector("#socialTitle").value=v.title;document.querySelector("#socialText").value=v.text_content;document.querySelector("#socialImage").src=`api/drafts/${state.draftId}/social-variants/${v.platform}/image?v=${Date.now()}`;document.querySelector("#downloadSocialImage").href=`api/drafts/${state.draftId}/social-variants/${v.platform}/image?download=true`}
-async function openDraft(id,navigate=true){try{const d=await api(`api/drafts/${id}`);const rubric=state.data?.rubrics?.find(r=>r.slug===d.product);const fixed=!!rubric?.fixed_cover_path;state.draftId=id;state.currentDraft=d;state.socialVariants=await api(`api/drafts/${id}/social-variants`);state.socialPlatform=null;document.querySelector("#socialVariant").hidden=true;document.querySelector("#editorTitle").value=d.title;document.querySelector("#editorCaption").value=d.caption_html;document.querySelector("#editorLink").value=d.link_url||"";document.querySelector("#titleVariants").innerHTML=jsonList(d.title_options).map(x=>`<button data-title-option="${esc(x)}">${esc(x)}</button>`).join("");document.querySelector("#ctaVariants").innerHTML=jsonList(d.cta_options).map(x=>`<button data-cta-option="${esc(x)}">${esc(x)}</button>`).join("");document.querySelectorAll("[data-title-option]").forEach(b=>b.onclick=()=>document.querySelector("#editorTitle").value=b.dataset.titleOption);document.querySelectorAll("[data-cta-option]").forEach(b=>b.onclick=()=>{const area=document.querySelector("#editorCaption");area.value=`${area.value.trim()}\\n\\n${b.dataset.ctaOption}`});const favorite=document.querySelector("#favoriteDraft");favorite.textContent=d.is_favorite?"★ У прикладах":"☆ До прикладів";favorite.classList.toggle("favorite",!!d.is_favorite);document.querySelector("#editorTemplate").value=state.templateId;document.querySelector("#editorLogo").value=document.querySelector("#logoReference").value;document.querySelector("#editorCompanyLogo").value=document.querySelector("#companyLogoReference").value;document.querySelector("#editorImage").src=`api/drafts/${id}/image`;document.querySelector("#regenImage").hidden=fixed;document.querySelector("#editorVisualSettings").hidden=fixed;document.querySelector("#cancelSchedule").style.display=d.status==="scheduled"?"inline-block":"none";document.querySelector("#scheduleDraft").disabled=d.status!=="ready";document.querySelector("#publishNow").disabled=!["ready","scheduled"].includes(d.status);document.querySelectorAll("[data-social-generate]").forEach(b=>{const existing=state.socialVariants.find(v=>v.platform===b.dataset.socialGenerate);b.textContent=existing?`Відкрити ${b.dataset.socialGenerate}`:b.textContent});if(navigate)history.pushState({draftId:id},"",`/workspace/${state.me.organization_slug}/drafts/${id}`);document.querySelector("#editor").showModal()}catch(e){toast(e.message,true)}}
+function showSocialVariant(v){state.socialPlatform=v.platform;document.querySelector("#socialVariant").hidden=false;document.querySelector("#socialPlatform").textContent=({instagram:"Instagram",linkedin:"LinkedIn",facebook:"Facebook",x:"X"}[v.platform]||v.platform);document.querySelector("#socialTitle").value=v.title;document.querySelector("#socialVisualTitle").value=v.visual_title||stripEmoji(v.title);document.querySelector("#socialText").value=v.text_content;document.querySelector("#socialImage").src=`api/drafts/${state.draftId}/social-variants/${v.platform}/image?v=${Date.now()}`;document.querySelector("#downloadSocialImage").href=`api/drafts/${state.draftId}/social-variants/${v.platform}/image?download=true`}
+const stripEmoji=value=>value.replace(/[\\u{1F000}-\\u{1FFFF}\\u{2300}-\\u{27BF}\\u{2B00}-\\u{2BFF}\\uFE0E\\uFE0F\\u200D]/gu,"").replace(/\\s+/g," ").trim();
+async function openDraft(id,navigate=true){try{const d=await api(`api/drafts/${id}`);const rubric=state.data?.rubrics?.find(r=>r.slug===d.product);const fixed=!!rubric?.fixed_cover_path;state.draftId=id;state.currentDraft=d;state.socialVariants=await api(`api/drafts/${id}/social-variants`);state.socialPlatform=null;document.querySelector("#socialVariant").hidden=true;document.querySelector("#editorTitle").value=d.title;document.querySelector("#editorVisualTitle").value=d.visual_title||stripEmoji(d.title);document.querySelector("#editorCaption").value=d.caption_html;document.querySelector("#editorLink").value=d.link_url||"";document.querySelector("#titleVariants").innerHTML=jsonList(d.title_options).map(x=>`<button data-title-option="${esc(x)}">${esc(x)}</button>`).join("");document.querySelector("#ctaVariants").innerHTML=jsonList(d.cta_options).map(x=>`<button data-cta-option="${esc(x)}">${esc(x)}</button>`).join("");document.querySelectorAll("[data-title-option]").forEach(b=>b.onclick=()=>document.querySelector("#editorTitle").value=b.dataset.titleOption);document.querySelectorAll("[data-cta-option]").forEach(b=>b.onclick=()=>{const area=document.querySelector("#editorCaption");area.value=`${area.value.trim()}\\n\\n${b.dataset.ctaOption}`});const favorite=document.querySelector("#favoriteDraft");favorite.textContent=d.is_favorite?"★ У прикладах":"☆ До прикладів";favorite.classList.toggle("favorite",!!d.is_favorite);document.querySelector("#editorTemplate").value=state.templateId;document.querySelector("#editorLogo").value=document.querySelector("#logoReference").value;document.querySelector("#editorCompanyLogo").value=document.querySelector("#companyLogoReference").value;document.querySelector("#editorImage").src=`api/drafts/${id}/image`;document.querySelector("#regenImage").hidden=fixed;document.querySelector("#editorVisualSettings").hidden=fixed;document.querySelector("#cancelSchedule").style.display=d.status==="scheduled"?"inline-block":"none";document.querySelector("#scheduleDraft").disabled=d.status!=="ready";document.querySelector("#publishNow").disabled=!["ready","scheduled"].includes(d.status);document.querySelectorAll("[data-social-generate]").forEach(b=>{const existing=state.socialVariants.find(v=>v.platform===b.dataset.socialGenerate);b.textContent=existing?`Відкрити ${b.dataset.socialGenerate}`:b.textContent});if(navigate)history.pushState({draftId:id},"",`/workspace/${state.me.organization_slug}/drafts/${id}`);document.querySelector("#editor").showModal()}catch(e){toast(e.message,true)}}
 function closeEditor(){document.querySelector("#editor").close();if(location.pathname.includes("/drafts/"))history.pushState({},"","/")}
 document.querySelector("#closeEditor").onclick=closeEditor;
 document.querySelector("#editor").addEventListener("cancel",event=>{event.preventDefault();closeEditor()});
 window.addEventListener("popstate",()=>{if(!location.pathname.includes("/drafts/")&&document.querySelector("#editor").open)document.querySelector("#editor").close()});
-document.querySelector("#saveDraft").onclick=async()=>{const b=document.querySelector("#saveDraft");await loading(b,async()=>{await api(`api/drafts/${state.draftId}`,{method:"PUT",body:JSON.stringify({title:document.querySelector("#editorTitle").value,caption_html:document.querySelector("#editorCaption").value,link_url:document.querySelector("#editorLink").value})});toast("Зміни збережено");await refresh(true)},"Збереження")};
+document.querySelector("#syncVisualTitle").onclick=()=>document.querySelector("#editorVisualTitle").value=stripEmoji(document.querySelector("#editorTitle").value);
+document.querySelector("#saveDraft").onclick=async()=>{const b=document.querySelector("#saveDraft");await loading(b,async()=>{await api(`api/drafts/${state.draftId}`,{method:"PUT",body:JSON.stringify({title:document.querySelector("#editorTitle").value,visual_title:document.querySelector("#editorVisualTitle").value,caption_html:document.querySelector("#editorCaption").value,link_url:document.querySelector("#editorLink").value})});toast("Зміни збережено");await refresh(true)},"Збереження")};
 document.querySelector("#regenImage").onclick=async()=>{const b=document.querySelector("#regenImage");await loading(b,async()=>{await api(`api/drafts/${state.draftId}/regenerate-image`,{method:"POST",body:JSON.stringify(generationPayload())});document.querySelector("#editor").close();toast("Нова картинка поставлена в чергу");await refresh(true)},"Додається")};
 document.querySelector("#regenText").onclick=async()=>{const b=document.querySelector("#regenText");await loading(b,async()=>{await api(`api/drafts/${state.draftId}/regenerate-text`,{method:"POST",body:JSON.stringify(generationPayload())});document.querySelector("#editor").close();toast("Нова версія тексту поставлена в чергу");await refresh(true)},"Додається")};
 document.querySelector("#proofreadDraft").onclick=async()=>{const b=document.querySelector("#proofreadDraft");await loading(b,async()=>{const d=await api(`api/drafts/${state.draftId}/proofread`,{method:"POST",body:JSON.stringify({text_model:document.querySelector("#textModel").value})});document.querySelector("#editorCaption").value=d.caption_html;toast("Українську та термінологію перевірено")},"Перевіряється")};
@@ -2352,7 +2363,7 @@ document.querySelector("#cancelCustomTemplate").onclick=()=>document.querySelect
 document.querySelector("#createTemplate").onclick=async()=>{const b=document.querySelector("#createTemplate");await loading(b,async()=>{await api("api/templates",{method:"POST",body:JSON.stringify({name:document.querySelector("#customTemplateName").value,description:document.querySelector("#customTemplateDescription").value,prompt:document.querySelector("#customTemplatePrompt").value,layout:document.querySelector("#customTemplateLayout").value,accent:document.querySelector("#customTemplateAccent").value})});document.querySelector("#customTemplateForm").hidden=true;toast("Шаблон додано. Тепер можна згенерувати його прев’ю.");await refresh()},"Збереження")};
 document.querySelectorAll("[data-social-generate]").forEach(b=>b.onclick=()=>loading(b,async()=>{const platform=b.dataset.socialGenerate;const existing=state.socialVariants.find(v=>v.platform===platform);if(existing){showSocialVariant(existing);return}const v=await api(`api/drafts/${state.draftId}/social-variants`,{method:"POST",body:JSON.stringify({platform,text_model:document.querySelector("#textModel").value,image_model:document.querySelector("#imageModel").value,reference_ids:[...state.referenceIds],template_id:document.querySelector("#editorTemplate").value,logo_reference_id:Number(document.querySelector("#editorLogo").value)||null,company_logo_reference_id:Number(document.querySelector("#editorCompanyLogo").value)||null})});state.socialVariants.push(v);showSocialVariant(v);toast("Версію для соцмережі створено")},"Генерується"));
 document.querySelector("#copySocialText").onclick=async()=>{const v=state.socialVariants.find(x=>x.platform===state.socialPlatform);const hashtags=v?.hashtags?.map(x=>x.startsWith("#")?x:`#${x}`).join(" ")||"";await navigator.clipboard.writeText(`${document.querySelector("#socialTitle").value}\\n\\n${document.querySelector("#socialText").value}${hashtags?`\\n\\n${hashtags}`:""}`);toast("Текст скопійовано")};
-document.querySelector("#saveSocialVariant").onclick=async()=>{const v=await api(`api/drafts/${state.draftId}/social-variants/${state.socialPlatform}`,{method:"PUT",body:JSON.stringify({title:document.querySelector("#socialTitle").value,text_content:document.querySelector("#socialText").value})});state.socialVariants=state.socialVariants.map(x=>x.platform===v.platform?v:x);showSocialVariant(v);toast("Версію збережено")};
+document.querySelector("#saveSocialVariant").onclick=async()=>{const v=await api(`api/drafts/${state.draftId}/social-variants/${state.socialPlatform}`,{method:"PUT",body:JSON.stringify({title:document.querySelector("#socialTitle").value,visual_title:document.querySelector("#socialVisualTitle").value,text_content:document.querySelector("#socialText").value})});state.socialVariants=state.socialVariants.map(x=>x.platform===v.platform?v:x);showSocialVariant(v);toast("Версію збережено")};
 function wrapSelection(tag,attrs=""){const area=document.querySelector("#editorCaption");const start=area.selectionStart,end=area.selectionEnd,selected=area.value.slice(start,end)||"текст";const open=`<${tag}${attrs}>`,close=`</${tag}>`;area.setRangeText(open+selected+close,start,end,"select");area.focus()}
 document.querySelectorAll("[data-format]").forEach(b=>b.onclick=()=>wrapSelection(b.dataset.format));
 document.querySelector("#insertLink").onclick=()=>{const url=prompt("Вставте URL посилання");if(url)wrapSelection("a",` href="${url.replace(/"/g,"&quot;")}"`)};

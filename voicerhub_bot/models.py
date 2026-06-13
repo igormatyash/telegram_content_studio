@@ -1,7 +1,9 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from voicerhub_bot.text_utils import strip_emoji
 
 
 CONTENT_STATUS_IDEA = "idea"
@@ -58,6 +60,7 @@ class GeneratedPost(BaseModel):
 
     product: str = Field(min_length=1, max_length=60)
     title: str = Field(min_length=8, max_length=90)
+    visual_title: str = Field(min_length=3, max_length=90)
     lead: str = Field(min_length=20, max_length=260)
     body: list[str] = Field(min_length=1, max_length=3)
     bullets: list[str] = Field(max_length=4)
@@ -66,6 +69,15 @@ class GeneratedPost(BaseModel):
     image_prompt: str = Field(min_length=30, max_length=900)
     title_options: list[str] = Field(min_length=3, max_length=3)
     cta_options: list[str] = Field(min_length=3, max_length=3)
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_visual_title(cls, value):
+        if isinstance(value, dict):
+            value = dict(value)
+            source = value.get("visual_title") or value.get("title") or ""
+            value["visual_title"] = strip_emoji(str(source)) or "Заголовок"
+        return value
 
 
 class ContentIdea(BaseModel):
@@ -96,9 +108,19 @@ class SocialPost(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: str = Field(min_length=3, max_length=160)
+    visual_title: str = Field(min_length=3, max_length=160)
     text: str = Field(min_length=20, max_length=3000)
     hashtags: list[str] = Field(default_factory=list, max_length=15)
     image_prompt: str = Field(min_length=30, max_length=900)
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_visual_title(cls, value):
+        if isinstance(value, dict):
+            value = dict(value)
+            source = value.get("visual_title") or value.get("title") or ""
+            value["visual_title"] = strip_emoji(str(source)) or "Заголовок"
+        return value
 
 
 @dataclass(slots=True)
@@ -107,6 +129,7 @@ class Draft:
     topic: str
     product: str
     title: str
+    visual_title: str
     caption_html: str
     image_prompt: str
     image_path: str

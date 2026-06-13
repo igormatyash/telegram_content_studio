@@ -23,7 +23,11 @@ def test_tick_processes_completed_image_batch_without_new_text(tmp_path) -> None
 
         def get(self, draft_id):
             assert draft_id == 11
-            return SimpleNamespace(id=11, title="Готове зображення")
+            return SimpleNamespace(
+                id=11,
+                title="Готове зображення 🔥",
+                visual_title="Готове зображення",
+            )
 
         def set_draft_image(self, draft_id, path):
             assert draft_id == 11

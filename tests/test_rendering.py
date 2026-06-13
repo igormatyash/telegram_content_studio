@@ -9,6 +9,7 @@ from voicerhub_bot.rendering import (
     plain_text,
     render_caption,
 )
+from voicerhub_bot.text_utils import strip_emoji
 
 
 def make_post(**overrides) -> GeneratedPost:
@@ -92,6 +93,13 @@ def test_render_caption_removes_model_link_and_uses_exact_user_url() -> None:
 
 def test_plain_text_decodes_escaped_formatting() -> None:
     assert plain_text("&lt;b&gt;Сильний заголовок&lt;/b&gt;") == "Сильний заголовок"
+
+
+def test_strip_emoji_preserves_ukrainian_and_removes_sequences() -> None:
+    assert (
+        strip_emoji("Український текст 🇺🇦 1️⃣ команда 👩‍💻 та якість️")
+        == "Український текст команда та якість"
+    )
 
 
 def test_enforce_link_repairs_existing_href_without_changing_case() -> None:

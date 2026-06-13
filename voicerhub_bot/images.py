@@ -7,6 +7,7 @@ from openai import AsyncOpenAI
 from PIL import Image, ImageDraw, ImageFont
 
 from voicerhub_bot.visual_templates import get_visual_template
+from voicerhub_bot.text_utils import strip_emoji
 
 
 BASE_VISUAL_RULES = """
@@ -85,7 +86,7 @@ class ImageGenerator:
             self._fit_output(output_path, output_size)
         self._apply_branding(
             output_path,
-            title,
+            strip_emoji(title) or "Заголовок",
             template_id=template_id,
             logo_path=logo_path,
             company_logo_path=company_logo_path,
@@ -146,7 +147,7 @@ class ImageGenerator:
         draw.rectangle((0, 0, 14, height), fill=(*accent, 255))
 
         title_font = _load_font(58)
-        lines = wrap(title.upper(), width=max_chars)[:3]
+        lines = wrap((strip_emoji(title) or "Заголовок").upper(), width=max_chars)[:3]
         y = text_y
         for line in lines:
             draw.text((text_x, y), line, font=title_font, fill=(255, 255, 255, 255))

@@ -18,6 +18,7 @@ from voicerhub_bot.knowledge import (
 from voicerhub_bot.models import BatchRecord, GeneratedPost, GenerationJob
 from voicerhub_bot.rendering import plain_text, render_caption
 from voicerhub_bot.storage import DraftRepository
+from voicerhub_bot.text_utils import strip_emoji
 from voicerhub_bot.visual_templates import get_visual_template
 
 
@@ -117,9 +118,11 @@ Output details:
 {output_rules}
 
 The lead, body and bullets may contain valid Telegram HTML tags. The title,
-title_options, CTA and CTA options must be plain text without HTML or escaped
+visual_title, title_options, CTA and CTA options must be plain text without HTML or escaped
 HTML entities. Never reproduce, rewrite, capitalize or return the destination
 URL; the application inserts the exact user-supplied URL after generation.
+The title is the post headline and may use emoji. visual_title is a short,
+emoji-free headline for rendering on the image.
 Generate 3 genuinely different title_options and 3 CTA options. The main title
 and CTA must be the strongest options. Generate 3 to 5 relevant hashtags
 automatically. Check Ukrainian spelling and always use the terminology supplied
@@ -202,6 +205,11 @@ in the rubric facts.
         # generated content back to the original job.
         post.product = job.product
         post.title = plain_text(normalize_terminology(post.title))
+        post.visual_title = (
+            strip_emoji(plain_text(normalize_terminology(post.visual_title)))
+            or strip_emoji(post.title)
+            or "Заголовок"
+        )
         post.lead = normalize_terminology(post.lead)
         post.body = [normalize_terminology(item) for item in post.body]
         post.bullets = [normalize_terminology(item) for item in post.bullets]
@@ -232,7 +240,7 @@ in the rubric facts.
             )
         return post
 
-    async def poll_image(self, job: GenerationJob, title: str) -> Path | None:
+    async def poll_image(self, job: GenerationJob, visual_title: str) -> Path | None:
         batch = await self.client.batches.retrieve(job.image_batch_id)
         self._save_batch(batch, "image", job.image_model)
         if batch.status not in TERMINAL_BATCH_STATUSES:
@@ -257,7 +265,7 @@ in the rubric facts.
         )
         self.branding._apply_branding(
             image_path,
-            title,
+            strip_emoji(visual_title) or "Заголовок",
             template_id=job.template_id,
             logo_path=Path(logo["path"]) if logo else None,
             company_logo_path=Path(company_logo["path"]) if company_logo else None,

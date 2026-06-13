@@ -15,6 +15,27 @@ def test_branding_ignores_directory_as_logo_path(tmp_path: Path) -> None:
     assert Image.open(image_path).size == (1536, 1024)
 
 
+def test_branding_never_passes_emoji_to_drawn_title(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    image_path = tmp_path / "emoji.png"
+    Image.new("RGB", (1536, 1024), (10, 20, 40)).save(image_path)
+    captured = {}
+
+    def capture_wrap(value, width):
+        captured["value"] = value
+        return [value]
+
+    monkeypatch.setattr("voicerhub_bot.images.wrap", capture_wrap)
+    ImageGenerator("test", "gpt-image-2", tmp_path)._apply_branding(
+        image_path,
+        "Українська аналітика 🚀",
+    )
+
+    assert captured["value"] == "УКРАЇНСЬКА АНАЛІТИКА"
+
+
 def test_gpt_image_2_edit_does_not_send_input_fidelity(tmp_path: Path) -> None:
     generator = ImageGenerator("test", "gpt-image-2", tmp_path)
     reference = tmp_path / "reference.png"
