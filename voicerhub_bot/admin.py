@@ -409,7 +409,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         user = auth.session_user(voicerhub_session)
         if user is None:
             raise HTTPException(status_code=401, detail="Authentication required")
-        organization_id = int(user.get("organization_id") or 1)
+        if user.get("organization_id") is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Оберіть або створіть workspace",
+            )
+        organization_id = int(user["organization_id"])
         repository.use(organization_id)
         return user
 
@@ -600,6 +605,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         profile = profile_response.json()
         if not profile.get("email_verified"):
             raise HTTPException(status_code=403, detail="Google email is not verified")
+        workspace_slug_base = re.sub(
+            r"[^a-z0-9-]+",
+            "-",
+            profile["email"].split("@", 1)[0].lower(),
+        ).strip("-") or "workspace"
         user = auth.find_by_google_subject(profile["sub"])
         if user is None:
             user = auth.find_by_email(profile["email"])
@@ -663,11 +673,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     status_code=400,
                     detail="Invitation is invalid or expired",
                 ) from exc
+        membership = saas.membership_for_user(user["id"])
+        if membership is None:
+            workspace_name = (
+                profile.get("name", "").strip()
+                or profile["email"].split("@", 1)[0]
+            )
+            organization = saas.create_trial_organization(
+                name=f"{workspace_name} Workspace",
+                slug=f"{workspace_slug_base[:32]}-{uuid4().hex[:8]}",
+            )
+            saas.add_member(organization["id"], user["id"], "owner")
+            repository.for_organization(organization["id"])
+            membership = saas.membership_for_user(user["id"])
         session = auth.create_session(user["id"])
         if oauth_state.get("invite_token_hash"):
             auth.select_session_organization(
                 session,
                 int(invitation["organization_id"]),
+            )
+        elif membership:
+            auth.select_session_organization(
+                session,
+                int(membership["organization_id"]),
             )
         redirect = RedirectResponse(public_url(), status_code=303)
         redirect.set_cookie(

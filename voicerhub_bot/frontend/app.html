@@ -48,8 +48,9 @@
       </div>
     </header>
     <main class="content">
+      <div class="system-banner" id="systemBanner" hidden></div>
       <section class="view active" id="homeView">
-        <div class="metrics" id="homeMetrics"></div>
+        <div class="metrics" id="homeMetrics"><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span></div>
         <div class="dashboard-grid">
           <article class="card panel"><div class="eyebrow">Що зробити зараз</div><h2>Швидкі дії</h2><div class="stack" id="quickActions"></div></article>
           <article class="card panel"><div class="row between"><div><div class="eyebrow">Наступні публікації</div><h2>Заплановано</h2></div><button class="ghost" data-open-view="calendar">Календар →</button></div><div class="stack" id="upcomingList"></div></article>
@@ -119,12 +120,12 @@
   </section>
 </div>
 
-<div class="overlay" id="workspaceOverlay" hidden><div class="modal"><div class="modal-head"><div><div class="eyebrow">Вітаємо</div><h2 style="margin:3px 0">Оберіть workspace</h2></div><button class="icon-button" data-close-overlay>×</button></div><div class="modal-body"><div class="workspace-grid" id="workspaceGrid"></div></div></div></div>
-<div class="overlay" id="onboardingOverlay" hidden><div class="modal" style="width:min(820px,100%)"><div class="onboarding-layout"><aside class="onboarding-steps" id="onboardingSteps"></aside><section><div class="modal-head"><div><div class="eyebrow">Налаштування workspace</div><h2 id="onboardingTitle" style="margin:3px 0"></h2></div><button class="ghost" id="skipOnboarding">Пропустити</button></div><div class="modal-body" id="onboardingBody"></div><div class="modal-foot"><button id="onboardingBack">← Назад</button><button class="primary" id="onboardingNext">Далі →</button></div></section></div></div></div>
-<div class="overlay" id="formOverlay" hidden><div class="modal"><div class="modal-head"><h2 id="formTitle" style="margin:0"></h2><button class="icon-button" data-close-overlay>×</button></div><form id="dynamicForm"><div class="modal-body" id="formBody"></div><div class="modal-foot"><button type="button" data-close-overlay>Скасувати</button><button class="primary" type="submit">Зберегти</button></div></form></div></div>
-<div class="overlay" id="editorOverlay" hidden><div class="editor-page" id="editorContent"></div></div>
+<div class="overlay" id="workspaceOverlay" role="dialog" aria-modal="true" aria-label="Вибір workspace" hidden><div class="modal"><div class="modal-head"><div><div class="eyebrow">Вітаємо</div><h2 style="margin:3px 0">Оберіть workspace</h2></div><button class="icon-button" data-close-overlay aria-label="Закрити">×</button></div><div class="modal-body"><div class="workspace-grid" id="workspaceGrid"></div></div></div></div>
+<div class="overlay" id="onboardingOverlay" role="dialog" aria-modal="true" aria-labelledby="onboardingTitle" hidden><div class="modal" style="width:min(820px,100%)"><div class="onboarding-layout"><aside class="onboarding-steps" id="onboardingSteps"></aside><section><div class="modal-head"><div><div class="eyebrow">Налаштування workspace</div><h2 id="onboardingTitle" style="margin:3px 0"></h2></div><button class="ghost" id="skipOnboarding">Пропустити</button></div><div class="modal-body" id="onboardingBody"></div><div class="modal-foot"><button id="onboardingBack">← Назад</button><button class="primary" id="onboardingNext">Далі →</button></div></section></div></div></div>
+<div class="overlay" id="formOverlay" role="dialog" aria-modal="true" aria-labelledby="formTitle" hidden><div class="modal"><div class="modal-head"><h2 id="formTitle" style="margin:0"></h2><button class="icon-button" data-close-overlay aria-label="Закрити">×</button></div><form id="dynamicForm"><div class="modal-body" id="formBody"></div><div class="modal-foot"><button type="button" data-close-overlay>Скасувати</button><button class="primary" type="submit">Зберегти</button></div></form></div></div>
+<div class="overlay" id="editorOverlay" role="dialog" aria-modal="true" aria-label="Редактор публікації" hidden><div class="editor-page" id="editorContent"></div></div>
 <div class="toast" id="toast" hidden></div>
 <div hidden>CONTENT STUDIO · Налаштування workspace · Voicer Wave</div>
-<script src="__BASE_PATH__/static/app.js?v=3" defer></script>
+<script src="__BASE_PATH__/static/app.js?v=4" defer></script>
 </body>
 </html>

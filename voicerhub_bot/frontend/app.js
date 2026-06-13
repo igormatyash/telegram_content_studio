@@ -110,7 +110,9 @@ function applyIdentity() {
   document.querySelector("#draftsNavLabel").textContent = kanban ? "Дошка" : "Чернетки";
   document.querySelector("#analyticsNavLabel").textContent = kanban ? "Аналітика" : "Витрати";
   const readOnly = role === "viewer";
+  const canAdmin = ["platform_admin", "owner", "admin"].includes(role);
   document.body.classList.toggle("read-only", readOnly);
+  document.body.classList.toggle("non-admin", !canAdmin);
   [
     "#createButton","#generateIdeas","#manualIdea","#manualDraft",
     "#calendarSchedule","#planForm button[type=submit]",
@@ -118,6 +120,29 @@ function applyIdentity() {
     const node = document.querySelector(selector);
     if (node) node.hidden = readOnly;
   });
+  renderSystemBanner();
+}
+
+function renderSystemBanner() {
+  const banner = document.querySelector("#systemBanner");
+  const expiry = state.company?.plan_expires_at
+    ? Math.ceil((new Date(state.company.plan_expires_at) - new Date()) / 86400000)
+    : null;
+  if (!navigator.onLine) {
+    banner.textContent = "Немає з’єднання з мережею. Зміни стануть доступними після відновлення зв’язку.";
+    banner.className = "system-banner error";
+    banner.hidden = false;
+  } else if (expiry !== null && expiry <= 0) {
+    banner.textContent = "Термін тарифу завершився. AI-генерація та публікація тимчасово недоступні.";
+    banner.className = "system-banner error";
+    banner.hidden = false;
+  } else if (state.company?.plan_code === "trial" && expiry !== null && expiry <= 3) {
+    banner.textContent = `Trial завершується через ${expiry} дн. Оберіть тариф, щоб зберегти доступ до генерації.`;
+    banner.className = "system-banner";
+    banner.hidden = false;
+  } else {
+    banner.hidden = true;
+  }
 }
 
 function renderHome() {
@@ -381,6 +406,23 @@ document.addEventListener("click",event=>{if(document.body.classList.contains("m
 document.querySelector("#workspaceButton").onclick=()=>renderWorkspaceChooser(true);
 document.querySelector("#logout").onclick=async()=>{await api("api/logout",{method:"POST"});location.href=`${basePath}/`;};
 document.querySelectorAll("[data-close-overlay]").forEach(node=>node.onclick=()=>node.closest(".overlay").hidden=true);
+document.addEventListener("keydown", event => {
+  const overlay = [...document.querySelectorAll(".overlay:not([hidden])")].pop();
+  if (!overlay) return;
+  if (event.key === "Escape" && overlay.id !== "onboardingOverlay") {
+    overlay.hidden = true;
+    if (overlay.id === "editorOverlay") closeEditor();
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const focusable = [...overlay.querySelectorAll('button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')].filter(node => !node.hidden);
+  if (!focusable.length) return;
+  const first = focusable[0], last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+});
+window.addEventListener("online", renderSystemBanner);
+window.addEventListener("offline", renderSystemBanner);
 document.querySelector("#generateIdeas").onclick=event=>showForm("Згенерувати ідеї",`<label>Рубрика<select name="product"><option value="all">Усі рубрики</option>${(state.data?.rubrics||[]).map(x=>`<option value="${esc(x.slug)}">${esc(x.name)}</option>`).join("")}</select></label><label>Кількість<input name="count" type="number" min="1" max="12" value="8"></label><label class="wide">Фокус<textarea name="focus"></textarea></label>`,async form=>{await api("api/ideas/generate",{method:"POST",body:JSON.stringify({product:form.get("product"),count:Number(form.get("count")),focus:form.get("focus"),text_model:"gpt-5.4-mini",tone:"expert"})});toast("Ідеї створено");await refresh();});
 document.querySelector("#manualIdea").onclick=()=>showForm("Створити ідею",`<label class="wide">Назва<input name="title" required></label><label>Рубрика<select name="product">${(state.data.rubrics||[]).map(x=>`<option value="${esc(x.slug)}">${esc(x.name)}</option>`).join("")}</select></label><label>Орієнтовна дата<input name="planned_for" type="date"></label><label class="wide">Кут подачі<textarea name="angle"></textarea></label>`,async form=>{await api("api/ideas",{method:"POST",body:JSON.stringify({title:form.get("title"),product:form.get("product"),planned_for:form.get("planned_for")||null,angle:form.get("angle")})});toast("Ідею додано");await refresh();});
 document.querySelector("#manualDraft").onclick=()=>showForm("Створити чернетку",`<label class="wide">Заголовок<input name="title" required></label><label>Рубрика<select name="product">${(state.data.rubrics||[]).map(x=>`<option value="${esc(x.slug)}">${esc(x.name)}</option>`).join("")}</select></label><label>Заголовок на візуалі<input name="visual_title"></label><label class="wide">Текст<textarea name="caption_html" minlength="20" required></textarea></label><label class="wide">Посилання<input name="link_url" type="url"></label>`,async form=>{const draft=await api("api/drafts",{method:"POST",body:JSON.stringify({title:form.get("title"),visual_title:form.get("visual_title"),product:form.get("product"),caption_html:form.get("caption_html"),link_url:form.get("link_url")})});toast("Чернетку створено");await refresh();openEditor(draft.id);});

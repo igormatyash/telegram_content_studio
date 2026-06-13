@@ -185,6 +185,10 @@ textarea { min-height: 112px; resize: vertical; }
 .empty-state h3 { margin: 10px 0 4px; }
 .toast { position: fixed; right: 18px; bottom: 18px; z-index: 100; max-width: 380px; padding: 13px 15px; border: 1px solid var(--line); border-radius: 11px; color: var(--text); background: white; box-shadow: var(--shadow); }
 .toast.error { border-color: #fecaca; }
+.system-banner { margin: -24px -32px 20px; padding: 10px 32px; color: #92400e; background: #fffbeb; border-bottom: 1px solid #fde68a; font-size: 12px; font-weight: 650; }
+.system-banner.error { color: #991b1b; background: #fef2f2; border-color: #fecaca; }
+.skeleton { min-height: 120px; border-radius: var(--radius); background: linear-gradient(90deg,#eef2f7 20%,#f8fafc 45%,#eef2f7 70%); background-size: 240% 100%; animation: skeleton 1.3s linear infinite; }
+@keyframes skeleton { to { background-position: -240% 0; } }
 .overlay { position: fixed; inset: 0; z-index: 60; background: rgba(2,6,23,.62); display: grid; place-items: center; padding: 18px; backdrop-filter: blur(4px); }
 .modal { width: min(720px, 100%); max-height: calc(100vh - 36px); overflow: auto; border-radius: var(--radius-lg); background: white; box-shadow: 0 30px 90px rgba(0,0,0,.3); }
 .modal-head, .modal-foot { padding: 18px 22px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -281,6 +285,16 @@ textarea { min-height: 112px; resize: vertical; }
 .read-only #cancelSchedule,
 .read-only #publishDraft,
 .read-only [data-generate-idea] { display: none !important; }
+.non-admin #saveBrandProfile,
+.non-admin #saveTone,
+.non-admin #addRubric,
+.non-admin #saveWorkspaceMode,
+.non-admin #inviteUser,
+.non-admin #saveTelegram,
+.non-admin [data-reset-user],
+.non-admin [data-settings="mode"],
+.non-admin [data-settings="users"],
+.non-admin [data-settings="integrations"] { display: none !important; }
 .mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px 0; }
 
 @media (max-width: 1100px) {
@@ -302,6 +316,7 @@ textarea { min-height: 112px; resize: vertical; }
   .mobile-menu { display: inline-grid; }
   .topbar { padding: 16px 20px; }
   .content { padding: 20px; }
+  .system-banner { margin: -20px -20px 18px; padding: 10px 20px; }
   .metrics { grid-template-columns: repeat(2, 1fr); }
   .dashboard-grid { grid-template-columns: 1fr; }
   .dashboard-grid > :last-child { grid-column: auto; }
@@ -323,6 +338,7 @@ textarea { min-height: 112px; resize: vertical; }
   .topbar { align-items: flex-start; }
   .topbar p, .search-button, .top-actions .icon-button { display: none; }
   .content { padding: 16px 14px 36px; }
+  .system-banner { margin: -16px -14px 16px; padding: 10px 14px; }
   .onboarding-layout { grid-template-columns: 1fr; }
   .onboarding-steps { display: none; }
   .modal { width: 100%; max-height: 100vh; border-radius: 0; }
