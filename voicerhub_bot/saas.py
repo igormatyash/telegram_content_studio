@@ -254,8 +254,12 @@ class SaasRepository:
             )
 
     def membership_for_user(self, user_id: int) -> dict | None:
+        memberships = self.memberships_for_user(user_id)
+        return memberships[0] if memberships else None
+
+    def memberships_for_user(self, user_id: int) -> list[dict]:
         with self._connect() as connection:
-            row = connection.execute(
+            rows = connection.execute(
                 """
                 SELECT m.organization_id, m.role, o.name organization_name,
                     o.slug organization_slug, o.active organization_active
@@ -263,11 +267,38 @@ class SaasRepository:
                 JOIN organizations o ON o.id = m.organization_id
                 WHERE m.user_id = ? AND o.active = 1
                 ORDER BY m.organization_id
-                LIMIT 1
                 """,
                 (user_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def role_for_user(self, organization_id: int, user_id: int) -> str | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT role FROM organization_members
+                WHERE organization_id = ? AND user_id = ?
+                """,
+                (organization_id, user_id),
             ).fetchone()
-        return dict(row) if row else None
+        return str(row["role"]) if row else None
+
+    def organizations_for_user(
+        self,
+        user_id: int,
+        *,
+        platform_admin: bool = False,
+    ) -> list[dict]:
+        if platform_admin:
+            return self.list_organizations()
+        membership_ids = {
+            item["organization_id"] for item in self.memberships_for_user(user_id)
+        }
+        return [
+            item
+            for item in self.list_organizations()
+            if item["id"] in membership_ids
+        ]
 
     def member_ids(self, organization_id: int) -> set[int]:
         with self._connect() as connection:

@@ -6,9 +6,23 @@ from pathlib import Path
 from voicerhub_bot.models import BatchRecord, Draft, GenerationJob
 
 
+TENANT_TABLES = (
+    "drafts",
+    "generation_jobs",
+    "reference_assets",
+    "content_ideas",
+    "custom_visual_templates",
+    "content_rubrics",
+    "social_variants",
+    "batch_runs",
+    "usage_events",
+)
+
+
 class DraftRepository:
-    def __init__(self, database_path: Path) -> None:
+    def __init__(self, database_path: Path, organization_id: int = 1) -> None:
         self.database_path = database_path
+        self.organization_id = organization_id
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -240,6 +254,34 @@ class DraftRepository:
                 """
             )
             self._ensure_column(connection, "usage_events", "user_id", "INTEGER")
+            for table in TENANT_TABLES:
+                self._ensure_column(
+                    connection,
+                    table,
+                    "organization_id",
+                    "INTEGER NOT NULL DEFAULT 0",
+                )
+                connection.execute(
+                    f"UPDATE {table} SET organization_id = ? "
+                    "WHERE organization_id IS NULL OR organization_id = 0",
+                    (self.organization_id,),
+                )
+                connection.execute(
+                    f"CREATE INDEX IF NOT EXISTS idx_{table}_organization_id "
+                    f"ON {table}(organization_id)"
+                )
+                connection.execute(
+                    f"""
+                    CREATE TRIGGER IF NOT EXISTS trg_{table}_organization_id
+                    AFTER INSERT ON {table}
+                    WHEN NEW.organization_id = 0
+                    BEGIN
+                        UPDATE {table}
+                        SET organization_id = {int(self.organization_id)}
+                        WHERE rowid = NEW.rowid;
+                    END
+                    """
+                )
             connection.execute(
                 """
                 UPDATE usage_events
@@ -252,6 +294,20 @@ class DraftRepository:
                   AND job_id > 0
                 """
             )
+
+    def _ensure_owned(
+        self,
+        connection: sqlite3.Connection,
+        table: str,
+        object_id: object,
+    ) -> sqlite3.Row:
+        row = connection.execute(
+            f"SELECT * FROM {table} WHERE id = ? AND organization_id = ?",
+            (object_id, self.organization_id),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"{table} object not found")
+        return row
 
     @staticmethod
     def _ensure_column(
@@ -307,9 +363,7 @@ class DraftRepository:
 
     def get(self, draft_id: int) -> Draft:
         with self._connect() as connection:
-            row = connection.execute("SELECT * FROM drafts WHERE id = ?", (draft_id,)).fetchone()
-        if row is None:
-            raise KeyError(f"Draft {draft_id} not found")
+            row = self._ensure_owned(connection, "drafts", draft_id)
         return Draft(
             id=row["id"],
             topic=row["topic"],
@@ -415,36 +469,39 @@ class DraftRepository:
             rows = connection.execute(
                 """
                 SELECT * FROM drafts
-                WHERE status = 'scheduled'
+                WHERE organization_id = ?
+                  AND status = 'scheduled'
                   AND scheduled_at <= STRFTIME('%Y-%m-%dT%H:%M:%SZ', 'now')
                 ORDER BY scheduled_at
-                """
+                """,
+                (self.organization_id,),
             ).fetchall()
         return [dict(row) for row in rows]
 
     def list_drafts(self, limit: int = 100) -> list[dict]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM drafts ORDER BY id DESC LIMIT ?",
-                (limit,),
+                """
+                SELECT * FROM drafts WHERE organization_id = ?
+                ORDER BY id DESC LIMIT ?
+                """,
+                (self.organization_id, limit),
             ).fetchall()
         return [dict(row) for row in rows]
 
     def draft_record(self, draft_id: int) -> dict:
         with self._connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM drafts WHERE id = ?",
-                (draft_id,),
-            ).fetchone()
-        if row is None:
-            raise KeyError(f"Draft {draft_id} not found")
+            row = self._ensure_owned(connection, "drafts", draft_id)
         return dict(row)
 
     def recent_titles(self, limit: int = 20) -> list[str]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT title FROM drafts ORDER BY id DESC LIMIT ?",
-                (limit,),
+                """
+                SELECT title FROM drafts WHERE organization_id = ?
+                ORDER BY id DESC LIMIT ?
+                """,
+                (self.organization_id, limit),
             ).fetchall()
         return [row["title"] for row in rows]
 
@@ -614,31 +671,29 @@ class DraftRepository:
 
     def get_rubric_by_id(self, rubric_id: int) -> dict:
         with self._connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM content_rubrics WHERE id = ?",
-                (rubric_id,),
-            ).fetchone()
-        if row is None:
-            raise KeyError(f"Rubric {rubric_id} not found")
+            row = self._ensure_owned(connection, "content_rubrics", rubric_id)
         return dict(row)
 
     def get_rubric(self, slug: str) -> dict:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM content_rubrics WHERE slug = ? AND active = 1",
-                (slug,),
+                """
+                SELECT * FROM content_rubrics
+                WHERE slug = ? AND active = 1 AND organization_id = ?
+                """,
+                (slug, self.organization_id),
             ).fetchone()
         if row is None:
             raise KeyError(f"Rubric {slug} not found")
         return dict(row)
 
     def list_rubrics(self, *, include_inactive: bool = False) -> list[dict]:
-        query = "SELECT * FROM content_rubrics"
+        query = "SELECT * FROM content_rubrics WHERE organization_id = ?"
         if not include_inactive:
-            query += " WHERE active = 1"
+            query += " AND active = 1"
         query += " ORDER BY name COLLATE NOCASE"
         with self._connect() as connection:
-            rows = connection.execute(query).fetchall()
+            rows = connection.execute(query, (self.organization_id,)).fetchall()
         return [dict(row) for row in rows]
 
     def save_social_variant(
@@ -849,19 +904,17 @@ class DraftRepository:
 
     def get_idea(self, idea_id: int) -> dict:
         with self._connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM content_ideas WHERE id = ?",
-                (idea_id,),
-            ).fetchone()
-        if row is None:
-            raise KeyError(f"Idea {idea_id} not found")
+            row = self._ensure_owned(connection, "content_ideas", idea_id)
         return dict(row)
 
     def list_ideas(self, limit: int = 100) -> list[dict]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM content_ideas ORDER BY id DESC LIMIT ?",
-                (limit,),
+                """
+                SELECT * FROM content_ideas WHERE organization_id = ?
+                ORDER BY id DESC LIMIT ?
+                """,
+                (self.organization_id, limit),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -871,9 +924,10 @@ class DraftRepository:
                 """
                 SELECT id, title, angle
                 FROM content_ideas
+                WHERE organization_id = ?
                 ORDER BY id DESC LIMIT ?
                 """,
-                (limit,),
+                (self.organization_id, limit),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -944,18 +998,21 @@ class DraftRepository:
 
     def get_custom_template(self, template_id: str) -> dict:
         with self._connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM custom_visual_templates WHERE id = ?",
-                (template_id,),
-            ).fetchone()
-        if row is None:
-            raise KeyError(f"Template {template_id} not found")
+            row = self._ensure_owned(
+                connection,
+                "custom_visual_templates",
+                template_id,
+            )
         return dict(row)
 
     def list_custom_templates(self) -> list[dict]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM custom_visual_templates ORDER BY created_at DESC"
+                """
+                SELECT * FROM custom_visual_templates WHERE organization_id = ?
+                ORDER BY created_at DESC
+                """,
+                (self.organization_id,),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -991,17 +1048,17 @@ class DraftRepository:
 
     def get_reference(self, reference_id: int) -> dict:
         with self._connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM reference_assets WHERE id = ?", (reference_id,)
-            ).fetchone()
-        if row is None:
-            raise KeyError(f"Reference {reference_id} not found")
+            row = self._ensure_owned(connection, "reference_assets", reference_id)
         return dict(row)
 
     def list_references(self) -> list[dict]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM reference_assets ORDER BY id DESC"
+                """
+                SELECT * FROM reference_assets WHERE organization_id = ?
+                ORDER BY id DESC
+                """,
+                (self.organization_id,),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -1011,8 +1068,12 @@ class DraftRepository:
         placeholders = ",".join("?" for _ in reference_ids)
         with self._connect() as connection:
             rows = connection.execute(
-                f"SELECT * FROM reference_assets WHERE id IN ({placeholders}) ORDER BY id",
-                reference_ids,
+                f"""
+                SELECT * FROM reference_assets
+                WHERE id IN ({placeholders}) AND organization_id = ?
+                ORDER BY id
+                """,
+                (*reference_ids, self.organization_id),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -1026,12 +1087,7 @@ class DraftRepository:
 
     def get_job(self, job_id: int) -> GenerationJob:
         with self._connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM generation_jobs WHERE id = ?",
-                (job_id,),
-            ).fetchone()
-        if row is None:
-            raise KeyError(f"Job {job_id} not found")
+            row = self._ensure_owned(connection, "generation_jobs", job_id)
         return self._job_from_row(row)
 
     def jobs_with_status(self, *statuses: str) -> list[GenerationJob]:
@@ -1040,8 +1096,12 @@ class DraftRepository:
         placeholders = ",".join("?" for _ in statuses)
         with self._connect() as connection:
             rows = connection.execute(
-                f"SELECT * FROM generation_jobs WHERE status IN ({placeholders}) ORDER BY id",
-                statuses,
+                f"""
+                SELECT * FROM generation_jobs
+                WHERE status IN ({placeholders}) AND organization_id = ?
+                ORDER BY id
+                """,
+                (*statuses, self.organization_id),
             ).fetchall()
         return [self._job_from_row(row) for row in rows]
 
@@ -1336,7 +1396,7 @@ class TenantRepository:
             default=1,
         )
         self._repositories: dict[int, DraftRepository] = {
-            1: DraftRepository(legacy_database_path)
+            1: DraftRepository(legacy_database_path, organization_id=1)
         }
 
     @property
@@ -1352,7 +1412,8 @@ class TenantRepository:
             directory = self.organizations_dir / str(organization_id)
             directory.mkdir(parents=True, exist_ok=True)
             self._repositories[organization_id] = DraftRepository(
-                directory / "content.sqlite3"
+                directory / "content.sqlite3",
+                organization_id=organization_id,
             )
         return self._repositories[organization_id]
 

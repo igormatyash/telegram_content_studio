@@ -11,7 +11,7 @@ from voicerhub_bot.auth import AuthRepository
 from voicerhub_bot.config import Settings
 from voicerhub_bot.saas import SaasRepository
 from voicerhub_bot.saas_worker import _telegram_settings
-from voicerhub_bot.storage import TenantRepository
+from voicerhub_bot.storage import DraftRepository, TenantRepository
 
 
 def test_legacy_company_migration_preserves_users(tmp_path) -> None:
@@ -70,6 +70,38 @@ def test_tenant_repositories_are_isolated(tmp_path) -> None:
         "wave",
     }
     assert [item["slug"] for item in second.list_rubrics()] == ["company-news"]
+
+
+def test_tenant_migration_is_idempotent_and_filters_foreign_rows(tmp_path) -> None:
+    database = tmp_path / "tenant.sqlite3"
+    repository = DraftRepository(database, organization_id=7)
+    draft = repository.create(
+        topic="Tenant topic",
+        product="general",
+        title="Tenant title",
+        caption_html="<b>Tenant title</b>",
+        image_prompt="A sufficiently descriptive image prompt for tenant testing.",
+        image_path="",
+    )
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT organization_id FROM drafts WHERE id = ?",
+            (draft.id,),
+        ).fetchone()[0] == 7
+        connection.execute(
+            """
+            INSERT INTO drafts (
+                topic, product, title, caption_html, image_prompt,
+                image_path, organization_id
+            ) VALUES ('foreign', 'general', 'Foreign title', '<b>Foreign</b>',
+                'A sufficiently descriptive foreign image prompt.', '', 8)
+            """
+        )
+
+    repository = DraftRepository(database, organization_id=7)
+
+    assert [item["title"] for item in repository.list_drafts()] == ["Tenant title"]
+    assert repository.get(draft.id).title == "Tenant title"
 
 
 def test_telegram_token_is_encrypted_at_rest(tmp_path) -> None:
@@ -165,6 +197,57 @@ def test_super_admin_creates_company_with_owner(tmp_path) -> None:
     assert (tmp_path / "organizations" / "2" / "content.sqlite3").is_file()
 
 
+def test_workspace_selection_is_scoped_to_memberships(tmp_path) -> None:
+    settings = Settings(
+        telegram_bot_token="telegram",
+        openai_api_key="openai",
+        admin_username="platform.owner",
+        admin_password="initial-password",
+        database_path=tmp_path / "admin.sqlite3",
+        generated_dir=tmp_path / "generated",
+        reference_dir=tmp_path / "references",
+        organizations_dir=tmp_path / "organizations",
+        app_encryption_key=Fernet.generate_key().decode(),
+    )
+    app = create_app(settings)
+    platform = TestClient(app)
+    platform.post(
+        "/api/login",
+        json={"username": "platform.owner", "password": "initial-password"},
+    )
+    created = platform.post(
+        "/api/organizations",
+        headers={"X-Requested-With": "VoicerHubAdmin"},
+        json={
+            "name": "Second Company",
+            "slug": "second-company",
+            "owner_username": "second.owner",
+            "owner_password": "second-password",
+        },
+    ).json()
+    headers = {"X-Requested-With": "VoicerHubAdmin"}
+
+    switched = platform.post(
+        "/api/workspace/select",
+        headers=headers,
+        json={"organization_id": created["id"]},
+    )
+    assert switched.status_code == 200
+    assert platform.get("/api/me").json()["organization_id"] == created["id"]
+
+    owner = TestClient(app)
+    owner.post(
+        "/api/login",
+        json={"username": "second.owner", "password": "second-password"},
+    )
+    denied = owner.post(
+        "/api/workspace/select",
+        headers=headers,
+        json={"organization_id": 1},
+    )
+    assert denied.status_code == 404
+
+
 def test_company_admin_cannot_manage_user_from_another_company(tmp_path) -> None:
     settings = Settings(
         telegram_bot_token="telegram",
@@ -208,6 +291,69 @@ def test_company_admin_cannot_manage_user_from_another_company(tmp_path) -> None
 
     assert second_owner_id != 1
     assert response.status_code == 404
+
+
+def test_viewer_is_read_only_and_foreign_draft_is_hidden(tmp_path) -> None:
+    settings = Settings(
+        telegram_bot_token="telegram",
+        openai_api_key="openai",
+        admin_username="platform.owner",
+        admin_password="initial-password",
+        database_path=tmp_path / "admin.sqlite3",
+        generated_dir=tmp_path / "generated",
+        reference_dir=tmp_path / "references",
+        organizations_dir=tmp_path / "organizations",
+        app_encryption_key=Fernet.generate_key().decode(),
+    )
+    app = create_app(settings)
+    platform = TestClient(app)
+    platform.post(
+        "/api/login",
+        json={"username": "platform.owner", "password": "initial-password"},
+    )
+    created = platform.post(
+        "/api/organizations",
+        headers={"X-Requested-With": "VoicerHubAdmin"},
+        json={
+            "name": "Viewer Company",
+            "slug": "viewer-company",
+            "owner_username": "viewer.owner",
+            "owner_password": "owner-password",
+        },
+    ).json()
+    auth = AuthRepository(settings.database_path)
+    viewer = auth.create_user(
+        "readonly.viewer",
+        "viewer-password",
+        is_admin=False,
+        organization_id=created["id"],
+        role="viewer",
+    )
+    legacy_draft = DraftRepository(
+        settings.database_path,
+        organization_id=1,
+    ).create(
+        topic="Legacy",
+        product="general",
+        title="Legacy organization draft",
+        caption_html="<b>Legacy organization draft</b>",
+        image_prompt="A sufficiently descriptive image prompt for a legacy draft.",
+        image_path="",
+    )
+    client = TestClient(app)
+    client.post(
+        "/api/login",
+        json={"username": viewer["username"], "password": "viewer-password"},
+    )
+    headers = {"X-Requested-With": "VoicerHubAdmin"}
+
+    assert client.get("/api/dashboard").status_code == 200
+    assert client.get(f"/api/drafts/{legacy_draft.id}").status_code == 404
+    assert client.post(
+        "/api/ideas/generate",
+        headers=headers,
+        json={"product": "all", "count": 1},
+    ).status_code == 403
 
 
 def test_ai_budget_blocks_new_generation_before_openai_call(tmp_path) -> None:

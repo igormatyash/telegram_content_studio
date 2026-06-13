@@ -98,7 +98,10 @@ class SaaSWorker:
                 )["monthly_publications"],
             }
         )
-        repository = DraftRepository(org_settings.database_path)
+        repository = DraftRepository(
+            org_settings.database_path,
+            organization_id=organization_id,
+        )
         if organization_id == 1:
             repository.ensure_legacy_rubrics(
                 str(Path(__file__).parent / "assets" / "VoicerWave.jpg")

@@ -190,11 +190,13 @@ class UserCreateRequest(BaseModel):
     username: str = Field(min_length=3, max_length=50, pattern=r"^[A-Za-z0-9._-]+$")
     password: str = Field(min_length=10, max_length=200)
     is_admin: bool = False
+    role: str | None = Field(default=None, pattern=r"^(admin|editor|viewer)$")
 
 
 class UserUpdateRequest(BaseModel):
     is_admin: bool | None = None
     active: bool | None = None
+    role: str | None = Field(default=None, pattern=r"^(admin|editor|viewer)$")
 
 
 class PasswordRequest(BaseModel):
@@ -223,6 +225,10 @@ class TelegramConnectionRequest(BaseModel):
 
 class CheckoutRequest(BaseModel):
     plan_code: str = Field(pattern=r"^(start|growth|scale)$")
+
+
+class WorkspaceSelectRequest(BaseModel):
+    organization_id: int = Field(ge=1)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -294,7 +300,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             content={"detail": "Перевірте введені дані: " + "; ".join(messages)},
         )
 
-    def authorize(
+    async def authorize(
         voicerhub_session: str | None = Cookie(default=None),
     ) -> dict:
         user = auth.session_user(voicerhub_session)
@@ -304,20 +310,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         repository.use(organization_id)
         return user
 
-    def authorize_write(
+    async def authorize_write(
         user: dict = Depends(authorize),
         x_requested_with: str | None = Header(default=None),
     ) -> dict:
         if x_requested_with != "VoicerHubAdmin":
             raise HTTPException(status_code=403, detail="Missing request guard")
+        if user.get("role") == "viewer":
+            raise HTTPException(status_code=403, detail="Недостатньо прав для змін")
         return user
 
-    def authorize_admin(user: dict = Depends(authorize_write)) -> dict:
-        if not user["is_admin"]:
+    async def authorize_admin(user: dict = Depends(authorize_write)) -> dict:
+        if user.get("role") not in {"platform_admin", "owner", "admin"}:
             raise HTTPException(status_code=403, detail="Administrator access required")
         return user
 
-    def authorize_super_admin(user: dict = Depends(authorize_write)) -> dict:
+    async def authorize_super_admin(user: dict = Depends(authorize_write)) -> dict:
         if not user.get("is_super_admin"):
             raise HTTPException(status_code=403, detail="Platform administrator required")
         return user
@@ -418,6 +426,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/me")
     def current_user(user: dict = Depends(authorize)) -> dict:
+        return {
+            **user,
+            "workspaces": saas.organizations_for_user(
+                user["id"],
+                platform_admin=bool(user.get("is_super_admin")),
+            ),
+        }
+
+    @app.post("/api/workspace/select")
+    def select_workspace(
+        payload: WorkspaceSelectRequest,
+        voicerhub_session: str | None = Cookie(default=None),
+        _: dict = Depends(authorize_write),
+    ) -> dict:
+        try:
+            auth.select_session_organization(
+                voicerhub_session,
+                payload.organization_id,
+            )
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Workspace не знайдено",
+            ) from exc
+        user = auth.session_user(voicerhub_session)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        repository.use(organization_id(user))
         return user
 
     @app.get("/api/users")
@@ -436,12 +472,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 detail="Досягнуто ліміт користувачів компанії",
             )
         try:
+            role = payload.role or ("admin" if payload.is_admin else "editor")
             return auth.create_user(
                 payload.username,
                 payload.password,
-                is_admin=payload.is_admin,
+                is_admin=role == "admin",
                 organization_id=organization_id(current),
-                role="admin" if payload.is_admin else "editor",
+                role=role,
             )
         except Exception as exc:
             if "UNIQUE constraint failed" in str(exc):
@@ -737,7 +774,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=422, detail="Не можна забрати свою роль")
         try:
             return auth.update_user(
-                user_id, is_admin=payload.is_admin, active=payload.active
+                user_id,
+                is_admin=(
+                    payload.role == "admin"
+                    if payload.role is not None
+                    else payload.is_admin
+                ),
+                active=payload.active,
+                organization_id=organization_id(current),
+                role=payload.role,
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -1664,7 +1709,7 @@ ADMIN_HTML = r"""
   <div class="workspace">
     <header class="topbar">
       <div><h2 id="viewTitle">Теми</h2><p id="viewSubtitle">Плануйте і запускайте AI-публікації з одного робочого центру.</p></div>
-      <div class="account"><button class="pricing-button" id="openPricing">Тарифи</button><span id="currentCompany"></span><span id="currentUser"></span><span id="updated">—</span><button id="logout" title="Вийти">Вийти</button></div>
+      <div class="account"><button class="pricing-button" id="openPricing">Тарифи</button><select id="workspaceSelect" hidden aria-label="Workspace"></select><span id="currentCompany"></span><span id="currentUser"></span><span id="updated">—</span><button id="logout" title="Вийти">Вийти</button></div>
     </header>
 <main>
 
@@ -1971,7 +2016,8 @@ async function refreshOrganizations(){if(!state.me?.is_super_admin)return;try{re
 async function refreshPlatformUsage(){if(!state.me?.is_super_admin)return;try{renderPlatformUsage(await api(`api/platform/usage?period=${document.querySelector("#usagePeriod").value}`))}catch(e){toast(e.message,true)}}
 function activeView(){return document.querySelector(".view.active")?.id}
 function renderActive(full=false){if(!state.data)return;renderRubrics(state.data.rubrics||[]);const view=activeView();if(view==="ideasView"){renderIdeas(state.data.ideas);if(full){renderTemplates(state.data.templates||[]);renderLogoOptions(state.data.references||[]);renderAssets(state.data.references||[])}}else if(view==="draftsView"){if(full)renderDrafts(state.data.drafts);else updateDraftStatuses(state.data.drafts)}else if(view==="calendarView")renderCalendar();else if(view==="opsView")renderOps(state.data);else if(view==="companyView"&&state.company)renderCompany(state.company);else if(view==="platformView"){renderOrganizations(state.organizations);if(state.platformUsage)renderPlatformUsage(state.platformUsage)}}
-async function refresh(background=false){try{if(!state.me){state.me=await api("api/me");document.querySelector("#currentUser").textContent=state.me.username;if(state.me.is_admin){document.querySelector("#userAdmin").hidden=false;await refreshUsers()}if(state.me.is_super_admin){document.querySelector("#platformTab").hidden=false;await refreshOrganizations();await refreshPlatformUsage()}await refreshCompany()}const d=await api("api/dashboard");state.data=d;renderActive(!background);document.querySelector("#updated").textContent=new Date().toLocaleTimeString("uk-UA")}catch(e){if(e.message.includes("увійти"))location.reload();else if(!background)toast(e.message,true)}}
+function renderWorkspaceSelector(){const select=document.querySelector("#workspaceSelect");const rows=state.me?.workspaces||[];select.hidden=rows.length<2&&!state.me?.is_super_admin;select.innerHTML=rows.map(x=>`<option value="${x.id}" ${Number(state.me.organization_id)===Number(x.id)?"selected":""}>Workspace: ${esc(x.name)}</option>`).join("")}
+async function refresh(background=false){try{if(!state.me){state.me=await api("api/me");document.querySelector("#currentUser").textContent=state.me.username;renderWorkspaceSelector();if(state.me.is_admin){document.querySelector("#userAdmin").hidden=false;await refreshUsers()}if(state.me.is_super_admin){document.querySelector("#platformTab").hidden=false;await refreshOrganizations();await refreshPlatformUsage()}await refreshCompany()}const d=await api("api/dashboard");state.data=d;renderActive(!background);document.querySelector("#updated").textContent=new Date().toLocaleTimeString("uk-UA")}catch(e){if(e.message.includes("увійти"))location.reload();else if(!background)toast(e.message,true)}}
 async function generateIdea(id){const idea=state.data.ideas.find(i=>i.id===id);const button=document.querySelector(`[data-idea="${id}"]`);await loading(button,async()=>{await api(`api/ideas/${id}/generate`,{method:"POST",body:JSON.stringify(generationPayload(idea?.product,idea?.tone))});toast("Пост поставлено в чергу генерації");await refresh()},"Додається")}
 function syncRubricControls(){const rubric=state.data?.rubrics?.find(r=>r.slug===document.querySelector("#ideaProduct").value);const fixed=!!rubric?.fixed_cover_path;document.querySelectorAll(".image-setting:not(#customTemplateForm)").forEach(el=>el.hidden=fixed);if(fixed)document.querySelector("#customTemplateForm").hidden=true;document.querySelector("#waveCoverNotice").hidden=!fixed}
 document.querySelector("#ideaProduct").onchange=syncRubricControls;
@@ -1999,6 +2045,7 @@ document.querySelector("#calendarPrev").onclick=()=>{state.calendarDate=new Date
 document.querySelector("#calendarNext").onclick=()=>{state.calendarDate=new Date(state.calendarDate.getFullYear(),state.calendarDate.getMonth()+1,1);renderCalendar()};
 document.querySelector("#calendarToday").onclick=()=>{state.calendarDate=new Date();renderCalendar()};
 document.querySelector("#logout").onclick=async()=>{await api("api/logout",{method:"POST"});location.reload()};
+document.querySelector("#workspaceSelect").onchange=async e=>{await api("api/workspace/select",{method:"POST",body:JSON.stringify({organization_id:Number(e.target.value)})});location.reload()};
 document.querySelector("#openPricing").onclick=async()=>{try{const data=await api("api/plans");renderPricing(data);document.querySelector("#pricing").showModal()}catch(e){toast(e.message,true)}};
 document.querySelector("#closePricing").onclick=()=>document.querySelector("#pricing").close();
 document.querySelector("#createUser").onclick=async()=>{const username=document.querySelector("#newUsername").value;const password=document.querySelector("#newPassword").value;try{await api("api/users",{method:"POST",body:JSON.stringify({username,password,is_admin:document.querySelector("#newIsAdmin").checked})});document.querySelector("#newUsername").value="";document.querySelector("#newPassword").value="";document.querySelector("#newIsAdmin").checked=false;toast("Користувача додано");refreshUsers()}catch(e){toast(e.message)}};

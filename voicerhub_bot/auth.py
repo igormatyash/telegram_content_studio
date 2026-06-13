@@ -78,12 +78,24 @@ class AuthRepository:
                 CREATE TABLE IF NOT EXISTS user_sessions (
                     token_hash TEXT PRIMARY KEY,
                     user_id INTEGER NOT NULL,
+                    selected_organization_id INTEGER,
                     expires_at TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
                 )
                 """
             )
+            session_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(user_sessions)"
+                ).fetchall()
+            }
+            if "selected_organization_id" not in session_columns:
+                connection.execute(
+                    "ALTER TABLE user_sessions "
+                    "ADD COLUMN selected_organization_id INTEGER"
+                )
             connection.execute(
                 """
                 UPDATE users
@@ -184,7 +196,13 @@ class AuthRepository:
                     FROM users ORDER BY username COLLATE NOCASE
                     """
                 ).fetchall()
-        return [self._public_user(row) for row in rows]
+        return [
+            self._public_user(
+                row,
+                selected_organization_id=organization_id,
+            )
+            for row in rows
+        ]
 
     def authenticate(self, username: str, password: str) -> dict | None:
         with self._connect() as connection:
@@ -207,12 +225,30 @@ class AuthRepository:
                 "DELETE FROM user_sessions WHERE expires_at <= ?",
                 (datetime.now(timezone.utc).isoformat(),),
             )
+            membership = None
+            if self._table_exists(connection, "organization_members"):
+                membership = connection.execute(
+                    """
+                    SELECT organization_id
+                    FROM organization_members
+                    WHERE user_id = ?
+                    ORDER BY organization_id
+                    LIMIT 1
+                    """,
+                    (user_id,),
+                ).fetchone()
             connection.execute(
                 """
-                INSERT INTO user_sessions (token_hash, user_id, expires_at)
-                VALUES (?, ?, ?)
+                INSERT INTO user_sessions (
+                    token_hash, user_id, selected_organization_id, expires_at
+                ) VALUES (?, ?, ?, ?)
                 """,
-                (token_hash, user_id, expires.isoformat()),
+                (
+                    token_hash,
+                    user_id,
+                    membership["organization_id"] if membership else None,
+                    expires.isoformat(),
+                ),
             )
         return token
 
@@ -225,14 +261,63 @@ class AuthRepository:
             row = connection.execute(
                 """
                 SELECT u.id, u.username, u.is_admin, u.is_super_admin,
-                    u.active, u.created_at
+                    u.active, u.created_at, s.selected_organization_id
                 FROM user_sessions s
                 JOIN users u ON u.id = s.user_id
                 WHERE s.token_hash = ? AND s.expires_at > ? AND u.active = 1
                 """,
                 (token_hash, now),
             ).fetchone()
-        return self._public_user(row) if row else None
+        return self._public_user(
+            row,
+            selected_organization_id=(
+                row["selected_organization_id"] if row else None
+            ),
+        ) if row else None
+
+    def select_session_organization(
+        self,
+        token: str | None,
+        organization_id: int,
+    ) -> None:
+        if not token:
+            raise KeyError("Session not found")
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        with self._connect() as connection:
+            session = connection.execute(
+                """
+                SELECT s.user_id, u.is_super_admin
+                FROM user_sessions s
+                JOIN users u ON u.id = s.user_id
+                WHERE s.token_hash = ?
+                """,
+                (token_hash,),
+            ).fetchone()
+            if session is None:
+                raise KeyError("Session not found")
+            allowed = bool(session["is_super_admin"])
+            if not allowed:
+                allowed = connection.execute(
+                    """
+                    SELECT 1 FROM organization_members
+                    WHERE user_id = ? AND organization_id = ?
+                    """,
+                    (session["user_id"], organization_id),
+                ).fetchone() is not None
+            organization_exists = connection.execute(
+                "SELECT 1 FROM organizations WHERE id = ? AND active = 1",
+                (organization_id,),
+            ).fetchone()
+            if not allowed or organization_exists is None:
+                raise KeyError("Organization not found")
+            connection.execute(
+                """
+                UPDATE user_sessions
+                SET selected_organization_id = ?
+                WHERE token_hash = ?
+                """,
+                (organization_id, token_hash),
+            )
 
     def delete_session(self, token: str | None) -> None:
         if not token:
@@ -249,6 +334,8 @@ class AuthRepository:
         *,
         is_admin: bool | None = None,
         active: bool | None = None,
+        organization_id: int | None = None,
+        role: str | None = None,
     ) -> dict:
         assignments: list[str] = []
         values: list[object] = []
@@ -258,32 +345,50 @@ class AuthRepository:
         if active is not None:
             assignments.append("active = ?")
             values.append(int(active))
-        if assignments:
-            values.append(user_id)
+        membership_role = role
+        if membership_role is None and is_admin is not None:
+            membership_role = "admin" if is_admin else "editor"
+        if assignments or membership_role is not None or active is False:
             with self._connect() as connection:
-                connection.execute(
-                    f"UPDATE users SET {', '.join(assignments)} WHERE id = ?",
-                    values,
-                )
-                if is_admin is not None and self._table_exists(
+                if assignments:
+                    values.append(user_id)
+                    connection.execute(
+                        f"UPDATE users SET {', '.join(assignments)} WHERE id = ?",
+                        values,
+                    )
+                if membership_role is not None and self._table_exists(
                     connection, "organization_members"
                 ):
+                    if organization_id is None:
+                        raise ValueError("organization_id is required for role updates")
                     connection.execute(
                         """
                         UPDATE organization_members
-                        SET role = CASE
-                            WHEN role = 'owner' THEN role
-                            ELSE ?
-                        END
-                        WHERE user_id = ?
+                        SET role = CASE WHEN role = 'owner' THEN role ELSE ? END
+                        WHERE user_id = ? AND organization_id = ?
                         """,
-                        ("admin" if is_admin else "editor", user_id),
+                        (membership_role, user_id, organization_id),
                     )
                 if active is False:
                     connection.execute(
                         "DELETE FROM user_sessions WHERE user_id = ?", (user_id,)
                     )
-        return self.get_user(user_id)
+        user = self.get_user(user_id)
+        if organization_id is not None:
+            with self._connect() as connection:
+                row = connection.execute(
+                    """
+                    SELECT u.id, u.username, u.is_admin, u.is_super_admin,
+                        u.active, u.created_at
+                    FROM users u WHERE u.id = ?
+                    """,
+                    (user_id,),
+                ).fetchone()
+            return self._public_user(
+                row,
+                selected_organization_id=organization_id,
+            )
+        return user
 
     def set_password(self, user_id: int, password: str) -> None:
         with self._connect() as connection:
@@ -295,7 +400,11 @@ class AuthRepository:
                 "DELETE FROM user_sessions WHERE user_id = ?", (user_id,)
             )
 
-    def _public_user(self, row: sqlite3.Row) -> dict:
+    def _public_user(
+        self,
+        row: sqlite3.Row,
+        selected_organization_id: int | None = None,
+    ) -> dict:
         user = {
             "id": row["id"],
             "username": row["username"],
@@ -306,21 +415,44 @@ class AuthRepository:
         }
         with self._connect() as connection:
             if self._table_exists(connection, "organization_members"):
-                membership = connection.execute(
-                    """
-                    SELECT m.organization_id, m.role, o.name organization_name,
-                        o.slug organization_slug
-                    FROM organization_members m
-                    JOIN organizations o ON o.id = m.organization_id
-                    WHERE m.user_id = ? AND o.active = 1
-                    ORDER BY m.organization_id
-                    LIMIT 1
-                    """,
-                    (row["id"],),
-                ).fetchone()
+                if selected_organization_id is None:
+                    membership = connection.execute(
+                        """
+                        SELECT m.organization_id, m.role,
+                            o.name organization_name, o.slug organization_slug
+                        FROM organization_members m
+                        JOIN organizations o ON o.id = m.organization_id
+                        WHERE m.user_id = ? AND o.active = 1
+                        ORDER BY m.organization_id
+                        LIMIT 1
+                        """,
+                        (row["id"],),
+                    ).fetchone()
+                else:
+                    membership = connection.execute(
+                        """
+                        SELECT o.id organization_id,
+                            COALESCE(m.role, 'platform_admin') role,
+                            o.name organization_name, o.slug organization_slug
+                        FROM organizations o
+                        LEFT JOIN organization_members m
+                          ON m.organization_id = o.id AND m.user_id = ?
+                        WHERE o.id = ? AND o.active = 1
+                          AND (m.user_id IS NOT NULL OR ? = 1)
+                        """,
+                        (
+                            row["id"],
+                            selected_organization_id,
+                            int(bool(row["is_super_admin"])),
+                        ),
+                    ).fetchone()
                 if membership:
                     user.update(dict(membership))
-                    user["is_admin"] = membership["role"] in {"owner", "admin"}
+                    user["is_admin"] = membership["role"] in {
+                        "platform_admin",
+                        "owner",
+                        "admin",
+                    }
         return user
 
     @staticmethod
