@@ -262,6 +262,8 @@ class OrganizationCreateRequest(BaseModel):
         pattern=r"^[A-Za-z0-9._-]+$",
     )
     owner_password: str = Field(min_length=10, max_length=200)
+    owner_email: str | None = Field(default=None, max_length=254)
+    owner_display_name: str = Field(default="", max_length=100)
     max_users: int = Field(default=50, ge=1, le=50)
     max_channels: int = Field(default=1, ge=1, le=1)
     monthly_publications: int = Field(default=90, ge=1, le=10000)
@@ -271,6 +273,13 @@ class OrganizationCreateRequest(BaseModel):
 class TelegramConnectionRequest(BaseModel):
     bot_token: str = Field(min_length=20, max_length=200)
     channel_id: str = Field(min_length=2, max_length=200)
+
+
+class TelegramValidationResponse(BaseModel):
+    ok: bool
+    bot_username: str
+    channel_id: str
+    membership_status: str
 
 
 class CheckoutRequest(BaseModel):
@@ -390,6 +399,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 detail="Спочатку підключіть Telegram-бота та канал компанії",
             )
         return token, channel
+
+    async def validate_telegram_connection(
+        payload: TelegramConnectionRequest,
+    ) -> dict:
+        try:
+            bot = Bot(payload.bot_token.strip())
+            profile = await bot.get_me()
+            member = await bot.get_chat_member(payload.channel_id.strip(), profile.id)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Не вдалося знайти бота або канал. Перевірте token, "
+                    "@username каналу та додайте бота в канал."
+                ),
+            ) from exc
+        if member.status not in {"administrator", "creator"}:
+            raise HTTPException(
+                status_code=422,
+                detail="Бот знайдений, але він не є адміністратором каналу",
+            )
+        return {
+            "ok": True,
+            "bot_username": profile.username or "",
+            "channel_id": payload.channel_id.strip(),
+            "membership_status": member.status,
+        }
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(_, exc: RequestValidationError) -> JSONResponse:
@@ -1140,6 +1176,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 is_admin=True,
                 organization_id=organization["id"],
                 role="owner",
+                email=payload.owner_email,
+                display_name=payload.owner_display_name,
             )
         except Exception as exc:
             if "UNIQUE constraint failed" in str(exc):
@@ -1274,26 +1312,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         user: dict = Depends(authorize_admin),
     ) -> dict:
         organization_id = int(user.get("organization_id") or 1)
-        try:
-            bot = Bot(payload.bot_token.strip())
-            profile = await bot.get_me()
-            member = await bot.get_chat_member(payload.channel_id.strip(), profile.id)
-        except Exception as exc:
-            raise HTTPException(
-                status_code=422,
-                detail="Не вдалося перевірити бота або доступ до каналу",
-            ) from exc
-        if member.status not in {"administrator", "creator"}:
-            raise HTTPException(
-                status_code=422,
-                detail="Бот повинен бути адміністратором Telegram-каналу",
-            )
+        validation = await validate_telegram_connection(payload)
         try:
             connection = saas.save_telegram_connection(
                 organization_id,
                 channel_id=payload.channel_id,
                 bot_token=payload.bot_token,
-                bot_username=profile.username or "",
+                bot_username=validation["bot_username"],
             )
         except RuntimeError as exc:
             raise HTTPException(
@@ -1312,6 +1337,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             onboarding_step=4,
         )
         return connection
+
+    @app.post(
+        "/api/company/telegram/validate",
+        response_model=TelegramValidationResponse,
+    )
+    async def validate_company_telegram(
+        payload: TelegramConnectionRequest,
+        _: dict = Depends(authorize_admin),
+    ) -> dict:
+        return await validate_telegram_connection(payload)
 
     @app.patch("/api/users/{user_id}")
     def update_user(
@@ -1673,6 +1708,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Завдання не знайдено") from exc
         if job.status not in {
+            "failed",
             "queued_text",
             "text_batch",
             "queued_image",
@@ -1736,7 +1772,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             error="Скасовано користувачем. Створено швидке завдання.",
         )
         reference_ids = json.loads(job.reference_ids or "[]")
-        if job.draft_id and job.status in {"queued_image", "image_batch"}:
+        if job.draft_id:
             replacement = repository.create_image_job(
                 job.draft_id,
                 image_model=job.image_model,
@@ -2285,10 +2321,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict:
         scheduled_at = payload.scheduled_at
         draft = repository.draft_record(draft_id)
-        if draft["status"] not in {"ready", "scheduled"}:
+        if draft["status"] == "published":
             raise HTTPException(
                 status_code=409,
-                detail="Запланувати можна лише готовий або вже запланований пост",
+                detail="Опублікований пост не можна повторно планувати",
+            )
+        image_path = Path(draft["image_path"])
+        if not draft["image_path"] or not image_path.is_file():
+            raise HTTPException(
+                status_code=409,
+                detail="Спочатку додайте або згенеруйте візуал для публікації",
             )
         if scheduled_at.tzinfo is None:
             scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)

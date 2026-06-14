@@ -233,6 +233,8 @@ def test_super_admin_creates_company_with_owner(tmp_path) -> None:
             "slug": "second-company",
             "owner_username": "second.owner",
             "owner_password": "second-password",
+            "owner_email": "owner@second.example",
+            "owner_display_name": "Second Owner",
             "max_users": 50,
             "max_channels": 1,
             "monthly_publications": 90,
@@ -243,6 +245,8 @@ def test_super_admin_creates_company_with_owner(tmp_path) -> None:
     assert response.status_code == 200
     assert response.json()["id"] == 2
     assert response.json()["owner"]["organization_id"] == 2
+    assert response.json()["owner"]["email"] == "owner@second.example"
+    assert response.json()["owner"]["display_name"] == "Second Owner"
     assert (tmp_path / "organizations" / "2" / "content.sqlite3").is_file()
 
 

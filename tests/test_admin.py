@@ -377,7 +377,13 @@ def test_modular_frontend_routes_manual_content_and_usage(tmp_path) -> None:
     assert "static/app.js" in app_html
     assert 'aria-modal="true"' in app_html
     assert 'id="systemBanner"' in app_html
+    assert 'id="platformAnalytics"' in app_html
+    assert 'id="notificationCount"' in app_html
     assert "prefers-reduced-motion" in styles
+    app_script = client.get("/static/app.js").text
+    assert "Витрати всіх компаній" in app_script
+    assert "bindTelegramValidation" in app_script
+    assert "rubric-builder" in app_script
 
     rubric = client.post(
         "/api/rubrics",
@@ -422,3 +428,104 @@ def test_modular_frontend_routes_manual_content_and_usage(tmp_path) -> None:
     usage = client.get("/api/usage", headers=headers)
     assert usage.status_code == 200
     assert {"totals", "models", "users", "rubrics"} <= usage.json().keys()
+
+
+def test_calendar_schedules_draft_with_visual_and_rejects_missing_visual(
+    tmp_path,
+) -> None:
+    client = make_client(tmp_path)
+    assert login(client).status_code == 200
+    headers = {"X-Requested-With": "VoicerHubAdmin"}
+    repository = DraftRepository(tmp_path / "admin.sqlite3")
+    image_path = tmp_path / "scheduled.png"
+    Image.new("RGB", (20, 20), "purple").save(image_path)
+    ready_for_calendar = repository.create(
+        topic="Calendar",
+        product="tony",
+        title="Чернетка з візуалом",
+        caption_html="<b>Чернетка</b>\n\nТекст для календаря.",
+        image_prompt="Calendar visual.",
+        image_path=str(image_path),
+    )
+    without_visual = repository.create(
+        topic="Calendar",
+        product="tony",
+        title="Чернетка без візуалу",
+        caption_html="<b>Чернетка</b>\n\nТекст без візуалу.",
+        image_prompt="Missing visual.",
+        image_path="",
+    )
+
+    scheduled = client.post(
+        f"/api/drafts/{ready_for_calendar.id}/schedule",
+        headers=headers,
+        json={"scheduled_at": "2030-01-01T10:00:00Z"},
+    )
+    rejected = client.post(
+        f"/api/drafts/{without_visual.id}/schedule",
+        headers=headers,
+        json={"scheduled_at": "2030-01-01T11:00:00Z"},
+    )
+
+    assert scheduled.status_code == 200
+    assert repository.draft_record(ready_for_calendar.id)["status"] == "scheduled"
+    assert rejected.status_code == 409
+    assert "візуал" in rejected.json()["detail"]
+
+
+def test_telegram_connection_can_be_validated_without_saving(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    client = make_client(tmp_path)
+    assert login(client).status_code == 200
+
+    class FakeBot:
+        def __init__(self, token):
+            assert token == "123456789:valid-test-token"
+
+        async def get_me(self):
+            return SimpleNamespace(id=99, username="content_test_bot")
+
+        async def get_chat_member(self, channel_id, bot_id):
+            assert channel_id == "@content_test"
+            assert bot_id == 99
+            return SimpleNamespace(status="administrator")
+
+    monkeypatch.setattr(admin_module, "Bot", FakeBot)
+    response = client.post(
+        "/api/company/telegram/validate",
+        headers={"X-Requested-With": "VoicerHubAdmin"},
+        json={
+            "channel_id": "@content_test",
+            "bot_token": "123456789:valid-test-token",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["bot_username"] == "content_test_bot"
+    assert response.json()["membership_status"] == "administrator"
+
+
+def test_failed_generation_job_can_be_retried_from_notification(tmp_path) -> None:
+    client = make_client(tmp_path)
+    assert login(client).status_code == 200
+    repository = DraftRepository(tmp_path / "admin.sqlite3")
+    failed = repository.create_job(
+        "Матеріал з помилкою",
+        "tony",
+        1,
+        text_model="gpt-5.4-mini",
+        image_model="gpt-image-2",
+    )
+    repository.update_job(failed.id, status="failed", error="Temporary failure")
+
+    response = client.post(
+        f"/api/jobs/{failed.id}/retry-fast",
+        headers={"X-Requested-With": "VoicerHubAdmin"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["job_id"] != failed.id
+    assert repository.get_job(failed.id).status == "cancelled"
+    assert repository.get_job(response.json()["job_id"]).status == "queued_text"
