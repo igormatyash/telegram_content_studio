@@ -1458,6 +1458,27 @@ class DraftRepository:
             "models": [dict(row) for row in models],
         }
 
+    def usage_by_rubric(self, *, since: str | None = None) -> list[dict]:
+        conditions = ["u.job_id = j.id"]
+        params: list[object] = []
+        if since:
+            conditions.append("u.created_at >= ?")
+            params.append(since)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT j.product rubric_slug,
+                    COUNT(u.id) operations,
+                    COALESCE(SUM(u.cost), 0) cost
+                FROM usage_events u
+                JOIN generation_jobs j ON {' AND '.join(conditions)}
+                GROUP BY j.product
+                ORDER BY cost DESC, operations DESC
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def current_month_cost(self) -> float:
         with self._connect() as connection:
             row = connection.execute(

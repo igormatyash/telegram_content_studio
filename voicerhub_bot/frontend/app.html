@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Content Studio</title>
+  <link rel="stylesheet" href="__BASE_PATH__/static/styles.css">
+</head>
+<body data-base-path="__BASE_PATH__">
+<div class="app-shell">
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand"><span class="brand-mark"></span>Content Studio</div>
+    <button class="workspace-switch" id="workspaceButton">
+      <span class="workspace-logo" id="workspaceLogo">CS</span>
+      <span style="min-width:0;text-align:left"><strong id="workspaceName">Workspace</strong><small id="workspacePlan">Завантаження…</small></span>
+      <span style="margin-left:auto">⌄</span>
+    </button>
+    <div class="nav-title">Workspace</div>
+    <nav class="nav-list" id="mainNav">
+      <button class="nav-item active" data-view="home"><span class="nav-icon">⌂</span>Головна</button>
+      <button class="nav-item" data-view="ideas"><span class="nav-icon">✦</span>Ідеї<span class="nav-count" id="ideasCount">0</span></button>
+      <button class="nav-item pipeline-only" data-view="plan"><span class="nav-icon">▤</span>Контент-план</button>
+      <button class="nav-item" data-view="drafts" data-kanban-label="Дошка"><span class="nav-icon">☷</span><span id="draftsNavLabel">Чернетки</span><span class="nav-count" id="draftsCount">0</span></button>
+      <button class="nav-item" data-view="calendar"><span class="nav-icon">□</span>Календар</button>
+    </nav>
+    <div class="nav-title">Налаштування</div>
+    <nav class="nav-list">
+      <button class="nav-item" data-view="brand"><span class="nav-icon">◈</span>Бренд</button>
+      <button class="nav-item" data-view="analytics"><span class="nav-icon">$</span><span id="analyticsNavLabel">Витрати</span></button>
+      <button class="nav-item" data-view="settings"><span class="nav-icon">⚙</span>Налаштування</button>
+    </nav>
+    <div class="sidebar-user">
+      <img class="avatar" id="userAvatar" alt="">
+      <span style="min-width:0"><strong id="userName">—</strong><small id="userRole">—</small></span>
+      <button class="ghost icon-button" id="logout" title="Вийти" style="margin-left:auto;color:#94a3b8;border:0">↗</button>
+    </div>
+  </aside>
+  <section class="workspace">
+    <header class="topbar">
+      <div class="row">
+        <button class="icon-button mobile-menu" id="mobileMenu" aria-label="Відкрити меню">☰</button>
+        <div><h1 id="pageTitle">Головна</h1><p id="pageSubtitle">Огляд вашого контенту та найближчих дій.</p></div>
+      </div>
+      <div class="top-actions">
+        <button class="button search-button" id="searchButton">⌕&nbsp;&nbsp;Пошук <small style="margin-left:auto">⌘K</small></button>
+        <button class="icon-button" id="notificationsButton" aria-label="Сповіщення">♢</button>
+        <button class="primary" id="createButton">＋ Створити</button>
+      </div>
+    </header>
+    <main class="content">
+      <div class="system-banner" id="systemBanner" hidden></div>
+      <section class="view active" id="homeView">
+        <div class="metrics" id="homeMetrics"><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span></div>
+        <div class="dashboard-grid">
+          <article class="card panel"><div class="eyebrow">Що зробити зараз</div><h2>Швидкі дії</h2><div class="stack" id="quickActions"></div></article>
+          <article class="card panel"><div class="row between"><div><div class="eyebrow">Наступні публікації</div><h2>Заплановано</h2></div><button class="ghost" data-open-view="calendar">Календар →</button></div><div class="stack" id="upcomingList"></div></article>
+          <div class="stack"><article class="usage-card" id="usageCard"></article><article class="card panel" id="brandProgress"></article></div>
+        </div>
+      </section>
+
+      <section class="view" id="ideasView">
+        <div class="page-actions"><div class="filters" id="ideaFilters"></div><div class="row"><button id="manualIdea">Створити вручну</button><button class="primary" id="generateIdeas">✦ Згенерувати ідеї</button></div></div>
+        <div class="idea-grid" id="ideasGrid"></div>
+      </section>
+
+      <section class="view" id="planView">
+        <div class="content-plan-layout">
+          <form class="card panel stack" id="planForm">
+            <div><div class="eyebrow">AI generator</div><h2>Параметри плану</h2></div>
+            <label>Період<select id="planPeriod"><option value="week">Тиждень</option><option value="month">Місяць</option></select></label>
+            <label>Дата початку<input id="planStart" type="date"></label>
+            <label>Кількість постів<input id="planPosts" type="number" min="1" max="31" value="7"></label>
+            <label>Рубрика<select id="planProduct"></select></label>
+            <label>Мета<textarea id="planFocus" placeholder="Що має дати цей контент-план"></textarea></label>
+            <label>Результат<select id="planCreateAs"><option value="ideas">Створити ідеї</option><option value="drafts">Поставити чернетки в чергу</option></select></label>
+            <button class="primary" type="submit">✦ Згенерувати план</button>
+          </form>
+          <article class="card panel">
+            <div class="row between"><div><div class="eyebrow">Редакційний календар</div><h2>Контент-план</h2></div><button id="exportPlan">Експортувати CSV</button></div>
+            <div class="plan-list" id="planList"></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="view" id="draftsView">
+        <div class="page-actions"><div class="filters" id="draftFilters"></div><div class="row"><button id="exportDrafts">Експорт</button><button class="primary" id="manualDraft">＋ Створити чернетку</button></div></div>
+        <div id="draftsContent"></div>
+      </section>
+
+      <section class="view" id="calendarView">
+        <div class="calendar-layout">
+          <aside class="card panel"><div class="eyebrow">Без розкладу</div><h2>Готові публікації</h2><div class="stack" id="calendarReady"></div></aside>
+          <article>
+            <div class="row between calendar-toolbar"><div class="row"><button id="calendarPrev">‹</button><h2 id="calendarTitle"></h2><button id="calendarNext">›</button></div><div class="row"><button id="calendarToday">Сьогодні</button><button class="primary" id="calendarSchedule">＋ Запланувати пост</button></div></div>
+            <div class="calendar-grid" id="calendarGrid"></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="view" id="brandView">
+        <div class="tabs-row" id="brandTabs"><button class="active" data-brand-tab="profile">Профіль компанії</button><button data-brand-tab="tone">Tone of voice</button><button data-brand-tab="rubrics">Рубрики</button><button data-brand-tab="visuals">Візуальні стилі</button><button data-brand-tab="assets">Матеріали</button></div>
+        <div id="brandContent"></div>
+      </section>
+
+      <section class="view" id="analyticsView">
+        <div class="analytics-metrics" id="analyticsMetrics"></div>
+        <div class="analytics-layout">
+          <article class="card panel"><div class="row between"><div><div class="eyebrow">Витрати по днях</div><h2>Останні 30 днів</h2></div><button id="exportUsage">Експортувати звіт</button></div><div class="chart" id="usageChart"></div></article>
+          <div class="stack"><article class="card panel"><h2>По моделях</h2><div id="modelUsage"></div></article><article class="card panel"><h2>Топ рубрик</h2><div id="rubricUsage"></div></article></div>
+        </div>
+      </section>
+
+      <section class="view" id="settingsView">
+        <div class="settings-layout">
+          <nav class="settings-nav"><button class="active" data-settings="workspace">Workspace</button><button data-settings="mode">Режим роботи</button><button data-settings="users">Команда</button><button data-settings="integrations">Інтеграції</button><button data-settings="security">Безпека</button></nav>
+          <div id="settingsContent"></div>
+        </div>
+      </section>
+    </main>
+  </section>
+</div>
+
+<div class="overlay" id="workspaceOverlay" role="dialog" aria-modal="true" aria-label="Вибір workspace" hidden><div class="modal"><div class="modal-head"><div><div class="eyebrow">Вітаємо</div><h2 style="margin:3px 0">Оберіть workspace</h2></div><button class="icon-button" data-close-overlay aria-label="Закрити">×</button></div><div class="modal-body"><div class="workspace-grid" id="workspaceGrid"></div></div></div></div>
+<div class="overlay" id="onboardingOverlay" role="dialog" aria-modal="true" aria-labelledby="onboardingTitle" hidden><div class="modal" style="width:min(820px,100%)"><div class="onboarding-layout"><aside class="onboarding-steps" id="onboardingSteps"></aside><section><div class="modal-head"><div><div class="eyebrow">Налаштування workspace</div><h2 id="onboardingTitle" style="margin:3px 0"></h2></div><button class="ghost" id="skipOnboarding">Пропустити</button></div><div class="modal-body" id="onboardingBody"></div><div class="modal-foot"><button id="onboardingBack">← Назад</button><button class="primary" id="onboardingNext">Далі →</button></div></section></div></div></div>
+<div class="overlay" id="formOverlay" role="dialog" aria-modal="true" aria-labelledby="formTitle" hidden><div class="modal"><div class="modal-head"><h2 id="formTitle" style="margin:0"></h2><button class="icon-button" data-close-overlay aria-label="Закрити">×</button></div><form id="dynamicForm"><div class="modal-body" id="formBody"></div><div class="modal-foot"><button type="button" data-close-overlay>Скасувати</button><button class="primary" type="submit">Зберегти</button></div></form></div></div>
+<div class="overlay" id="editorOverlay" role="dialog" aria-modal="true" aria-label="Редактор публікації" hidden><div class="editor-page" id="editorContent"></div></div>
+<div class="toast" id="toast" hidden></div>
+<div hidden>CONTENT STUDIO · Налаштування workspace · Voicer Wave</div>
+<script src="__BASE_PATH__/static/app.js?v=4" defer></script>
+</body>
+</html>

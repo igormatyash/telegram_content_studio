@@ -1,5 +1,6 @@
 from io import BytesIO
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlparse
 
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
@@ -239,3 +240,185 @@ def test_onboarding_mode_status_api_and_editor_route(tmp_path) -> None:
     assert route.status_code == 200
     assert "data-kanban-label=\"Дошка\"" in route.text
     assert "Налаштування workspace" in route.text
+
+
+def test_invitation_reset_and_trial_workspace_flows(tmp_path) -> None:
+    client = make_client(tmp_path)
+    assert login(client).status_code == 200
+    headers = {"X-Requested-With": "VoicerHubAdmin"}
+
+    invitation = client.post(
+        "/api/invitations",
+        headers=headers,
+        json={"email": "invitee@example.com", "role": "editor"},
+    )
+    assert invitation.status_code == 200
+    token = invitation.json()["url"].split("token=", 1)[1]
+
+    accepted = TestClient(client.app).post(
+        "/api/invitations/accept",
+        json={
+            "token": token,
+            "username": "invitee",
+            "password": "invitee-password",
+            "display_name": "Invited Editor",
+        },
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["user"]["email"] == "invitee@example.com"
+    assert client.post(
+        "/api/invitations/accept",
+        json={
+            "token": token,
+            "username": "invitee2",
+            "password": "invitee-password",
+        },
+    ).status_code == 400
+
+    user_id = accepted.json()["user"]["id"]
+    reset = client.post(
+        "/api/password-reset/link",
+        headers=headers,
+        json={"user_id": user_id},
+    )
+    assert reset.status_code == 200
+    reset_token = reset.json()["url"].split("token=", 1)[1]
+    assert client.post(
+        "/api/password-reset/complete",
+        json={"token": reset_token, "password": "replacement-password"},
+    ).status_code == 200
+
+    trial = client.post(
+        "/api/account/trial-workspace",
+        headers=headers,
+        json={"name": "Self Serve", "slug": "self-serve"},
+    )
+    assert trial.status_code == 200
+    assert trial.json()["plan_code"] == "trial"
+
+
+def test_google_signup_creates_trial_workspace(tmp_path, monkeypatch) -> None:
+    settings = Settings(
+        telegram_bot_token="telegram",
+        openai_api_key="openai",
+        admin_username="editor",
+        admin_password="initial-password",
+        database_path=tmp_path / "admin.sqlite3",
+        generated_dir=tmp_path / "generated",
+        reference_dir=tmp_path / "references",
+        organizations_dir=tmp_path / "organizations",
+        app_encryption_key=Fernet.generate_key().decode(),
+        google_client_id="client-id",
+        google_client_secret="client-secret",
+        google_redirect_uri="http://testserver/api/auth/google/callback",
+        public_app_url="http://testserver",
+    )
+    client = TestClient(create_app(settings))
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.status_code = 200
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class FakeAsyncClient:
+        def __init__(self, **_):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return FakeResponse({"access_token": "google-access-token"})
+
+        async def get(self, *_args, **_kwargs):
+            return FakeResponse(
+                {
+                    "sub": "google-new-user",
+                    "email": "new.user@example.com",
+                    "email_verified": True,
+                    "name": "New User",
+                    "picture": "https://example.com/avatar.png",
+                }
+            )
+
+    monkeypatch.setattr(admin_module.httpx, "AsyncClient", FakeAsyncClient)
+    start = client.get("/api/auth/google/start", follow_redirects=False)
+    state = parse_qs(urlparse(start.headers["location"]).query)["state"][0]
+    callback = client.get(
+        f"/api/auth/google/callback?code=code&state={state}",
+        follow_redirects=False,
+    )
+
+    assert callback.status_code == 303
+    client.cookies.set(
+        "voicerhub_session",
+        callback.cookies["voicerhub_session"],
+    )
+    profile = client.get("/api/me")
+    assert profile.status_code == 200
+    assert profile.json()["role"] == "owner"
+    assert profile.json()["workspaces"][0]["plan_code"] == "trial"
+
+
+def test_modular_frontend_routes_manual_content_and_usage(tmp_path) -> None:
+    client = make_client(tmp_path)
+    assert login(client).status_code == 200
+    headers = {"X-Requested-With": "VoicerHubAdmin"}
+    assert client.get("/static/styles.css").status_code == 200
+    assert client.get("/static/app.js").status_code == 200
+    app_html = client.get("/").text
+    styles = client.get("/static/styles.css").text
+    assert "static/app.js" in app_html
+    assert 'aria-modal="true"' in app_html
+    assert 'id="systemBanner"' in app_html
+    assert "prefers-reduced-motion" in styles
+
+    rubric = client.post(
+        "/api/rubrics",
+        headers=headers,
+        json={
+            "name": "Експертні матеріали",
+            "slug": "expert",
+            "description": "Практичні експертні матеріали для цільової аудиторії.",
+            "instructions": "",
+            "default_link": "",
+        },
+    )
+    assert rubric.status_code == 200
+    idea = client.post(
+        "/api/ideas",
+        headers=headers,
+        json={
+            "title": "Ручна ідея",
+            "angle": "Практичний кут подачі",
+            "product": "expert",
+        },
+    )
+    assert idea.status_code == 200
+    draft = client.post(
+        "/api/drafts",
+        headers=headers,
+        json={
+            "title": "Ручна чернетка",
+            "visual_title": "Ручна чернетка",
+            "caption_html": (
+                "<b>Ручна чернетка</b>\n\n"
+                "Достатньо довгий текст публікації."
+            ),
+            "product": "expert",
+            "link_url": "",
+        },
+    )
+    assert draft.status_code == 200
+    assert client.get(
+        f"/workspace/voicerhub/drafts/{draft.json()['id']}"
+    ).status_code == 200
+    usage = client.get("/api/usage", headers=headers)
+    assert usage.status_code == 200
+    assert {"totals", "models", "users", "rubrics"} <= usage.json().keys()

@@ -244,6 +244,9 @@ def test_usage_inherits_user_from_generation_job(tmp_path: Path) -> None:
     assert report["totals"]["output_tokens"] == 80
     assert report["users"][0]["user_id"] == 42
     assert report["users"][0]["text_generations"] == 1
+    assert repository.usage_by_rubric() == [
+        {"rubric_slug": "tony", "operations": 1, "cost": 0.01}
+    ]
 
 
 def test_usage_can_be_checked_before_retrying_completed_batch(tmp_path: Path) -> None:

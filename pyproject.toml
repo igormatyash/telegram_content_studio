@@ -33,4 +33,10 @@ pythonpath = ["."]
 include = ["voicerhub_bot*"]
 
 [tool.setuptools.package-data]
-voicerhub_bot = ["assets/*.jpg", "assets/template_previews/*.png"]
+voicerhub_bot = [
+    "assets/*.jpg",
+    "assets/template_previews/*.png",
+    "frontend/*.html",
+    "frontend/*.css",
+    "frontend/*.js",
+]

@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     default_monthly_publications: int = 90
     default_monthly_ai_budget: float = 50.0
     monthly_publications_limit: int = 0
+    public_app_url: str = ""
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_redirect_uri: str = ""
 
     model_config = SettingsConfigDict(
         env_file=".env",

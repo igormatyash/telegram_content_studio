@@ -59,6 +59,25 @@ def test_organization_onboarding_settings_survive_reinitialization(tmp_path) -> 
     assert restored["tone_of_voice"] == "Лаконічно та професійно"
 
 
+def test_trial_workspace_has_start_limits_and_expiration(tmp_path) -> None:
+    database = tmp_path / "trial.sqlite3"
+    saas = SaasRepository(database, Fernet.generate_key().decode())
+
+    organization = saas.create_trial_organization(
+        name="Trial Team",
+        slug="trial-team",
+    )
+
+    assert organization["plan_code"] == "trial"
+    assert organization["max_users"] == 3
+    assert organization["max_channels"] == 1
+    assert organization["monthly_publications"] == 30
+    assert organization["monthly_ai_budget"] == 8
+    assert datetime.fromisoformat(organization["plan_expires_at"]) > datetime.now(
+        timezone.utc
+    )
+
+
 def test_tenant_repositories_are_isolated(tmp_path) -> None:
     router = TenantRepository(
         tmp_path / "legacy.sqlite3",

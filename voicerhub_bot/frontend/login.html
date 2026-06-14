@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Вхід · Content Studio</title>
+  <link rel="stylesheet" href="__BASE_PATH__/static/styles.css">
+</head>
+<body class="auth-page" data-google-enabled="__GOOGLE_ENABLED__" data-base-path="__BASE_PATH__">
+  <main class="auth-frame">
+    <section class="auth-panel">
+      <div class="auth-brand"><span class="brand-mark"></span>Content Studio</div>
+      <div class="eyebrow">AI publishing workspace</div>
+      <h1>Увійдіть у workspace</h1>
+      <p class="muted">Керуйте контентом системно, з командою і без хаосу.</p>
+      <form class="auth-form" id="loginForm">
+        <label>Email або логін<input id="username" autocomplete="username" required autofocus></label>
+        <label>Пароль<input id="password" type="password" autocomplete="current-password" required></label>
+        <div class="auth-links"><label class="row"><input id="remember" type="checkbox" style="width:auto;margin:0"> Запам’ятати мене</label><a href="#" id="resetHelp">Забули пароль?</a></div>
+        <button class="primary" type="submit">Увійти</button>
+        <div class="form-error" id="error" role="alert"></div>
+      </form>
+      <div id="oauthBlock">
+        <div class="divider">або</div>
+        <a class="button oauth-button" href="__BASE_PATH__/api/auth/google/start">G&nbsp;&nbsp;Продовжити з Google</a>
+      </div>
+    </section>
+    <aside class="auth-visual">
+      <div class="post-preview">
+        <div class="row between"><strong>4service · Telegram</strong><span class="pill scheduled">Заплановано</span></div>
+        <div class="preview-image"></div>
+        <strong>Як системно працювати з відгуками клієнтів</strong>
+        <p style="color:#a8b0c2">Кожен другий клієнт залишає відгук, але не кожна команда використовує цей сигнал.</p>
+      </div>
+      <div class="auth-tagline">Створюйте контент системно, з командою, без хаосу.</div>
+    </aside>
+  </main>
+  <script src="__BASE_PATH__/static/auth.js" defer></script>
+</body>
+</html>
