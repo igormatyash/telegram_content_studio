@@ -131,6 +131,11 @@ textarea { min-height: 112px; resize: vertical; }
 .post-preview { position: relative; max-width: 390px; margin: 85px auto 0; padding: 20px; border: 1px solid rgba(255,255,255,.12); border-radius: 16px; background: rgba(15,23,42,.58); backdrop-filter: blur(18px); box-shadow: 0 30px 70px rgba(0,0,0,.3); }
 .preview-image { height: 180px; margin: 16px 0; border-radius: 12px; background: radial-gradient(circle at 70% 20%,#a855f7,transparent 33%),linear-gradient(135deg,#312e81,#4f46e5 54%,#111827); }
 .auth-tagline { position: absolute; left: 62px; bottom: 60px; max-width: 340px; font-size: 25px; font-weight: 720; line-height: 1.18; }
+.auth-switch { margin: 18px 0 0; color: var(--muted); font-size: 12px; text-align: center; }
+.auth-switch a { color: var(--primary); font-weight: 700; text-decoration: none; }
+.register-frame { min-height: 760px; }
+.register-panel { padding-top: 90px; padding-bottom: 42px; }
+.referral-welcome { margin-top: 16px; }
 
 /* Workspace chooser */
 .chooser-page { min-height: 100vh; padding: 24px; background: var(--bg); }
@@ -335,6 +340,9 @@ textarea { min-height: 112px; resize: vertical; }
 .non-admin [data-settings="users"],
 .non-admin [data-settings="integrations"] { display: none !important; }
 .mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px 0; }
+.referral-link { display: flex; gap: 8px; margin: 16px 0; }
+.referral-link input { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.referral-link button { flex: 0 0 auto; }
 
 @media (max-width: 1100px) {
   .metrics { grid-template-columns: repeat(3, 1fr); }

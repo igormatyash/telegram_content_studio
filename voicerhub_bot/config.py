@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     admin_base_path: str = "/content-admin"
     app_encryption_key: str = ""
     organizations_dir: Path = Path("data/organizations")
-    max_organizations: int = 3
+    max_organizations: int = 10000
     default_max_users: int = 50
     default_max_channels: int = 1
     default_monthly_publications: int = 90
@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     google_client_secret: str = ""
     google_redirect_uri: str = ""
+    privacy_hash_salt: str = ""
 
     model_config = SettingsConfigDict(
         env_file=".env",

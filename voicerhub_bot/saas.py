@@ -133,6 +133,12 @@ class SaasRepository:
             )
             self._ensure_column(connection, "organizations", "plan_code", "TEXT NOT NULL DEFAULT 'custom'")
             self._ensure_column(connection, "organizations", "plan_expires_at", "TEXT")
+            self._ensure_column(
+                connection,
+                "organizations",
+                "referred_by_organization_id",
+                "INTEGER",
+            )
 
     @staticmethod
     def _ensure_column(

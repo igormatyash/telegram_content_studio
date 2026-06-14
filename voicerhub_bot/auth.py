@@ -78,6 +78,7 @@ class AuthRepository:
                 "google_subject": "TEXT",
                 "display_name": "TEXT NOT NULL DEFAULT ''",
                 "avatar_url": "TEXT NOT NULL DEFAULT ''",
+                "referred_by_user_id": "INTEGER",
             }.items():
                 if column not in columns:
                     connection.execute(
@@ -223,7 +224,8 @@ class AuthRepository:
             row = connection.execute(
                 """
                 SELECT id, username, is_admin, is_super_admin, active, created_at,
-                    email, google_subject, display_name, avatar_url
+                    email, google_subject, display_name, avatar_url,
+                    referred_by_user_id
                 FROM users WHERE id = ?
                 """,
                 (user_id,),
@@ -241,7 +243,7 @@ class AuthRepository:
                     """
                     SELECT u.id, u.username, u.is_admin, u.is_super_admin,
                         u.active, u.created_at, u.email, u.google_subject,
-                        u.display_name, u.avatar_url
+                        u.display_name, u.avatar_url, u.referred_by_user_id
                     FROM users u
                     JOIN organization_members m ON m.user_id = u.id
                     WHERE m.organization_id = ?
@@ -253,7 +255,8 @@ class AuthRepository:
                 rows = connection.execute(
                     """
                     SELECT id, username, is_admin, is_super_admin, active, created_at,
-                        email, google_subject, display_name, avatar_url
+                        email, google_subject, display_name, avatar_url,
+                        referred_by_user_id
                     FROM users ORDER BY username COLLATE NOCASE
                     """
                 ).fetchall()
@@ -323,7 +326,8 @@ class AuthRepository:
                 """
                 SELECT u.id, u.username, u.is_admin, u.is_super_admin,
                     u.active, u.created_at, u.email, u.google_subject,
-                    u.display_name, u.avatar_url, s.selected_organization_id
+                    u.display_name, u.avatar_url, u.referred_by_user_id,
+                    s.selected_organization_id
                 FROM user_sessions s
                 JOIN users u ON u.id = s.user_id
                 WHERE s.token_hash = ? AND s.expires_at > ? AND u.active = 1
@@ -442,7 +446,7 @@ class AuthRepository:
                     """
                     SELECT u.id, u.username, u.is_admin, u.is_super_admin,
                         u.active, u.created_at, u.email, u.google_subject,
-                        u.display_name, u.avatar_url
+                        u.display_name, u.avatar_url, u.referred_by_user_id
                     FROM users u WHERE u.id = ?
                     """,
                     (user_id,),
@@ -468,7 +472,8 @@ class AuthRepository:
             row = connection.execute(
                 """
                 SELECT id, username, is_admin, is_super_admin, active, created_at,
-                    email, google_subject, display_name, avatar_url
+                    email, google_subject, display_name, avatar_url,
+                    referred_by_user_id
                 FROM users WHERE email = ? COLLATE NOCASE
                 """,
                 (email.strip(),),
@@ -480,7 +485,8 @@ class AuthRepository:
             row = connection.execute(
                 """
                 SELECT id, username, is_admin, is_super_admin, active, created_at,
-                    email, google_subject, display_name, avatar_url
+                    email, google_subject, display_name, avatar_url,
+                    referred_by_user_id
                 FROM users WHERE google_subject = ?
                 """,
                 (subject,),
@@ -644,6 +650,7 @@ class AuthRepository:
             "display_name": row["display_name"] or row["username"],
             "avatar_url": row["avatar_url"] or "",
             "google_connected": bool(row["google_subject"]),
+            "referred_by_user_id": row["referred_by_user_id"],
         }
         with self._connect() as connection:
             if self._table_exists(connection, "organization_members"):
@@ -696,3 +703,7 @@ class AuthRepository:
             ).fetchone()
             is not None
         )
+
+    def delete_user(self, user_id: int) -> None:
+        with self._connect() as connection:
+            connection.execute("DELETE FROM users WHERE id = ?", (user_id,))

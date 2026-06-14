@@ -384,6 +384,9 @@ def test_modular_frontend_routes_manual_content_and_usage(tmp_path) -> None:
     assert "Витрати всіх компаній" in app_script
     assert "bindTelegramValidation" in app_script
     assert "rubric-builder" in app_script
+    assert "Реферальна програма" in app_html
+    assert "copyReferral" in app_script
+    assert client.get("/register").status_code == 200
     assert "history.pushState" in app_script
     assert 'window.addEventListener("popstate"' in app_script
     assert "queryForView" in app_script

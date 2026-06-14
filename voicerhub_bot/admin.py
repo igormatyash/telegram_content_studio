@@ -10,7 +10,17 @@ from urllib.parse import urlencode
 import httpx
 import uvicorn
 from openai import AsyncOpenAI
-from fastapi import Cookie, Depends, FastAPI, File, Header, HTTPException, Response, UploadFile
+from fastapi import (
+    Cookie,
+    Depends,
+    FastAPI,
+    File,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -38,6 +48,7 @@ from voicerhub_bot.rendering import (
     plain_text,
     sanitize_telegram_html,
 )
+from voicerhub_bot.referrals import ReferralRepository
 from voicerhub_bot.saas import SaasRepository
 from voicerhub_bot.storage import DraftRepository, TenantRepository
 from voicerhub_bot.visual_templates import DEFAULT_TEMPLATE_ID, VISUAL_TEMPLATES
@@ -253,6 +264,20 @@ class TrialWorkspaceRequest(BaseModel):
     slug: str = Field(min_length=2, max_length=60, pattern=r"^[A-Za-z0-9-]+$")
 
 
+class RegistrationRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=50, pattern=r"^[A-Za-z0-9._-]+$")
+    password: str = Field(min_length=10, max_length=200)
+    email: str = Field(min_length=3, max_length=254)
+    display_name: str = Field(min_length=2, max_length=100)
+    workspace_name: str = Field(min_length=2, max_length=100)
+    workspace_slug: str = Field(
+        min_length=2,
+        max_length=60,
+        pattern=r"^[A-Za-z0-9-]+$",
+    )
+    referral_code: str = Field(default="", max_length=40)
+
+
 class OrganizationCreateRequest(BaseModel):
     name: str = Field(min_length=2, max_length=100)
     slug: str = Field(min_length=2, max_length=60, pattern=r"^[A-Za-z0-9-]+$")
@@ -336,6 +361,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     auth.ensure_bootstrap_admin(settings.admin_username, settings.admin_password)
     saas = SaasRepository(settings.database_path, settings.app_encryption_key)
     saas.ensure_legacy_organization(channel_id=settings.telegram_channel)
+    referrals = ReferralRepository(
+        settings.database_path,
+        settings.privacy_hash_salt
+        or settings.app_encryption_key
+        or settings.admin_password
+        or settings.product_name,
+    )
     repository.for_organization(1).ensure_legacy_rubrics(
         str(Path(__file__).parent / "assets" / "VoicerWave.jpg")
     )
@@ -360,6 +392,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not base:
             base = settings.admin_base_path.rstrip("/")
         return f"{base}/{path.lstrip('/')}"
+
+    def request_ip(request: Request) -> str:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",", 1)[0].strip()
+        return request.client.host if request.client else ""
+
+    def record_referral_visit(code: str, request: Request) -> dict:
+        query = request.query_params
+        return referrals.record_click(
+            code,
+            ip_address=request_ip(request),
+            user_agent=request.headers.get("user-agent", ""),
+            utm_source=query.get("utm_source", ""),
+            utm_medium=query.get("utm_medium", ""),
+            utm_campaign=query.get("utm_campaign", ""),
+            landing_url=str(request.url),
+        )
+
+    def set_referral_cookies(response: Response, code: str, click_id: int) -> None:
+        cookie_options = {
+            "max_age": 30 * 24 * 60 * 60,
+            "httponly": True,
+            "samesite": "lax",
+            "secure": settings.session_cookie_secure,
+        }
+        response.set_cookie("voicerhub_referral", code, **cookie_options)
+        response.set_cookie(
+            "voicerhub_referral_click",
+            str(click_id),
+            **cookie_options,
+        )
 
     def organization_dirs(organization_id: int) -> tuple[Path, Path]:
         if organization_id == 1:
@@ -561,6 +625,52 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def password_reset_page() -> str:
         return frontend_html("action.html").replace("__ACTION__", "reset")
 
+    @app.get("/register", response_class=HTMLResponse)
+    def registration_page(
+        request: Request,
+        ref: str = "",
+        voicerhub_referral: str | None = Cookie(default=None),
+        voicerhub_referral_click: str | None = Cookie(default=None),
+    ) -> HTMLResponse:
+        candidate = (ref or voicerhub_referral or "").strip()
+        referral = referrals.code(candidate, active_only=True) if candidate else None
+        response = HTMLResponse(
+            frontend_html("register.html")
+            .replace("__REFERRAL_CODE__", referral["code"] if referral else "")
+            .replace("__REFERRAL_VALID__", "true" if referral else "false")
+        )
+        if referral and not (
+            voicerhub_referral == referral["code"] and voicerhub_referral_click
+        ):
+            click = record_referral_visit(referral["code"], request)
+            set_referral_cookies(response, referral["code"], click["id"])
+        return response
+
+    @app.get("/r/{code}")
+    def open_referral_link(code: str, request: Request) -> RedirectResponse:
+        try:
+            click = record_referral_visit(code, request)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Реферальне посилання не знайдено або вимкнено",
+            ) from exc
+        query = {"ref": click["referral_code"]}
+        for key in ("utm_source", "utm_medium", "utm_campaign"):
+            value = request.query_params.get(key)
+            if value:
+                query[key] = value
+        response = RedirectResponse(
+            public_url(f"register?{urlencode(query)}"),
+            status_code=303,
+        )
+        set_referral_cookies(
+            response,
+            click["referral_code"],
+            click["id"],
+        )
+        return response
+
     @app.get(
         "/workspace/{org_slug}/drafts/{draft_id}",
         response_class=HTMLResponse,
@@ -598,6 +708,103 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return {"user": user}
 
+    @app.post("/api/register")
+    def register(
+        payload: RegistrationRequest,
+        response: Response,
+        voicerhub_session: str | None = Cookie(default=None),
+        voicerhub_referral: str | None = Cookie(default=None),
+        voicerhub_referral_click: str | None = Cookie(default=None),
+    ) -> dict:
+        referral_code = (payload.referral_code or voicerhub_referral or "").strip()
+        referral = (
+            referrals.code(referral_code, active_only=True)
+            if referral_code
+            else None
+        )
+        current_user = auth.session_user(voicerhub_session)
+        if (
+            referral
+            and current_user
+            and int(referral["owner_user_id"]) == int(current_user["id"])
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Не можна реєструватися за власним реферальним посиланням",
+            )
+        if auth.find_by_email(payload.email):
+            raise HTTPException(
+                status_code=409,
+                detail="Користувач із таким email уже зареєстрований",
+            )
+        if len(saas.list_organizations()) >= settings.max_organizations:
+            raise HTTPException(
+                status_code=409,
+                detail="Тимчасово неможливо створити новий workspace",
+            )
+        user = None
+        try:
+            user = auth.create_user(
+                payload.username,
+                payload.password,
+                is_admin=True,
+                email=payload.email,
+                display_name=payload.display_name,
+            )
+            organization = saas.create_trial_organization(
+                name=payload.workspace_name,
+                slug=payload.workspace_slug,
+            )
+            saas.add_member(organization["id"], user["id"], "owner")
+            repository.for_organization(organization["id"])
+        except Exception as exc:
+            if user is not None:
+                auth.delete_user(user["id"])
+            if "UNIQUE constraint failed" in str(exc):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Такий логін або slug уже використовується",
+                ) from exc
+            raise
+        if referral:
+            try:
+                referrals.complete_signup(
+                    referral["code"],
+                    new_user_id=user["id"],
+                    new_organization_id=organization["id"],
+                    click_id=(
+                        int(voicerhub_referral_click)
+                        if voicerhub_referral_click
+                        and voicerhub_referral_click.isdigit()
+                        else None
+                    ),
+                )
+                saas.audit(
+                    organization["id"],
+                    user["id"],
+                    "referral_signup_completed",
+                    referral["code"],
+                )
+            except (KeyError, ValueError):
+                pass
+        session = auth.create_session(user["id"])
+        auth.select_session_organization(session, organization["id"])
+        response.set_cookie(
+            "voicerhub_session",
+            session,
+            max_age=SESSION_DAYS * 24 * 60 * 60,
+            httponly=True,
+            samesite="lax",
+            secure=settings.session_cookie_secure,
+        )
+        response.delete_cookie("voicerhub_referral")
+        response.delete_cookie("voicerhub_referral_click")
+        return {
+            "user": auth.session_user(session),
+            "organization": organization,
+            "referred": bool(referral),
+        }
+
     @app.get("/api/auth/google/start")
     def google_login_start(invite: str | None = None) -> RedirectResponse:
         if not settings.google_client_id or not settings.google_client_secret:
@@ -621,6 +828,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         code: str,
         state: str,
         response: Response,
+        voicerhub_referral: str | None = Cookie(default=None),
+        voicerhub_referral_click: str | None = Cookie(default=None),
     ) -> RedirectResponse:
         try:
             oauth_state = auth.consume_oauth_state(state)
@@ -660,6 +869,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         user = auth.find_by_google_subject(profile["sub"])
         if user is None:
             user = auth.find_by_email(profile["email"])
+        created_new_user = user is None
         if user is None:
             username_base = re.sub(
                 r"[^A-Za-z0-9._-]+",
@@ -744,6 +954,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 session,
                 int(membership["organization_id"]),
             )
+        if created_new_user and voicerhub_referral and membership:
+            try:
+                referrals.complete_signup(
+                    voicerhub_referral,
+                    new_user_id=user["id"],
+                    new_organization_id=int(membership["organization_id"]),
+                    click_id=(
+                        int(voicerhub_referral_click)
+                        if voicerhub_referral_click
+                        and voicerhub_referral_click.isdigit()
+                        else None
+                    ),
+                )
+                saas.audit(
+                    int(membership["organization_id"]),
+                    user["id"],
+                    "referral_signup_completed",
+                    voicerhub_referral,
+                )
+            except (KeyError, ValueError):
+                pass
         redirect = RedirectResponse(public_url(), status_code=303)
         redirect.set_cookie(
             "voicerhub_session",
@@ -753,6 +984,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             samesite="lax",
             secure=settings.session_cookie_secure,
         )
+        if created_new_user:
+            redirect.delete_cookie("voicerhub_referral")
+            redirect.delete_cookie("voicerhub_referral_click")
         return redirect
 
     @app.get("/api/auth/config")
@@ -790,6 +1024,52 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 user["id"],
                 platform_admin=bool(user.get("is_super_admin")),
             ),
+        }
+
+    def referral_payload(user: dict) -> dict:
+        summary = referrals.owner_summary(
+            user["id"],
+            organization_id(user),
+        )
+        return {
+            **summary,
+            "url": public_url(f"register?ref={summary['code']}"),
+            "short_url": public_url(f"r/{summary['code']}"),
+        }
+
+    @app.get("/api/referrals/me")
+    def my_referral(user: dict = Depends(authorize)) -> dict:
+        return referral_payload(user)
+
+    @app.post("/api/referrals/me/rotate")
+    def rotate_my_referral(
+        x_requested_with: str | None = Header(default=None),
+        user: dict = Depends(authorize),
+    ) -> dict:
+        if x_requested_with != "VoicerHubAdmin":
+            raise HTTPException(status_code=403, detail="Missing request guard")
+        referrals.rotate(user["id"], organization_id(user))
+        return referral_payload(user)
+
+    @app.post("/api/referrals/me/disable")
+    def disable_my_referral(
+        x_requested_with: str | None = Header(default=None),
+        user: dict = Depends(authorize),
+    ) -> dict:
+        if x_requested_with != "VoicerHubAdmin":
+            raise HTTPException(status_code=403, detail="Missing request guard")
+        try:
+            referral = referrals.disable(user["id"], organization_id(user))
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Реферальне посилання не знайдено",
+            ) from exc
+        return {
+            **referrals.owner_summary(user["id"], organization_id(user)),
+            **referral,
+            "url": public_url(f"register?ref={referral['code']}"),
+            "short_url": public_url(f"r/{referral['code']}"),
         }
 
     @app.post("/api/account/trial-workspace")
@@ -1081,6 +1361,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/organizations")
     def organizations(_: dict = Depends(authorize_super_admin)) -> list[dict]:
         return saas.list_organizations()
+
+    @app.get("/api/platform/referrals")
+    def platform_referrals(_: dict = Depends(authorize_super_admin)) -> dict:
+        return referrals.platform_summary()
 
     @app.get("/api/platform/usage")
     def platform_usage(
