@@ -16,6 +16,19 @@ const state = {
   platformUsage: null,
   platformPeriod: "month",
 };
+const viewRoutes = {
+  home: "dashboard",
+  ideas: "ideas",
+  plan: "content-plan",
+  drafts: "drafts",
+  calendar: "calendar",
+  brand: "brand",
+  analytics: "expenses",
+  settings: "settings",
+};
+const routeViews = Object.fromEntries(
+  Object.entries(viewRoutes).map(([view, route]) => [route, view]),
+);
 const titles = {
   home: ["Головна", "Огляд вашого контенту та найближчих дій."],
   ideas: ["Ідеї", "Генеруйте та зберігайте теми для майбутніх публікацій."],
@@ -123,8 +136,65 @@ function notificationItems() {
   }
   return items;
 }
-function setView(view) {
+function appPathname() {
+  const normalizedBase = basePath.replace(/\/+$/, "");
+  return normalizedBase && location.pathname.startsWith(normalizedBase)
+    ? location.pathname.slice(normalizedBase.length) || "/"
+    : location.pathname;
+}
+function routeFromLocation() {
+  const parts = appPathname().split("/").filter(Boolean);
+  const workspaceIndex = parts.indexOf("workspace");
+  if (
+    workspaceIndex >= 0
+    && parts[workspaceIndex + 2] === "drafts"
+    && Number(parts[workspaceIndex + 3])
+  ) {
+    return {
+      view: history.state?.fromView || "drafts",
+      draftId: Number(parts[workspaceIndex + 3]),
+    };
+  }
+  return {view: routeViews[parts[0]] || "home", draftId: null};
+}
+function queryForView(view) {
+  const query = new URLSearchParams();
+  if (view === "ideas" && state.ideaFilter !== "all") query.set("rubric", state.ideaFilter);
+  if (view === "drafts" && state.draftFilter !== "all") query.set("status", state.draftFilter);
+  if (view === "calendar") {
+    query.set("view", "month");
+    query.set(
+      "date",
+      `${state.calendarDate.getFullYear()}-${String(state.calendarDate.getMonth() + 1).padStart(2, "0")}`,
+    );
+  }
+  if (view === "brand" && state.brandTab !== "profile") query.set("tab", state.brandTab);
+  if (view === "settings" && state.settingsTab !== "workspace") query.set("tab", state.settingsTab);
+  return query.toString();
+}
+function urlForView(view) {
+  const query = queryForView(view);
+  return `${basePath}/${viewRoutes[view]}${query ? `?${query}` : ""}`;
+}
+function readRouteState() {
+  const query = new URLSearchParams(location.search);
+  state.ideaFilter = query.get("rubric") || "all";
+  state.draftFilter = query.get("status") || "all";
+  if (/^\d{4}-\d{2}$/.test(query.get("date") || "")) {
+    const [year, month] = query.get("date").split("-").map(Number);
+    state.calendarDate = new Date(year, month - 1, 1);
+  }
+  state.brandTab = query.get("tab") || "profile";
+  state.settingsTab = query.get("tab") || "workspace";
+  return routeFromLocation();
+}
+function updateViewUrl(view, {replace = false} = {}) {
+  history[replace ? "replaceState" : "pushState"]({view}, "", urlForView(view));
+}
+function setView(view, {push = true, replace = false} = {}) {
+  if (!viewRoutes[view]) view = "home";
   state.view = view;
+  if (push) updateViewUrl(view, {replace});
   document.querySelectorAll(".view").forEach(node => node.classList.toggle("active", node.id === `${view}View`));
   document.querySelectorAll(".nav-item[data-view]").forEach(node => node.classList.toggle("active", node.dataset.view === view));
   const [title, subtitle] = titles[view];
@@ -132,6 +202,18 @@ function setView(view) {
   document.querySelector("#pageSubtitle").textContent = subtitle;
   document.body.classList.remove("menu-open");
   renderCurrent();
+}
+async function applyLocationRoute({openDraft = true} = {}) {
+  const route = readRouteState();
+  setView(route.view, {push: false});
+  document.querySelectorAll("[data-brand-tab]").forEach(node => node.classList.toggle("active", node.dataset.brandTab === state.brandTab));
+  document.querySelectorAll("[data-settings]").forEach(node => node.classList.toggle("active", node.dataset.settings === state.settingsTab));
+  if (route.draftId && openDraft && state.data) {
+    await openEditor(route.draftId, false);
+  } else if (!route.draftId) {
+    document.querySelector("#editorOverlay").hidden = true;
+    state.currentDraft = null;
+  }
 }
 function renderCurrent() {
   if (!state.data || !state.company) return;
@@ -240,7 +322,7 @@ function renderFilters(target, values, active, callback) {
   target.querySelectorAll("button").forEach(button => button.onclick = () => callback(button.dataset.filter));
 }
 function renderIdeas() {
-  renderFilters(document.querySelector("#ideaFilters"), [["all","Усі рубрики"],...(state.data.rubrics||[]).map(x => [x.slug,x.name])], state.ideaFilter, value => {state.ideaFilter=value;renderIdeas();});
+  renderFilters(document.querySelector("#ideaFilters"), [["all","Усі рубрики"],...(state.data.rubrics||[]).map(x => [x.slug,x.name])], state.ideaFilter, value => {state.ideaFilter=value;updateViewUrl("ideas");renderIdeas();});
   const items = (state.data.ideas || []).filter(x => state.ideaFilter === "all" || x.product === state.ideaFilter);
   document.querySelector("#ideasGrid").innerHTML = items.length ? items.map(item => `<article class="card idea-card"><div class="row between"><span class="pill idea">${esc((state.data.rubrics||[]).find(x=>x.slug===item.product)?.name||item.product)}</span><small class="muted">${formatDate(item.planned_for)}</small></div><h3>${esc(item.title)}</h3><p>${esc(item.angle || "Перспективна тема для майбутньої публікації.")}</p><footer><button class="ghost danger" data-delete-idea="${item.id}">Видалити</button><button class="dark-button" data-generate-idea="${item.id}">Створити чернетку</button></footer></article>`).join("") : empty("У вас ще немає ідей","Згенеруйте перші теми на основі бренду та рубрик.",'<button class="primary" id="emptyGenerateIdeas">✦ Згенерувати ідеї</button>');
   document.querySelectorAll("[data-generate-idea]").forEach(button => button.onclick = () => generateIdea(button));
@@ -274,7 +356,7 @@ function renderPlan() {
 
 function renderDrafts() {
   const kanban = state.company.settings?.workspace_mode === "kanban";
-  renderFilters(document.querySelector("#draftFilters"), [["all","Усі"],["draft","Чернетки"],["review","На перевірці"],["ready","Готові"],["scheduled","Заплановані"],["published","Опубліковані"]], state.draftFilter, value => {state.draftFilter=value;renderDrafts();});
+  renderFilters(document.querySelector("#draftFilters"), [["all","Усі"],["draft","Чернетки"],["review","На перевірці"],["ready","Готові"],["scheduled","Заплановані"],["published","Опубліковані"]], state.draftFilter, value => {state.draftFilter=value;updateViewUrl("drafts");renderDrafts();});
   const drafts = (state.data.drafts||[]).filter(x => state.draftFilter === "all" || x.status === state.draftFilter);
   const target = document.querySelector("#draftsContent");
   if (kanban) {
@@ -413,7 +495,13 @@ async function openEditor(id, push = true) {
   try {
     const draft = await api(`api/drafts/${id}`);
     state.currentDraft = draft;
-    if (push) history.pushState({draft:id},"",`${basePath}/workspace/${state.me.organization_slug}/drafts/${id}`);
+    if (push) {
+      history.pushState(
+        {draftId:id,fromView:state.view,pushed:true},
+        "",
+        `${basePath}/workspace/${state.me.organization_slug}/drafts/${id}`,
+      );
+    }
     const target = document.querySelector("#editorContent");
     target.innerHTML = `<header class="editor-header"><div class="row"><button id="closeEditor">←</button><div>${pill(draft.status)} <strong style="margin-left:8px">${esc(draft.title)}</strong></div></div><div class="row"><button id="regenText">Перегенерувати текст</button><button id="saveDraft">Зберегти</button><button class="primary" id="publishDraft" ${["ready","scheduled"].includes(draft.status)?"":"disabled title=\"Спочатку погодьте матеріал\""}>Опублікувати</button></div></header><div class="editor-grid"><form class="editor-form" id="editorForm"><div class="status-actions">${(statusActions[draft.status]||[]).map(([next,label])=>`<button type="button" data-editor-status="${next}">${label}</button>`).join("")}</div><div class="form-grid"><label>Рубрика<input value="${esc(draft.product)}" disabled></label><label>Дата і час<input id="scheduleAt" type="datetime-local" value="${draft.scheduled_at?new Date(draft.scheduled_at).toISOString().slice(0,16):""}"></label></div><label>Заголовок для поста<input id="editorTitle" value="${esc(draft.title)}"></label><label>Заголовок на візуалі<input id="editorVisualTitle" value="${esc(draft.visual_title||draft.title)}"><small class="muted">Без emoji та зайвих символів.</small></label><label>Текст публікації<textarea id="editorCaption" style="min-height:330px">${esc(draft.caption_html)}</textarea></label><label>Посилання<input id="editorLink" value="${esc(draft.link_url||"")}"></label><div class="row"><button type="button" id="scheduleDraft" ${draft.image_path?"":"disabled title=\"Спочатку потрібен візуал\""}>Запланувати</button><button type="button" id="cancelSchedule" ${draft.status==="scheduled"?"":"hidden"}>Повернути в готові</button><button type="button" id="proofreadDraft">Перевірити текст</button></div></form><aside class="editor-preview"><div class="editor-preview-card"><div class="row"><span class="workspace-logo" style="width:30px;height:30px">${initials(state.company.name)}</span><div><strong>${esc(state.company.name)}</strong><small style="display:block;color:#94a3b8">Telegram</small></div></div><img src="${apiUrl(`api/drafts/${id}/image`)}" alt="" onerror="this.style.display='none'"><h2 id="previewTitle">${esc(draft.visual_title||draft.title)}</h2><p id="previewText" style="color:#cbd5e1;white-space:pre-wrap">${esc(plain(draft.caption_html).slice(0,650))}</p></div></aside></div>`;
     document.querySelector("#editorOverlay").hidden = false;
@@ -422,7 +510,14 @@ async function openEditor(id, push = true) {
 }
 function closeEditor() {
   document.querySelector("#editorOverlay").hidden = true;
-  if (location.pathname.includes("/drafts/")) history.pushState({},"",`${basePath}/`);
+  if (routeFromLocation().draftId) {
+    if (history.state?.pushed) history.back();
+    else {
+      state.view = history.state?.fromView || "drafts";
+      updateViewUrl(state.view, {replace:true});
+      setView(state.view, {push:false});
+    }
+  }
 }
 
 function showForm(title, fields, submit, options = {}) {
@@ -629,10 +724,10 @@ async function refresh(background = false) {
     state.me=me;state.company=company;state.data=data;state.usage=usage;
     if (me.is_super_admin) state.platformUsage = await api(`api/platform/usage?period=${state.platformPeriod}`);
     if (me.is_admin) state.users=await api("api/users");
-    applyIdentity();renderCurrent();
+    applyIdentity();
+    if (!background) await applyLocationRoute();
+    else renderCurrent();
     if (!background && company.settings && !["completed","skipped"].includes(company.settings.onboarding_status) && ["owner","admin"].includes(me.role)) showOnboarding(Math.max(1,Number(company.settings.onboarding_step||0)+1));
-    const parts=location.pathname.split("/").filter(Boolean);const index=parts.indexOf("workspace");
-    if (!background && index>=0 && parts[index+2]==="drafts" && Number(parts[index+3])) openEditor(Number(parts[index+3]),false);
   } catch (error) { if (!background) toast(error.message,true); }
 }
 
@@ -664,14 +759,14 @@ document.querySelector("#manualIdea").onclick=()=>showForm("Створити і�
 document.querySelector("#manualDraft").onclick=()=>showForm("Створити чернетку",`<label class="wide">Заголовок<input name="title" required></label><label>Рубрика<select name="product">${(state.data.rubrics||[]).map(x=>`<option value="${esc(x.slug)}">${esc(x.name)}</option>`).join("")}</select></label><label>Заголовок на візуалі<input name="visual_title"></label><label class="wide">Текст<textarea name="caption_html" minlength="20" required></textarea></label><label class="wide">Посилання<input name="link_url" type="url"></label>`,async form=>{const draft=await api("api/drafts",{method:"POST",body:JSON.stringify({title:form.get("title"),visual_title:form.get("visual_title"),product:form.get("product"),caption_html:form.get("caption_html"),link_url:form.get("link_url")})});toast("Чернетку створено");await refresh();openEditor(draft.id);});
 document.querySelector("#calendarSchedule").onclick=()=>openScheduleForm();
 document.querySelector("#planForm").onsubmit=async event=>{event.preventDefault();await loading(event.submitter,async()=>{await api("api/content-plan/generate",{method:"POST",body:JSON.stringify({product:document.querySelector("#planProduct").value,period:document.querySelector("#planPeriod").value,posts:Number(document.querySelector("#planPosts").value),start_date:document.querySelector("#planStart").value,focus:document.querySelector("#planFocus").value,text_model:"gpt-5.4-mini",create_as:document.querySelector("#planCreateAs").value,rubric_slugs:[],channel_ids:[]})});toast("Контент-план створено");await refresh();renderPlan();},"Створюємо…");};
-document.querySelector("#calendarPrev").onclick=()=>{state.calendarDate=new Date(state.calendarDate.getFullYear(),state.calendarDate.getMonth()-1,1);renderCalendar();};
-document.querySelector("#calendarNext").onclick=()=>{state.calendarDate=new Date(state.calendarDate.getFullYear(),state.calendarDate.getMonth()+1,1);renderCalendar();};
-document.querySelector("#calendarToday").onclick=()=>{state.calendarDate=new Date();renderCalendar();};
+document.querySelector("#calendarPrev").onclick=()=>{state.calendarDate=new Date(state.calendarDate.getFullYear(),state.calendarDate.getMonth()-1,1);updateViewUrl("calendar");renderCalendar();};
+document.querySelector("#calendarNext").onclick=()=>{state.calendarDate=new Date(state.calendarDate.getFullYear(),state.calendarDate.getMonth()+1,1);updateViewUrl("calendar");renderCalendar();};
+document.querySelector("#calendarToday").onclick=()=>{state.calendarDate=new Date();updateViewUrl("calendar");renderCalendar();};
 document.querySelector("#onboardingBack").onclick=()=>showOnboarding(state.onboardingStep-1);
 document.querySelector("#onboardingNext").onclick=event=>loading(event.currentTarget,saveOnboarding,"Зберігаємо…");
 document.querySelector("#skipOnboarding").onclick=async()=>{await api("api/onboarding/skip",{method:"POST"});document.querySelector("#onboardingOverlay").hidden=true;};
-document.querySelectorAll("[data-brand-tab]").forEach(node=>node.onclick=()=>{state.brandTab=node.dataset.brandTab;document.querySelectorAll("[data-brand-tab]").forEach(x=>x.classList.toggle("active",x===node));renderBrand();});
-document.querySelectorAll("[data-settings]").forEach(node=>node.onclick=()=>{state.settingsTab=node.dataset.settings;document.querySelectorAll("[data-settings]").forEach(x=>x.classList.toggle("active",x===node));renderSettings();});
+document.querySelectorAll("[data-brand-tab]").forEach(node=>node.onclick=()=>{state.brandTab=node.dataset.brandTab;updateViewUrl("brand");document.querySelectorAll("[data-brand-tab]").forEach(x=>x.classList.toggle("active",x===node));renderBrand();});
+document.querySelectorAll("[data-settings]").forEach(node=>node.onclick=()=>{state.settingsTab=node.dataset.settings;updateViewUrl("settings");document.querySelectorAll("[data-settings]").forEach(x=>x.classList.toggle("active",x===node));renderSettings();});
 document.querySelector("#searchButton").onclick=()=>{
   showForm("Пошук",`<label class="wide">Ідеї, чернетки та розділи<input name="query" id="globalSearch" autofocus></label><div class="wide stack" id="searchResults"></div>`,async()=>{});
   const input=document.querySelector("#globalSearch"),results=document.querySelector("#searchResults");
@@ -712,6 +807,15 @@ document.querySelector("#exportPlan").onclick=()=>exportCsv("content-plan.csv",(
 document.querySelector("#exportDrafts").onclick=()=>exportCsv("drafts.csv",state.data.drafts||[],["id","title","product","status","scheduled_at"]);
 document.querySelector("#exportUsage").onclick=()=>exportCsv("usage.csv",state.data.daily||[],["day","cost"]);
 function exportCsv(name,rows,fields){const csv=[fields.join(","),...rows.map(row=>fields.map(key=>`"${String(row[key]??"").replaceAll('"','""')}"`).join(","))].join("\n");const link=document.createElement("a");link.href=URL.createObjectURL(new Blob(["\ufeff"+csv],{type:"text/csv"}));link.download=name;link.click();URL.revokeObjectURL(link.href);}
-window.addEventListener("popstate",()=>{if(!location.pathname.includes("/drafts/"))document.querySelector("#editorOverlay").hidden=true;});
+window.addEventListener("popstate",()=>applyLocationRoute());
+const initialRoute = readRouteState();
+state.view = initialRoute.view;
+history.replaceState(
+  initialRoute.draftId
+    ? {draftId:initialRoute.draftId,fromView:"drafts"}
+    : {view:initialRoute.view},
+  "",
+  initialRoute.draftId ? location.href : urlForView(initialRoute.view),
+);
 refresh();
 setInterval(()=>refresh(true),30000);

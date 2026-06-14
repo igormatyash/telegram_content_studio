@@ -535,12 +535,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 detail="Оберіть активну рубрику компанії",
             ) from exc
 
-    @app.get("/", response_class=HTMLResponse)
-    def dashboard(voicerhub_session: str | None = Cookie(default=None)) -> str:
+    def application_shell(voicerhub_session: str | None) -> str:
         user = auth.session_user(voicerhub_session)
         if user:
             repository.use(int(user.get("organization_id") or 1))
         return frontend_html("app.html") if user else frontend_html("login.html")
+
+    @app.get("/", response_class=HTMLResponse)
+    @app.get("/dashboard", response_class=HTMLResponse)
+    @app.get("/ideas", response_class=HTMLResponse)
+    @app.get("/content-plan", response_class=HTMLResponse)
+    @app.get("/drafts", response_class=HTMLResponse)
+    @app.get("/calendar", response_class=HTMLResponse)
+    @app.get("/brand", response_class=HTMLResponse)
+    @app.get("/expenses", response_class=HTMLResponse)
+    @app.get("/settings", response_class=HTMLResponse)
+    def dashboard(voicerhub_session: str | None = Cookie(default=None)) -> str:
+        return application_shell(voicerhub_session)
 
     @app.get("/invite", response_class=HTMLResponse)
     def invitation_page() -> str:
@@ -561,7 +572,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> str:
         user = auth.session_user(voicerhub_session)
         if user is None:
-            return LOGIN_HTML
+            return frontend_html("login.html")
         if user.get("organization_slug") != org_slug:
             raise HTTPException(status_code=404, detail="Чернетку не знайдено")
         repository.for_organization(organization_id(user)).draft_record(draft_id)

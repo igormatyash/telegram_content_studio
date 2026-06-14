@@ -384,6 +384,22 @@ def test_modular_frontend_routes_manual_content_and_usage(tmp_path) -> None:
     assert "Витрати всіх компаній" in app_script
     assert "bindTelegramValidation" in app_script
     assert "rubric-builder" in app_script
+    assert "history.pushState" in app_script
+    assert 'window.addEventListener("popstate"' in app_script
+    assert "queryForView" in app_script
+    for route in (
+        "/dashboard",
+        "/ideas?rubric=expert",
+        "/content-plan",
+        "/drafts?status=ready",
+        "/calendar?view=month&date=2026-06",
+        "/brand?tab=tone",
+        "/expenses",
+        "/settings?tab=users",
+    ):
+        page = client.get(route)
+        assert page.status_code == 200
+        assert "static/app.js" in page.text
 
     rubric = client.post(
         "/api/rubrics",
