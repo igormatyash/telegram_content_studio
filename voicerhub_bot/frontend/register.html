@@ -29,8 +29,8 @@
           <label>Email<input id="email" type="email" autocomplete="email" required></label>
           <label>Логін<input id="username" autocomplete="username" pattern="[A-Za-z0-9._-]+" required></label>
           <label>Пароль<input id="password" type="password" minlength="10" autocomplete="new-password" required></label>
-          <label>Назва компанії<input id="workspaceName" required></label>
-          <label>Slug workspace<input id="workspaceSlug" pattern="[A-Za-z0-9-]+" required><small class="field-help">Латиниця, цифри та дефіс.</small></label>
+          <label class="wide">Назва компанії<input id="workspaceName" required><small class="field-help">URL workspace система створить автоматично. За потреби його можна змінити пізніше.</small></label>
+          <details class="wide advanced-field"><summary>Змінити URL вручну</summary><label>Slug workspace<input id="workspaceSlug" pattern="[A-Za-z0-9-]+"><small class="field-help">Необов’язково. Латиниця, цифри та дефіс.</small></label></details>
         </div>
         <input id="referralCode" type="hidden" value="__REFERRAL_CODE__">
         <button class="primary" type="submit">Створити workspace</button>

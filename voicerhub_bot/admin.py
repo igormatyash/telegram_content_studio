@@ -15,6 +15,7 @@ from fastapi import (
     Depends,
     FastAPI,
     File,
+    Form,
     Header,
     HTTPException,
     Request,
@@ -41,6 +42,14 @@ from voicerhub_bot.content_tools import (
 )
 from voicerhub_bot.ideas import IdeaGenerator
 from voicerhub_bot.images import ImageGenerator
+from voicerhub_bot.formatting import sanitize_preview_html, strip_formatting
+from voicerhub_bot.permissions import (
+    ROLE_LABELS,
+    WORKSPACE_ROLES,
+    has_permission,
+    permissions_for,
+    role_catalog,
+)
 from voicerhub_bot.rendering import (
     MAX_CAPTION_LENGTH,
     canonicalize_draft_caption,
@@ -50,6 +59,7 @@ from voicerhub_bot.rendering import (
 )
 from voicerhub_bot.referrals import ReferralRepository
 from voicerhub_bot.saas import SaasRepository
+from voicerhub_bot.slugs import generate_slug
 from voicerhub_bot.storage import DraftRepository, TenantRepository
 from voicerhub_bot.visual_templates import DEFAULT_TEMPLATE_ID, VISUAL_TEMPLATES
 
@@ -120,10 +130,14 @@ class GenerationRequest(BaseModel):
 
 class RubricCreateRequest(BaseModel):
     name: str = Field(min_length=2, max_length=80)
-    slug: str = Field(min_length=2, max_length=60)
+    slug: str = Field(default="", max_length=60)
     description: str = Field(min_length=20, max_length=3000)
     instructions: str = Field(default="", max_length=3000)
     default_link: str = Field(default="", max_length=500)
+    goal: str = Field(default="", max_length=1000)
+    tone: str = Field(default="", max_length=500)
+    example_topic: str = Field(default="", max_length=500)
+    active: bool = True
 
 
 class RubricUpdateRequest(BaseModel):
@@ -131,6 +145,9 @@ class RubricUpdateRequest(BaseModel):
     description: str = Field(min_length=20, max_length=3000)
     instructions: str = Field(default="", max_length=3000)
     default_link: str = Field(default="", max_length=500)
+    goal: str = Field(default="", max_length=1000)
+    tone: str = Field(default="", max_length=500)
+    example_topic: str = Field(default="", max_length=500)
     active: bool = True
 
 
@@ -209,6 +226,48 @@ class CustomTemplateRequest(BaseModel):
         pattern=r"^(top_left|left_panel|bottom_left|top_band)$",
     )
     accent: str = Field(default="#18ecd6", pattern=r"^#[0-9A-Fa-f]{6}$")
+    mood: str = Field(default="", max_length=500)
+    use_rules: str = Field(default="", max_length=1500)
+    avoid_rules: str = Field(default="", max_length=1500)
+    prompt_examples: str = Field(default="", max_length=2000)
+    active: bool = True
+
+
+class CustomTemplateUpdateRequest(CustomTemplateRequest):
+    pass
+
+
+class BrandMaterialLinkRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    material_type: str = Field(default="link", max_length=40)
+    source_url: str = Field(min_length=5, max_length=1000)
+    description: str = Field(default="", max_length=2000)
+    active: bool = True
+
+
+class BrandMaterialUpdateRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    material_type: str = Field(default="other", max_length=40)
+    source_url: str = Field(default="", max_length=1000)
+    description: str = Field(default="", max_length=2000)
+    active: bool = True
+
+
+class WorkspaceAppearanceRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=100)
+    slug: str = Field(default="", max_length=60)
+    short_description: str = Field(default="", max_length=300)
+    primary_color: str = Field(default="#6366f1", pattern=r"^#[0-9A-Fa-f]{6}$")
+    secondary_color: str = Field(default="#a855f7", pattern=r"^#[0-9A-Fa-f]{6}$")
+    avatar_asset_id: int | None = None
+    logo_asset_id: int | None = None
+    favicon_asset_id: int | None = None
+
+
+class BulkActionRequest(BaseModel):
+    ids: list[int | str] = Field(min_length=1, max_length=100)
+    action: str = Field(min_length=2, max_length=40)
+    value: str = Field(default="", max_length=120)
 
 
 class ScheduleRequest(BaseModel):
@@ -224,14 +283,20 @@ class UserCreateRequest(BaseModel):
     username: str = Field(min_length=3, max_length=50, pattern=r"^[A-Za-z0-9._-]+$")
     password: str = Field(min_length=10, max_length=200)
     is_admin: bool = False
-    role: str | None = Field(default=None, pattern=r"^(admin|editor|viewer)$")
+    role: str | None = Field(
+        default=None,
+        pattern=r"^(owner|admin|content_manager|editor|publisher|viewer)$",
+    )
     email: str | None = Field(default=None, max_length=254)
 
 
 class UserUpdateRequest(BaseModel):
     is_admin: bool | None = None
     active: bool | None = None
-    role: str | None = Field(default=None, pattern=r"^(admin|editor|viewer)$")
+    role: str | None = Field(
+        default=None,
+        pattern=r"^(owner|admin|content_manager|editor|publisher|viewer)$",
+    )
 
 
 class PasswordRequest(BaseModel):
@@ -249,7 +314,10 @@ class PasswordResetCompleteRequest(BaseModel):
 
 class InvitationRequest(BaseModel):
     email: str = Field(min_length=3, max_length=254)
-    role: str = Field(default="editor", pattern=r"^(admin|editor|viewer)$")
+    role: str = Field(
+        default="editor",
+        pattern=r"^(admin|content_manager|editor|publisher|viewer)$",
+    )
 
 
 class InvitationAcceptRequest(BaseModel):
@@ -261,7 +329,7 @@ class InvitationAcceptRequest(BaseModel):
 
 class TrialWorkspaceRequest(BaseModel):
     name: str = Field(min_length=2, max_length=100)
-    slug: str = Field(min_length=2, max_length=60, pattern=r"^[A-Za-z0-9-]+$")
+    slug: str = Field(default="", max_length=60)
 
 
 class RegistrationRequest(BaseModel):
@@ -270,17 +338,13 @@ class RegistrationRequest(BaseModel):
     email: str = Field(min_length=3, max_length=254)
     display_name: str = Field(min_length=2, max_length=100)
     workspace_name: str = Field(min_length=2, max_length=100)
-    workspace_slug: str = Field(
-        min_length=2,
-        max_length=60,
-        pattern=r"^[A-Za-z0-9-]+$",
-    )
+    workspace_slug: str = Field(default="", max_length=60)
     referral_code: str = Field(default="", max_length=40)
 
 
 class OrganizationCreateRequest(BaseModel):
     name: str = Field(min_length=2, max_length=100)
-    slug: str = Field(min_length=2, max_length=60, pattern=r"^[A-Za-z0-9-]+$")
+    slug: str = Field(default="", max_length=60)
     owner_username: str = Field(
         min_length=3,
         max_length=50,
@@ -321,7 +385,7 @@ class WorkspaceModeRequest(BaseModel):
 
 class OnboardingCompanyRequest(BaseModel):
     name: str = Field(min_length=2, max_length=100)
-    slug: str = Field(min_length=2, max_length=60)
+    slug: str = Field(default="", max_length=60)
     primary_language: str = Field(default="uk", pattern=r"^[a-z]{2}$")
     brand_primary_color: str = Field(
         default="",
@@ -534,6 +598,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         organization_id = int(user["organization_id"])
         repository.use(organization_id)
+        user["permissions"] = sorted(
+            permissions_for(
+                user.get("role") or "viewer",
+                platform_admin=bool(user.get("is_super_admin")),
+            )
+        )
         return user
 
     async def authorize_write(
@@ -555,6 +625,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not user.get("is_super_admin"):
             raise HTTPException(status_code=403, detail="Platform administrator required")
         return user
+
+    def require_permission(permission: str):
+        async def dependency(
+            user: dict = Depends(authorize),
+            x_requested_with: str | None = Header(default=None),
+        ) -> dict:
+            if x_requested_with != "VoicerHubAdmin":
+                raise HTTPException(status_code=403, detail="Missing request guard")
+            if not has_permission(
+                user.get("role") or "viewer",
+                permission,
+                platform_admin=bool(user.get("is_super_admin")),
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Недостатньо прав для цієї дії",
+                )
+            return user
+
+        return dependency
+
+    def paginate_rows(
+        rows: list[dict],
+        *,
+        page: int,
+        per_page: int,
+    ) -> dict:
+        page = max(1, page)
+        per_page = min(100, max(1, per_page))
+        total = len(rows)
+        start = (page - 1) * per_page
+        return {
+            "items": rows[start : start + per_page],
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "total_pages": max(1, (total + per_page - 1) // per_page),
+        }
 
     def organization_id(user: dict) -> int:
         return int(user.get("organization_id") or 1)
@@ -824,7 +932,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             organization = saas.create_trial_organization(
                 name=payload.workspace_name,
-                slug=payload.workspace_slug,
+                slug=payload.workspace_slug or generate_slug(payload.workspace_name),
             )
             saas.add_member(organization["id"], user["id"], "owner")
             repository.for_organization(organization["id"])
@@ -1233,7 +1341,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             organization = saas.create_trial_organization(
                 name=payload.name,
-                slug=payload.slug,
+                slug=payload.slug or generate_slug(payload.name),
             )
             saas.add_member(organization["id"], user["id"], "owner")
             repository.for_organization(organization["id"])
@@ -1363,7 +1471,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.put("/api/onboarding/company")
     def onboarding_company(
         payload: OnboardingCompanyRequest,
-        user: dict = Depends(authorize_admin),
+        user: dict = Depends(require_permission("workspace.settings")),
     ) -> dict:
         if payload.brand_logo_asset_id is not None:
             repository.get_reference(payload.brand_logo_asset_id)
@@ -1371,7 +1479,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             company = saas.update_organization(
                 organization_id(user),
                 name=payload.name,
-                slug=payload.slug,
+                slug=payload.slug or generate_slug(payload.name),
             )
         except Exception as exc:
             if "UNIQUE constraint failed" in str(exc):
@@ -1399,7 +1507,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.put("/api/onboarding/brand")
     def onboarding_brand(
         payload: OnboardingBrandRequest,
-        user: dict = Depends(authorize_admin),
+        user: dict = Depends(require_permission("brand.edit")),
     ) -> dict:
         if payload.website_url and not payload.website_url.startswith(
             ("http://", "https://")
@@ -1418,11 +1526,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/onboarding/rubrics")
     def onboarding_rubrics(
         payload: OnboardingRubricsRequest,
-        user: dict = Depends(authorize_admin),
+        user: dict = Depends(require_permission("rubrics.manage")),
     ) -> dict:
         created = []
         for item in payload.rubrics:
-            slug = re.sub(r"[^a-z0-9-]+", "-", item.name.lower()).strip("-")
+            slug = generate_slug(item.name)
             if not slug:
                 slug = f"rubric-{uuid4().hex[:8]}"
             try:
@@ -1445,14 +1553,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"rubrics": created}
 
     @app.post("/api/onboarding/skip")
-    def skip_onboarding(user: dict = Depends(authorize_admin)) -> dict:
+    def skip_onboarding(
+        user: dict = Depends(require_permission("workspace.settings")),
+    ) -> dict:
         return saas.update_organization_settings(
             organization_id(user),
             onboarding_status="skipped",
         )
 
     @app.post("/api/onboarding/restart")
-    def restart_onboarding(user: dict = Depends(authorize_admin)) -> dict:
+    def restart_onboarding(
+        user: dict = Depends(require_permission("workspace.settings")),
+    ) -> dict:
         return saas.update_organization_settings(
             organization_id(user),
             onboarding_status="not_started",
@@ -1460,7 +1572,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.post("/api/onboarding/complete")
-    def complete_onboarding(user: dict = Depends(authorize_admin)) -> dict:
+    def complete_onboarding(
+        user: dict = Depends(require_permission("workspace.settings")),
+    ) -> dict:
         return saas.update_organization_settings(
             organization_id(user),
             onboarding_status="completed",
@@ -1470,7 +1584,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.put("/api/workspace/mode")
     def update_workspace_mode(
         payload: WorkspaceModeRequest,
-        user: dict = Depends(authorize_admin),
+        user: dict = Depends(require_permission("workspace.settings")),
     ) -> dict:
         return saas.update_organization_settings(
             organization_id(user),
@@ -1478,13 +1592,49 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.get("/api/users")
-    def users(user: dict = Depends(authorize_admin)) -> list[dict]:
-        return auth.list_users(int(user.get("organization_id") or 1))
+    def users(
+        page: int | None = None,
+        per_page: int = 25,
+        search: str = "",
+        role: str = "",
+        user: dict = Depends(require_permission("users.view")),
+    ) -> list[dict] | dict:
+        rows = auth.list_users(int(user.get("organization_id") or 1))
+        if search.strip():
+            needle = search.strip().lower()
+            rows = [
+                row
+                for row in rows
+                if needle
+                in f"{row['username']} {row.get('display_name', '')} {row.get('email') or ''}".lower()
+            ]
+        if role:
+            rows = [row for row in rows if row.get("role") == role]
+        if page is None:
+            return rows
+        return paginate_rows(rows, page=page, per_page=per_page)
+
+    @app.get("/api/roles")
+    def workspace_roles(
+        user: dict = Depends(authorize),
+    ) -> dict:
+        counts = saas.role_counts(organization_id(user))
+        return {
+            "items": [
+                {
+                    **item,
+                    "user_count": counts.get(item["id"], 0),
+                }
+                for item in role_catalog()
+            ],
+            "current_role": user.get("role"),
+            "permissions": user.get("permissions", []),
+        }
 
     @app.post("/api/users")
     def create_user(
         payload: UserCreateRequest,
-        current: dict = Depends(authorize_admin),
+        current: dict = Depends(require_permission("users.invite")),
     ) -> dict:
         company = saas.get_organization(organization_id(current))
         if len(saas.member_ids(organization_id(current))) >= company["max_users"]:
@@ -1510,7 +1660,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/invitations")
     def create_invitation(
         payload: InvitationRequest,
-        current: dict = Depends(authorize_admin),
+        current: dict = Depends(require_permission("users.invite")),
     ) -> dict:
         company = saas.get_organization(organization_id(current))
         if len(saas.member_ids(organization_id(current))) >= company["max_users"]:
@@ -1542,7 +1692,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/password-reset/link")
     def create_password_reset_link(
         payload: PasswordResetLinkRequest,
-        current: dict = Depends(authorize_admin),
+        current: dict = Depends(require_permission("users.invite")),
     ) -> dict:
         ensure_organization_user(current, payload.user_id)
         auth.get_user(payload.user_id)
@@ -1563,8 +1713,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return saas.list_organizations()
 
     @app.get("/api/platform/referrals")
-    def platform_referrals(_: dict = Depends(authorize_super_admin)) -> dict:
-        return referrals.platform_summary()
+    def platform_referrals(
+        page: int = 1,
+        per_page: int = 25,
+        search: str = "",
+        _: dict = Depends(authorize_super_admin),
+    ) -> dict:
+        report = referrals.platform_summary()
+        codes = report["codes"]
+        if search.strip():
+            needle = search.strip().lower()
+            codes = [
+                row
+                for row in codes
+                if needle
+                in f"{row['code']} {row.get('owner_username', '')} {row.get('owner_organization_name', '')}".lower()
+            ]
+        page_data = paginate_rows(codes, page=page, per_page=per_page)
+        return {
+            **report,
+            **page_data,
+            "codes": page_data["items"],
+        }
 
     def platform_usage_data(period: str) -> dict:
         now = datetime.now(timezone.utc)
@@ -1812,6 +1982,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         active: str = "",
         workspace: str = "",
         search: str = "",
+        page: int = 1,
+        per_page: int = 25,
         _: dict = Depends(authorize_super_admin),
     ) -> dict:
         rows = platform_client_rows()
@@ -1848,7 +2020,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     ]
                 ).lower()
             ]
-        return {"clients": rows, "total": len(rows)}
+        page_data = paginate_rows(rows, page=page, per_page=per_page)
+        return {**page_data, "clients": page_data["items"]}
 
     @app.get("/api/platform/clients/{user_id}")
     def platform_client_detail(
@@ -1894,9 +2067,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/platform/organizations/details")
     def platform_organizations(
+        page: int = 1,
+        per_page: int = 25,
+        search: str = "",
         _: dict = Depends(authorize_super_admin),
     ) -> dict:
-        return {"organizations": platform_organization_rows()}
+        rows = platform_organization_rows()
+        if search.strip():
+            needle = search.strip().lower()
+            rows = [
+                row
+                for row in rows
+                if needle
+                in f"{row['name']} {row['slug']} {row.get('owner_name', '')} {row.get('owner_email', '')}".lower()
+            ]
+        page_data = paginate_rows(rows, page=page, per_page=per_page)
+        return {**page_data, "organizations": page_data["items"]}
 
     @app.get("/api/platform/organizations/{target_organization_id}")
     def platform_organization_detail(
@@ -1923,25 +2109,92 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.get("/api/platform/users")
-    def platform_users(_: dict = Depends(authorize_super_admin)) -> dict:
-        return {"users": platform_client_rows()}
+    def platform_users(
+        page: int = 1,
+        per_page: int = 25,
+        search: str = "",
+        _: dict = Depends(authorize_super_admin),
+    ) -> dict:
+        rows = platform_client_rows()
+        if search.strip():
+            needle = search.strip().lower()
+            rows = [
+                row
+                for row in rows
+                if needle
+                in f"{row['username']} {row.get('display_name', '')} {row.get('email') or ''}".lower()
+            ]
+        page_data = paginate_rows(rows, page=page, per_page=per_page)
+        return {**page_data, "users": page_data["items"]}
 
     @app.get("/api/platform/activity")
     def platform_activity(
         limit: int = 300,
+        page: int = 1,
+        per_page: int = 25,
+        search: str = "",
         _: dict = Depends(authorize_super_admin),
     ) -> dict:
+        events = saas.list_audit_events(limit=min(2000, max(limit, page * per_page)))
+        if search.strip():
+            needle = search.strip().lower()
+            events = [
+                row
+                for row in events
+                if needle
+                in f"{row.get('action', '')} {row.get('details', '')} {row.get('username', '')} {row.get('organization_name', '')}".lower()
+            ]
+        page_data = paginate_rows(events, page=page, per_page=per_page)
         return {
-            "events": saas.list_audit_events(limit=limit),
-            "logins": auth.list_login_events(limit=limit),
+            **page_data,
+            "events": page_data["items"],
+            "logins": auth.list_login_events(limit=per_page),
         }
 
     @app.get("/api/platform/usage")
     def platform_usage(
         period: str = "month",
+        page: int = 1,
+        per_page: int = 25,
         _: dict = Depends(authorize_super_admin),
     ) -> dict:
-        return platform_usage_data(period)
+        report = platform_usage_data(period)
+        page_data = paginate_rows(
+            report["companies"],
+            page=page,
+            per_page=per_page,
+        )
+        return {
+            **report,
+            **page_data,
+            "companies": page_data["items"],
+        }
+
+    @app.post("/api/platform/bulk/{entity}")
+    def platform_bulk_action(
+        entity: str,
+        payload: BulkActionRequest,
+        _: dict = Depends(authorize_super_admin),
+    ) -> dict:
+        ids = [int(item) for item in payload.ids]
+        if payload.action not in {"activate", "deactivate"}:
+            raise HTTPException(
+                status_code=422,
+                detail="Для platform списків доступна лише зміна статусу",
+            )
+        active = payload.action == "activate"
+        if entity in {"clients", "users"}:
+            changed = auth.set_users_active(ids, active)
+        elif entity == "organizations":
+            changed = saas.set_organizations_active(ids, active)
+        elif entity == "referrals":
+            changed = referrals.set_codes_status(
+                ids,
+                "active" if active else "disabled",
+            )
+        else:
+            raise HTTPException(status_code=404, detail="Список не знайдено")
+        return {"changed": changed}
 
     @app.post("/api/organizations")
     def create_organization(
@@ -1956,7 +2209,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             organization = saas.create_organization(
                 name=payload.name,
-                slug=payload.slug,
+                slug=payload.slug or generate_slug(payload.name),
                 max_users=payload.max_users,
                 max_channels=payload.max_channels,
                 monthly_publications=payload.monthly_publications,
@@ -1983,7 +2236,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             organization["id"],
             current["id"],
             "organization_created",
-            payload.slug,
+            organization["slug"],
         )
         saas.audit(
             organization["id"],
@@ -2037,7 +2290,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/billing/checkout")
     async def create_checkout(
         payload: CheckoutRequest,
-        user: dict = Depends(authorize_admin),
+        user: dict = Depends(require_permission("billing.manage")),
     ) -> dict:
         try:
             return await billing.create_checkout(
@@ -2054,15 +2307,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ) from exc
 
     @app.get("/api/rubrics")
-    def rubrics(_: dict = Depends(authorize)) -> list[dict]:
-        return repository.list_rubrics(include_inactive=True)
+    def rubrics(
+        page: int | None = None,
+        per_page: int = 25,
+        search: str = "",
+        active: str = "",
+        sort: str = "name",
+        direction: str = "asc",
+        _: dict = Depends(authorize),
+    ) -> list[dict] | dict:
+        if page is None:
+            return repository.list_rubrics(include_inactive=True)
+        return repository.list_rubrics_page(
+            page=page,
+            per_page=per_page,
+            search=search,
+            active=active,
+            sort=sort,
+            direction=direction,
+        )
 
     @app.post("/api/rubrics")
     def create_rubric(
         payload: RubricCreateRequest,
-        user: dict = Depends(authorize_admin),
+        user: dict = Depends(require_permission("rubrics.manage")),
     ) -> dict:
-        slug = re.sub(r"[^a-z0-9-]+", "-", payload.slug.lower()).strip("-")
+        slug = generate_slug(payload.slug or payload.name)
         if not slug or slug in {"all", "general"}:
             raise HTTPException(status_code=422, detail="Вкажіть інший slug рубрики")
         if payload.default_link and not payload.default_link.startswith(("http://", "https://")):
@@ -2074,6 +2344,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 description=payload.description.strip(),
                 instructions=payload.instructions.strip(),
                 default_link=payload.default_link.strip(),
+                goal=payload.goal.strip(),
+                tone=payload.tone.strip(),
+                example_topic=payload.example_topic.strip(),
+                active=payload.active,
             )
         except Exception as exc:
             if "UNIQUE constraint failed" in str(exc):
@@ -2086,7 +2360,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def update_rubric(
         rubric_id: int,
         payload: RubricUpdateRequest,
-        user: dict = Depends(authorize_admin),
+        user: dict = Depends(require_permission("rubrics.manage")),
     ) -> dict:
         if payload.default_link and not payload.default_link.startswith(("http://", "https://")):
             raise HTTPException(status_code=422, detail="Посилання має починатися з http:// або https://")
@@ -2098,16 +2372,62 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 instructions=payload.instructions.strip(),
                 default_link=payload.default_link.strip(),
                 active=payload.active,
+                goal=payload.goal.strip(),
+                tone=payload.tone.strip(),
+                example_topic=payload.example_topic.strip(),
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Рубрику не знайдено") from exc
         saas.audit(organization_id(user), user["id"], "rubric.updated", rubric["slug"])
         return rubric
 
+    @app.post("/api/rubrics/bulk")
+    def bulk_rubrics(
+        payload: BulkActionRequest,
+        _: dict = Depends(require_permission("rubrics.manage")),
+    ) -> dict:
+        ids = [int(item) for item in payload.ids]
+        if payload.action == "activate":
+            changed = repository.set_rubrics_active(ids, True)
+        elif payload.action == "deactivate":
+            changed = repository.set_rubrics_active(ids, False)
+        elif payload.action == "delete":
+            changed = repository.delete_rubrics(ids)
+        else:
+            raise HTTPException(status_code=422, detail="Невідома масова дія")
+        return {"changed": changed}
+
+    @app.put("/api/workspace/appearance")
+    def update_workspace_appearance(
+        payload: WorkspaceAppearanceRequest,
+        user: dict = Depends(require_permission("workspace.settings")),
+    ) -> dict:
+        for asset_id in {
+            payload.avatar_asset_id,
+            payload.logo_asset_id,
+            payload.favicon_asset_id,
+        } - {None}:
+            repository.get_reference(int(asset_id))
+        company = saas.update_organization(
+            organization_id(user),
+            name=payload.name,
+            slug=payload.slug or generate_slug(payload.name),
+        )
+        appearance = saas.update_organization_settings(
+            organization_id(user),
+            workspace_short_description=payload.short_description.strip(),
+            brand_primary_color=payload.primary_color.lower(),
+            brand_secondary_color=payload.secondary_color.lower(),
+            workspace_avatar_asset_id=payload.avatar_asset_id,
+            brand_logo_asset_id=payload.logo_asset_id,
+            favicon_asset_id=payload.favicon_asset_id,
+        )
+        return {"company": company, "settings": appearance}
+
     @app.put("/api/company/telegram")
     async def connect_telegram(
         payload: TelegramConnectionRequest,
-        user: dict = Depends(authorize_admin),
+        user: dict = Depends(require_permission("channels.manage")),
     ) -> dict:
         organization_id = int(user.get("organization_id") or 1)
         validation = await validate_telegram_connection(payload)
@@ -2142,7 +2462,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     async def validate_company_telegram(
         payload: TelegramConnectionRequest,
-        _: dict = Depends(authorize_admin),
+        _: dict = Depends(require_permission("channels.manage")),
     ) -> dict:
         return await validate_telegram_connection(payload)
 
@@ -2150,7 +2470,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def update_user(
         user_id: int,
         payload: UserUpdateRequest,
-        current: dict = Depends(authorize_admin),
+        current: dict = Depends(require_permission("roles.manage")),
     ) -> dict:
         ensure_organization_user(current, user_id)
         if user_id == current["id"] and payload.active is False:
@@ -2172,11 +2492,61 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @app.delete("/api/users/{user_id}")
+    def remove_workspace_user(
+        user_id: int,
+        current: dict = Depends(require_permission("users.remove")),
+    ) -> dict:
+        ensure_organization_user(current, user_id)
+        if user_id == current["id"]:
+            raise HTTPException(status_code=422, detail="Не можна видалити себе")
+        try:
+            saas.remove_member(organization_id(current), user_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"removed": user_id}
+
+    @app.post("/api/users/bulk")
+    def bulk_users(
+        payload: BulkActionRequest,
+        current: dict = Depends(require_permission("roles.manage")),
+    ) -> dict:
+        ids = [int(item) for item in payload.ids if int(item) != current["id"]]
+        changed = 0
+        if payload.action == "role":
+            if payload.value not in WORKSPACE_ROLES - {"owner"}:
+                raise HTTPException(status_code=422, detail="Невідома роль")
+            for user_id in ids:
+                ensure_organization_user(current, user_id)
+                auth.update_user(
+                    user_id,
+                    organization_id=organization_id(current),
+                    role=payload.value,
+                    is_admin=payload.value == "admin",
+                )
+                changed += 1
+        elif payload.action == "deactivate":
+            for user_id in ids:
+                ensure_organization_user(current, user_id)
+                auth.update_user(user_id, active=False)
+                changed += 1
+        elif payload.action == "remove":
+            for user_id in ids:
+                ensure_organization_user(current, user_id)
+                try:
+                    saas.remove_member(organization_id(current), user_id)
+                    changed += 1
+                except ValueError:
+                    continue
+        else:
+            raise HTTPException(status_code=422, detail="Невідома масова дія")
+        return {"changed": changed}
+
     @app.put("/api/users/{user_id}/password")
     def admin_set_password(
         user_id: int,
         payload: PasswordRequest,
-        current: dict = Depends(authorize_admin),
+        current: dict = Depends(require_permission("users.invite")),
     ) -> dict:
         ensure_organization_user(current, user_id)
         try:
@@ -2208,6 +2578,143 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for item in repository.list_custom_templates()
         ]
         return data
+
+    @app.get("/api/ideas")
+    def list_ideas(
+        page: int = 1,
+        per_page: int = 25,
+        search: str = "",
+        rubric: str = "",
+        sort: str = "created_at",
+        direction: str = "desc",
+        _: dict = Depends(authorize),
+    ) -> dict:
+        result = repository.list_ideas_page(
+            page=page,
+            per_page=per_page,
+            search=search,
+            rubric=rubric,
+            sort=sort,
+            direction=direction,
+        )
+        result["items"] = [
+            {
+                **item,
+                "title_plain": strip_formatting(item["title"]),
+                "angle_preview": sanitize_preview_html(item.get("angle", "")),
+            }
+            for item in result["items"]
+        ]
+        return result
+
+    @app.get("/api/content-plan/items")
+    def content_plan_items(
+        page: int = 1,
+        per_page: int = 25,
+        search: str = "",
+        rubric: str = "",
+        sort: str = "planned_for",
+        direction: str = "asc",
+        _: dict = Depends(authorize),
+    ) -> dict:
+        rows = [
+            item
+            for item in repository.dashboard()["ideas"]
+            if item.get("plan_id")
+        ]
+        if search.strip():
+            needle = search.strip().lower()
+            rows = [
+                item
+                for item in rows
+                if needle
+                in f"{item.get('title', '')} {item.get('angle', '')}".lower()
+            ]
+        if rubric and rubric != "all":
+            rows = [item for item in rows if item.get("product") == rubric]
+        reverse = direction.lower() == "desc"
+        sort_key = sort if sort in {"title", "status", "planned_for", "created_at"} else "planned_for"
+        rows.sort(key=lambda item: str(item.get(sort_key) or ""), reverse=reverse)
+        result = paginate_rows(rows, page=page, per_page=per_page)
+        result["items"] = [
+            {
+                **item,
+                "title_plain": strip_formatting(item.get("title", "")),
+                "error_message": (
+                    item.get("error")
+                    or (
+                        "Не вдалося створити чернетку через помилку генерації."
+                        if item.get("status") == "failed"
+                        else "Генерацію було скасовано."
+                        if item.get("status") == "cancelled"
+                        else ""
+                    )
+                ),
+            }
+            for item in result["items"]
+        ]
+        return result
+
+    @app.get("/api/drafts")
+    def list_drafts(
+        page: int = 1,
+        per_page: int = 25,
+        search: str = "",
+        status: str = "",
+        sort: str = "created_at",
+        direction: str = "desc",
+        _: dict = Depends(authorize),
+    ) -> dict:
+        result = repository.list_drafts_page(
+            page=page,
+            per_page=per_page,
+            search=search,
+            status=status,
+            sort=sort,
+            direction=direction,
+        )
+        result["items"] = [
+            {
+                **item,
+                "title_plain": strip_formatting(item["title"]),
+                "caption_preview": sanitize_preview_html(item["caption_html"]),
+                "caption_plain": strip_formatting(item["caption_html"]),
+            }
+            for item in result["items"]
+        ]
+        return result
+
+    @app.get("/api/brand/visual-styles")
+    def visual_styles(
+        page: int = 1,
+        per_page: int = 25,
+        search: str = "",
+        active: str = "",
+        _: dict = Depends(authorize),
+    ) -> dict:
+        return repository.list_custom_templates_page(
+            page=page,
+            per_page=per_page,
+            search=search,
+            active=active,
+        )
+
+    @app.get("/api/brand/materials")
+    def brand_materials(
+        page: int = 1,
+        per_page: int = 25,
+        search: str = "",
+        material_type: str = "",
+        active: str = "",
+        _: dict = Depends(authorize),
+    ) -> dict:
+        return repository.list_references_page(
+            page=page,
+            per_page=per_page,
+            search=search,
+            material_type=material_type,
+            active=active,
+        )
 
     @app.get("/api/usage")
     def workspace_usage(
@@ -2298,7 +2805,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/ideas/generate")
     async def generate_ideas(
         payload: IdeaRequest,
-        user: dict = Depends(authorize_write),
+        user: dict = Depends(require_permission("ideas.create")),
     ) -> dict:
         ensure_ai_budget()
         _validate_models(payload.text_model)
@@ -2325,7 +2832,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/ideas")
     def create_manual_idea(
         payload: ManualIdeaRequest,
-        user: dict = Depends(authorize_write),
+        user: dict = Depends(require_permission("ideas.create")),
     ) -> dict:
         validate_rubric(payload.product)
         rows = repository.add_ideas(
@@ -2355,7 +2862,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/content-plan/generate")
     async def generate_content_plan(
         payload: ContentPlanRequest,
-        user: dict = Depends(authorize_write),
+        user: dict = Depends(require_permission("ideas.create")),
     ) -> dict:
         ensure_ai_budget()
         _validate_models(payload.text_model)
@@ -2407,7 +2914,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/series/generate")
     async def generate_series(
         payload: SeriesRequest,
-        user: dict = Depends(authorize_write),
+        user: dict = Depends(require_permission("ideas.create")),
     ) -> dict:
         ensure_ai_budget()
         _validate_models(payload.text_model)
@@ -2443,7 +2950,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/materials/import")
     async def import_material(
         payload: MaterialRequest,
-        user: dict = Depends(authorize_write),
+        user: dict = Depends(require_permission("ideas.create")),
     ) -> dict:
         ensure_ai_budget()
         _validate_models(payload.text_model)
@@ -2488,7 +2995,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def generate_from_idea(
         idea_id: int,
         payload: GenerationRequest,
-        user: dict = Depends(authorize_write),
+        user: dict = Depends(require_permission("content.create")),
     ) -> dict:
         ensure_ai_budget()
         _validate_generation(payload, repository)
@@ -2510,7 +3017,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/jobs/{job_id}/retry-fast")
     async def retry_job_fast(
         job_id: int,
-        user: dict = Depends(authorize_write),
+        user: dict = Depends(require_permission("content.create")),
     ) -> dict:
         ensure_ai_budget()
         try:
@@ -2612,18 +3119,61 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         return {"job_id": replacement.id, "cancelled_job_id": job.id}
 
+    @app.delete("/api/jobs/{job_id}")
+    def delete_failed_job(
+        job_id: int,
+        _: dict = Depends(require_permission("content.delete")),
+    ) -> dict:
+        try:
+            return repository.delete_job(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Завдання не знайдено") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.delete("/api/ideas/{idea_id}")
-    def delete_idea(idea_id: int, _: str = Depends(authorize_write)) -> dict:
+    def delete_idea(
+        idea_id: int,
+        _: dict = Depends(require_permission("ideas.delete")),
+    ) -> dict:
         try:
             repository.delete_idea(idea_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Тему не знайдено") from exc
         return {"deleted": idea_id}
 
+    @app.post("/api/ideas/bulk")
+    def bulk_ideas(
+        payload: BulkActionRequest,
+        user: dict = Depends(require_permission("ideas.delete")),
+    ) -> dict:
+        ids = [int(item) for item in payload.ids]
+        if payload.action == "delete":
+            return {"changed": repository.delete_ideas(ids)}
+        if payload.action == "assign_rubric":
+            return {"changed": repository.assign_ideas_rubric(ids, payload.value)}
+        if payload.action == "create_drafts":
+            if not has_permission(
+                user.get("role") or "viewer",
+                "content.create",
+                platform_admin=bool(user.get("is_super_admin")),
+            ):
+                raise HTTPException(status_code=403, detail="Недостатньо прав")
+            jobs = [
+                repository.select_idea(
+                    idea_id,
+                    created_by_user_id=user["id"],
+                    generation_mode="fast",
+                ).id
+                for idea_id in ids
+            ]
+            return {"changed": len(jobs), "job_ids": jobs}
+        raise HTTPException(status_code=422, detail="Невідома масова дія")
+
     @app.post("/api/templates")
     def create_template(
         payload: CustomTemplateRequest,
-        _: str = Depends(authorize_write),
+        _: dict = Depends(require_permission("visual_styles.manage")),
     ) -> dict:
         slug = re.sub(r"[^a-z0-9]+", "-", payload.name.lower()).strip("-")[:45]
         template_id = f"custom-{slug or 'style'}-{uuid4().hex[:6]}"
@@ -2634,12 +3184,78 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             prompt=payload.prompt.strip(),
             layout=payload.layout,
             accent=payload.accent.lower(),
+            mood=payload.mood.strip(),
+            use_rules=payload.use_rules.strip(),
+            avoid_rules=payload.avoid_rules.strip(),
+            prompt_examples=payload.prompt_examples.strip(),
+            active=payload.active,
+        )
+
+    @app.post("/api/templates/bulk")
+    def bulk_templates(
+        payload: BulkActionRequest,
+        _: dict = Depends(require_permission("visual_styles.manage")),
+    ) -> dict:
+        changed = 0
+        for template_id in [str(item) for item in payload.ids]:
+            try:
+                if payload.action in {"activate", "deactivate"}:
+                    repository.update_custom_template(
+                        template_id,
+                        active=payload.action == "activate",
+                    )
+                elif payload.action == "delete":
+                    template = repository.delete_custom_template(template_id)
+                    if template.get("preview_path"):
+                        Path(template["preview_path"]).unlink(missing_ok=True)
+                else:
+                    raise HTTPException(status_code=422, detail="Невідома масова дія")
+                changed += 1
+            except KeyError:
+                continue
+        return {"changed": changed}
+
+    @app.put("/api/templates/{template_id}")
+    def update_template(
+        template_id: str,
+        payload: CustomTemplateUpdateRequest,
+        _: dict = Depends(require_permission("visual_styles.manage")),
+    ) -> dict:
+        try:
+            return repository.update_custom_template(
+                template_id,
+                **payload.model_dump(),
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Стиль не знайдено") from exc
+
+    @app.post("/api/templates/{template_id}/duplicate")
+    def duplicate_template(
+        template_id: str,
+        _: dict = Depends(require_permission("visual_styles.manage")),
+    ) -> dict:
+        try:
+            source = repository.get_custom_template(template_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Стиль не знайдено") from exc
+        return repository.add_custom_template(
+            template_id=f"custom-copy-{uuid4().hex[:10]}",
+            name=f"{source['name']} — копія",
+            description=source["description"],
+            prompt=source["prompt"],
+            layout=source["layout"],
+            accent=source["accent"],
+            mood=source.get("mood", ""),
+            use_rules=source.get("use_rules", ""),
+            avoid_rules=source.get("avoid_rules", ""),
+            prompt_examples=source.get("prompt_examples", ""),
+            active=bool(source.get("active", 1)),
         )
 
     @app.delete("/api/templates/{template_id}")
     def delete_template(
         template_id: str,
-        _: str = Depends(authorize_write),
+        _: dict = Depends(require_permission("visual_styles.manage")),
     ) -> dict:
         try:
             template = repository.delete_custom_template(template_id)
@@ -2678,7 +3294,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/templates/{template_id}/generate-preview")
     async def generate_template_preview(
         template_id: str,
-        user: dict = Depends(authorize_write),
+        user: dict = Depends(require_permission("visual_styles.manage")),
     ) -> dict:
         ensure_ai_budget()
         try:
@@ -2713,31 +3329,114 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/references")
     async def upload_reference(
         file: UploadFile = File(...),
-        _: str = Depends(authorize_write),
+        name: str = Form(default=""),
+        material_type: str = Form(default="reference_image"),
+        description: str = Form(default=""),
+        user: dict = Depends(require_permission("brand_materials.manage")),
     ) -> dict:
         media_type = file.content_type or ""
-        if media_type not in {"image/png", "image/jpeg", "image/webp"}:
-            raise HTTPException(status_code=422, detail="Use PNG, JPG or WebP")
+        allowed_types = {
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/webp": ".webp",
+            "application/pdf": ".pdf",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+        }
+        if media_type not in allowed_types:
+            raise HTTPException(
+                status_code=422,
+                detail="Підтримуються PNG, JPG, WebP, PDF, DOCX або PPTX",
+            )
         content = await file.read()
         if not content or len(content) > 20 * 1024 * 1024:
-            raise HTTPException(status_code=422, detail="Image must be under 20 MB")
-        try:
-            image = Image.open(BytesIO(content))
-            image.verify()
-        except Exception as exc:
-            raise HTTPException(status_code=422, detail="Invalid image file") from exc
-        suffix = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}[
-            media_type
-        ]
+            raise HTTPException(status_code=422, detail="Файл має бути меншим за 20 MB")
+        if media_type.startswith("image/"):
+            try:
+                image = Image.open(BytesIO(content))
+                image.verify()
+            except Exception as exc:
+                raise HTTPException(status_code=422, detail="Пошкоджений файл зображення") from exc
+        suffix = allowed_types[media_type]
         _, reference_dir = organization_dirs(repository.organization_id)
         path = reference_dir / f"{uuid4().hex}{suffix}"
         path.write_bytes(content)
         return repository.add_reference(
-            name=Path(file.filename or "reference").stem[:100],
+            name=(name.strip() or Path(file.filename or "reference").stem)[:100],
             filename=(file.filename or path.name)[:200],
             path=str(path),
             media_type=media_type,
+            material_type=material_type,
+            description=description.strip(),
+            created_by_user_id=user["id"],
         )
+
+    @app.post("/api/brand/materials/link")
+    def add_brand_material_link(
+        payload: BrandMaterialLinkRequest,
+        user: dict = Depends(require_permission("brand_materials.manage")),
+    ) -> dict:
+        if not payload.source_url.startswith(("http://", "https://")):
+            raise HTTPException(
+                status_code=422,
+                detail="Посилання має починатися з http:// або https://",
+            )
+        return repository.add_reference(
+            name=payload.name.strip(),
+            filename="",
+            path="",
+            media_type="text/uri-list",
+            material_type=payload.material_type,
+            description=payload.description.strip(),
+            source_url=payload.source_url.strip(),
+            active=payload.active,
+            created_by_user_id=user["id"],
+        )
+
+    @app.post("/api/brand/materials/bulk")
+    def bulk_brand_materials(
+        payload: BulkActionRequest,
+        _: dict = Depends(require_permission("brand_materials.manage")),
+    ) -> dict:
+        changed = 0
+        for reference_id in [int(item) for item in payload.ids]:
+            try:
+                if payload.action in {"activate", "deactivate"}:
+                    repository.update_reference(
+                        reference_id,
+                        active=payload.action == "activate",
+                    )
+                elif payload.action == "delete":
+                    reference = repository.delete_reference(reference_id)
+                    if reference.get("path"):
+                        Path(reference["path"]).unlink(missing_ok=True)
+                else:
+                    raise HTTPException(status_code=422, detail="Невідома масова дія")
+                changed += 1
+            except KeyError:
+                continue
+        return {"changed": changed}
+
+    @app.put("/api/brand/materials/{reference_id}")
+    def update_brand_material(
+        reference_id: int,
+        payload: BrandMaterialUpdateRequest,
+        _: dict = Depends(require_permission("brand_materials.manage")),
+    ) -> dict:
+        if payload.source_url and not payload.source_url.startswith(
+            ("http://", "https://")
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Посилання має починатися з http:// або https://",
+            )
+        try:
+            return repository.update_reference(
+                reference_id,
+                **payload.model_dump(),
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Матеріал не знайдено") from exc
 
     @app.get("/api/references/{reference_id}/image")
     def reference_image(
@@ -2754,13 +3453,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.delete("/api/references/{reference_id}")
     def delete_reference(
-        reference_id: int, _: str = Depends(authorize_write)
+        reference_id: int,
+        _: dict = Depends(require_permission("brand_materials.manage")),
     ) -> dict:
         try:
             reference = repository.delete_reference(reference_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        Path(reference["path"]).unlink(missing_ok=True)
+        if reference.get("path"):
+            Path(reference["path"]).unlink(missing_ok=True)
         return {"deleted": reference_id}
 
     @app.get("/api/drafts/{draft_id}")
@@ -2774,7 +3475,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def favorite_draft(
         draft_id: int,
         payload: FavoriteRequest,
-        _: str = Depends(authorize_write),
+        _: dict = Depends(require_permission("content.edit")),
     ) -> dict:
         try:
             return repository.set_draft_favorite(draft_id, payload.favorite)
@@ -2784,7 +3485,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/drafts")
     def create_manual_draft(
         payload: ManualDraftRequest,
-        user: dict = Depends(authorize_write),
+        user: dict = Depends(require_permission("content.create")),
     ) -> dict:
         validate_rubric(payload.product)
         caption_html = canonicalize_draft_caption(
@@ -2813,11 +3514,63 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return repository.draft_record(draft.id)
 
+    @app.delete("/api/drafts/{draft_id}")
+    def delete_draft(
+        draft_id: int,
+        _: dict = Depends(require_permission("content.delete")),
+    ) -> dict:
+        try:
+            draft = repository.delete_draft(draft_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Чернетку не знайдено") from exc
+        for field in ("image_path",):
+            if draft.get(field):
+                Path(draft[field]).unlink(missing_ok=True)
+        return {"deleted": draft_id}
+
+    @app.post("/api/drafts/bulk")
+    def bulk_drafts(
+        payload: BulkActionRequest,
+        user: dict = Depends(authorize),
+        x_requested_with: str | None = Header(default=None),
+    ) -> dict:
+        if x_requested_with != "VoicerHubAdmin":
+            raise HTTPException(status_code=403, detail="Missing request guard")
+        ids = [int(item) for item in payload.ids]
+        required = "content.delete" if payload.action == "delete" else "content.edit"
+        if not has_permission(
+            user.get("role") or "viewer",
+            required,
+            platform_admin=bool(user.get("is_super_admin")),
+        ):
+            raise HTTPException(status_code=403, detail="Недостатньо прав")
+        if payload.action == "delete":
+            changed = 0
+            for draft_id in ids:
+                try:
+                    repository.delete_draft(draft_id)
+                    changed += 1
+                except KeyError:
+                    continue
+            return {"changed": changed}
+        if payload.action == "assign_rubric":
+            return {"changed": repository.assign_drafts_rubric(ids, payload.value)}
+        if payload.action == "status":
+            changed = 0
+            for draft_id in ids:
+                try:
+                    repository.transition_draft(draft_id, payload.value)
+                    changed += 1
+                except (KeyError, ValueError):
+                    continue
+            return {"changed": changed}
+        raise HTTPException(status_code=422, detail="Невідома масова дія")
+
     @app.post("/api/drafts/{draft_id}/proofread")
     async def proofread_draft(
         draft_id: int,
         payload: ProofreadRequest,
-        user: dict = Depends(authorize_write),
+        user: dict = Depends(require_permission("content.edit")),
     ) -> dict:
         ensure_ai_budget()
         _validate_models(payload.text_model)
@@ -2866,7 +3619,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def generate_social_variant(
         draft_id: int,
         payload: SocialVariantRequest,
-        user: dict = Depends(authorize_write),
+        user: dict = Depends(require_permission("content.edit")),
     ) -> dict:
         ensure_ai_budget()
         _validate_models(payload.text_model, payload.image_model)
@@ -2956,7 +3709,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         draft_id: int,
         platform: str,
         payload: SocialVariantUpdateRequest,
-        _: dict = Depends(authorize_write),
+        _: dict = Depends(require_permission("content.edit")),
     ) -> dict:
         try:
             current = repository.get_social_variant(draft_id, platform)
@@ -3004,7 +3757,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def edit_draft(
         draft_id: int,
         payload: DraftEditRequest,
-        _: str = Depends(authorize_write),
+        _: dict = Depends(require_permission("content.edit")),
     ) -> dict:
         link_url = payload.link_url.strip()
         if link_url and not link_url.startswith(("http://", "https://")):
@@ -3031,7 +3784,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def change_draft_status(
         draft_id: int,
         payload: ContentStatusRequest,
-        _: dict = Depends(authorize_write),
+        _: dict = Depends(require_permission("content.edit")),
     ) -> dict:
         if payload.status in {"scheduled", "published"}:
             raise HTTPException(
@@ -3052,7 +3805,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def regenerate_image(
         draft_id: int,
         payload: GenerationRequest,
-        user: dict = Depends(authorize_write),
+        user: dict = Depends(require_permission("content.edit")),
     ) -> dict:
         ensure_ai_budget()
         _validate_generation(payload, repository)
@@ -3079,7 +3832,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def regenerate_text(
         draft_id: int,
         payload: GenerationRequest,
-        user: dict = Depends(authorize_write),
+        user: dict = Depends(require_permission("content.edit")),
     ) -> dict:
         ensure_ai_budget()
         _validate_generation(payload, repository)
@@ -3104,7 +3857,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/drafts/{draft_id}/publish")
     async def publish_draft(
         draft_id: int,
-        user: dict = Depends(authorize_write),
+        user: dict = Depends(require_permission("content.publish")),
     ) -> dict:
         ensure_publication_quota()
         draft = repository.draft_record(draft_id)
@@ -3139,7 +3892,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def schedule_draft(
         draft_id: int,
         payload: ScheduleRequest,
-        user: dict = Depends(authorize_write),
+        user: dict = Depends(require_permission("content.schedule")),
     ) -> dict:
         scheduled_at = payload.scheduled_at
         draft = repository.draft_record(draft_id)
@@ -3172,7 +3925,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/drafts/{draft_id}/cancel-schedule")
     def cancel_schedule(
         draft_id: int,
-        _: str = Depends(authorize_write),
+        _: dict = Depends(require_permission("content.schedule")),
     ) -> dict:
         repository.cancel_schedule(draft_id)
         return {"status": "ready"}

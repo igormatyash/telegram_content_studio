@@ -11,19 +11,6 @@ if (referralRequested && !referralCode) {
   error.textContent = "Реферальне посилання недійсне або вже вимкнене. Ви можете зареєструватися напряму.";
 }
 
-document.querySelector("#workspaceName").addEventListener("input", event => {
-  const slug = event.target.value
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  const target = document.querySelector("#workspaceSlug");
-  if (!target.dataset.edited) target.value = slug;
-});
-document.querySelector("#workspaceSlug").addEventListener("input", event => {
-  event.target.dataset.edited = "true";
-});
-
 form.addEventListener("submit", async event => {
   event.preventDefault();
   error.textContent = "";
@@ -41,7 +28,7 @@ form.addEventListener("submit", async event => {
         email: document.querySelector("#email").value,
         display_name: document.querySelector("#displayName").value,
         workspace_name: document.querySelector("#workspaceName").value,
-        workspace_slug: document.querySelector("#workspaceSlug").value,
+        workspace_slug: document.querySelector("#workspaceSlug").value.trim(),
         referral_code: document.querySelector("#referralCode").value,
       }),
     });

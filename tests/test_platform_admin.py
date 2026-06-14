@@ -142,4 +142,4 @@ def test_platform_routes_are_hidden_from_regular_users(tmp_path) -> None:
     assert 'id="platformNav"' in platform_page.text
     assert 'id="platformView"' in platform_page.text
     assert "data-platform-section=\"referrals\"" in platform_page.text
-    assert "static/app.js?v=7" in platform_page.text
+    assert "static/app.js?v=8" in platform_page.text

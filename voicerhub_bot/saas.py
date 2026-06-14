@@ -6,8 +6,10 @@ from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from voicerhub_bot.permissions import WORKSPACE_ROLES
+from voicerhub_bot.slugs import generate_slug
 
-ROLES = {"owner", "admin", "editor", "viewer"}
+ROLES = WORKSPACE_ROLES
 
 
 class SecretCipher:
@@ -146,6 +148,18 @@ class SaasRepository:
                 "referred_by_organization_id",
                 "INTEGER",
             )
+            for column, definition in {
+                "brand_secondary_color": "TEXT NOT NULL DEFAULT ''",
+                "workspace_avatar_asset_id": "INTEGER",
+                "favicon_asset_id": "INTEGER",
+                "workspace_short_description": "TEXT NOT NULL DEFAULT ''",
+            }.items():
+                self._ensure_column(
+                    connection,
+                    "organization_settings",
+                    column,
+                    definition,
+                )
             self._ensure_column(
                 connection,
                 "audit_events",
@@ -241,9 +255,7 @@ class SaasRepository:
         monthly_publications: int,
         monthly_ai_budget: float,
     ) -> dict:
-        normalized = re.sub(r"[^a-z0-9-]+", "-", slug.lower()).strip("-")
-        if not normalized:
-            raise ValueError("Organization slug is required")
+        normalized = self.unique_slug(slug or name)
         with self._connect() as connection:
             cursor = connection.execute(
                 """
@@ -309,7 +321,7 @@ class SaasRepository:
         name: str,
         slug: str,
     ) -> dict:
-        normalized = re.sub(r"[^a-z0-9-]+", "-", slug.lower()).strip("-")
+        normalized = self.unique_slug(slug or name, exclude_id=organization_id)
         if not name.strip() or not normalized:
             raise ValueError("Organization name and slug are required")
         with self._connect() as connection:
@@ -321,6 +333,43 @@ class SaasRepository:
                 (name.strip(), normalized, organization_id),
             )
         return self.get_organization(organization_id)
+
+    def set_organizations_active(
+        self,
+        organization_ids: list[int],
+        active: bool,
+    ) -> int:
+        if not organization_ids:
+            return 0
+        placeholders = ",".join("?" for _ in organization_ids)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE organizations SET active = ?
+                WHERE id IN ({placeholders})
+                """,
+                (int(active), *organization_ids),
+            )
+        return int(cursor.rowcount)
+
+    def unique_slug(self, value: str, *, exclude_id: int | None = None) -> str:
+        base = generate_slug(value) or "workspace"
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id, slug FROM organizations WHERE slug LIKE ? COLLATE NOCASE",
+                (f"{base}%",),
+            ).fetchall()
+        occupied = {
+            str(row["slug"]).lower()
+            for row in rows
+            if exclude_id is None or int(row["id"]) != exclude_id
+        }
+        if base not in occupied:
+            return base
+        suffix = 2
+        while f"{base}-{suffix}" in occupied:
+            suffix += 1
+        return f"{base}-{suffix}"
 
     def organization_settings(self, organization_id: int) -> dict:
         self.get_organization(organization_id)
@@ -353,7 +402,11 @@ class SaasRepository:
             "workspace_mode",
             "primary_language",
             "brand_primary_color",
+            "brand_secondary_color",
             "brand_logo_asset_id",
+            "workspace_avatar_asset_id",
+            "favicon_asset_id",
+            "workspace_short_description",
             "tone_of_voice",
             "company_description",
             "forbidden_phrases",
@@ -499,6 +552,47 @@ class SaasRepository:
                 (organization_id,),
             ).fetchall()
         return {int(row["user_id"]) for row in rows}
+
+    def remove_member(self, organization_id: int, user_id: int) -> None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT role FROM organization_members
+                WHERE organization_id = ? AND user_id = ?
+                """,
+                (organization_id, user_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError("Workspace user not found")
+            if row["role"] == "owner":
+                raise ValueError("Власника workspace не можна видалити")
+            connection.execute(
+                """
+                DELETE FROM organization_members
+                WHERE organization_id = ? AND user_id = ?
+                """,
+                (organization_id, user_id),
+            )
+            connection.execute(
+                """
+                UPDATE user_sessions SET selected_organization_id = NULL
+                WHERE user_id = ? AND selected_organization_id = ?
+                """,
+                (user_id, organization_id),
+            )
+
+    def role_counts(self, organization_id: int) -> dict[str, int]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT role, COUNT(*) count
+                FROM organization_members
+                WHERE organization_id = ?
+                GROUP BY role
+                """,
+                (organization_id,),
+            ).fetchall()
+        return {str(row["role"]): int(row["count"]) for row in rows}
 
     def save_telegram_connection(
         self,

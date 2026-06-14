@@ -768,6 +768,22 @@ class AuthRepository:
         with self._connect() as connection:
             connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
 
+    def set_users_active(self, user_ids: list[int], active: bool) -> int:
+        if not user_ids:
+            return 0
+        placeholders = ",".join("?" for _ in user_ids)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                f"UPDATE users SET active = ? WHERE id IN ({placeholders})",
+                (int(active), *user_ids),
+            )
+            if not active:
+                connection.execute(
+                    f"DELETE FROM user_sessions WHERE user_id IN ({placeholders})",
+                    user_ids,
+                )
+        return int(cursor.rowcount)
+
     def auth_user_id(self, username_or_email: str) -> int | None:
         with self._connect() as connection:
             row = connection.execute(

@@ -176,6 +176,23 @@ class ReferralRepository:
             )
         return self.code(referral["code"]) or referral
 
+    def set_codes_status(self, code_ids: list[int], status: str) -> int:
+        if status not in {"active", "disabled"}:
+            raise ValueError("Unsupported referral status")
+        if not code_ids:
+            return 0
+        placeholders = ",".join("?" for _ in code_ids)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE referral_codes
+                SET status = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id IN ({placeholders})
+                """,
+                (status, *code_ids),
+            )
+        return int(cursor.rowcount)
+
     def record_click(
         self,
         code: str,

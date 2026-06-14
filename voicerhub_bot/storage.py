@@ -140,6 +140,20 @@ class DraftRepository:
                 )
                 """
             )
+            for column, definition in (
+                ("material_type", "TEXT NOT NULL DEFAULT 'reference_image'"),
+                ("description", "TEXT NOT NULL DEFAULT ''"),
+                ("source_url", "TEXT NOT NULL DEFAULT ''"),
+                ("active", "INTEGER NOT NULL DEFAULT 1"),
+                ("created_by_user_id", "INTEGER"),
+                ("updated_at", "TEXT"),
+            ):
+                self._ensure_column(
+                    connection,
+                    "reference_assets",
+                    column,
+                    definition,
+                )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS content_ideas (
@@ -196,6 +210,20 @@ class DraftRepository:
                 )
                 """
             )
+            for column, definition in (
+                ("mood", "TEXT NOT NULL DEFAULT ''"),
+                ("use_rules", "TEXT NOT NULL DEFAULT ''"),
+                ("avoid_rules", "TEXT NOT NULL DEFAULT ''"),
+                ("prompt_examples", "TEXT NOT NULL DEFAULT ''"),
+                ("active", "INTEGER NOT NULL DEFAULT 1"),
+                ("updated_at", "TEXT"),
+            ):
+                self._ensure_column(
+                    connection,
+                    "custom_visual_templates",
+                    column,
+                    definition,
+                )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS content_rubrics (
@@ -211,6 +239,17 @@ class DraftRepository:
                 )
                 """
             )
+            for column, definition in (
+                ("goal", "TEXT NOT NULL DEFAULT ''"),
+                ("tone", "TEXT NOT NULL DEFAULT ''"),
+                ("example_topic", "TEXT NOT NULL DEFAULT ''"),
+            ):
+                self._ensure_column(
+                    connection,
+                    "content_rubrics",
+                    column,
+                    definition,
+                )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS social_variants (
@@ -395,7 +434,14 @@ class DraftRepository:
             for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
         }
         if column not in columns:
-            connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            try:
+                connection.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+                )
+            except sqlite3.OperationalError as exc:
+                # Admin and worker can initialize the same tenant database together.
+                if "duplicate column name" not in str(exc).lower():
+                    raise
 
     def create(
         self,
@@ -461,23 +507,23 @@ class DraftRepository:
                 SET status = 'published',
                     published_at = STRFTIME('%Y-%m-%dT%H:%M:%SZ', 'now'),
                     scheduled_at = NULL
-                WHERE id = ?
+                WHERE id = ? AND organization_id = ?
                 """,
-                (draft_id,),
+                (draft_id, self.organization_id),
             )
 
     def set_telegram_message_id(self, draft_id: int, message_id: int) -> None:
         with self._connect() as connection:
             connection.execute(
-                "UPDATE drafts SET telegram_message_id = ? WHERE id = ?",
-                (message_id, draft_id),
+                "UPDATE drafts SET telegram_message_id = ? WHERE id = ? AND organization_id = ?",
+                (message_id, draft_id, self.organization_id),
             )
 
     def set_draft_image(self, draft_id: int, image_path: str) -> None:
         with self._connect() as connection:
             connection.execute(
-                "UPDATE drafts SET image_path = ? WHERE id = ?",
-                (image_path, draft_id),
+                "UPDATE drafts SET image_path = ? WHERE id = ? AND organization_id = ?",
+                (image_path, draft_id, self.organization_id),
             )
 
     def update_draft(
@@ -494,7 +540,7 @@ class DraftRepository:
                 """
                 UPDATE drafts
                 SET title = ?, visual_title = ?, caption_html = ?, link_url = ?
-                WHERE id = ? AND status != 'published'
+                WHERE id = ? AND organization_id = ? AND status != 'published'
                 """,
                 (
                     title,
@@ -502,14 +548,15 @@ class DraftRepository:
                     caption_html,
                     link_url,
                     draft_id,
+                    self.organization_id,
                 ),
             )
 
     def set_draft_favorite(self, draft_id: int, favorite: bool) -> dict:
         with self._connect() as connection:
             connection.execute(
-                "UPDATE drafts SET is_favorite = ? WHERE id = ?",
-                (int(favorite), draft_id),
+                "UPDATE drafts SET is_favorite = ? WHERE id = ? AND organization_id = ?",
+                (int(favorite), draft_id, self.organization_id),
             )
         return self.draft_record(draft_id)
 
@@ -519,10 +566,10 @@ class DraftRepository:
                 """
                 SELECT id, product, title, caption_html, tone
                 FROM drafts
-                WHERE is_favorite = 1
+                WHERE is_favorite = 1 AND organization_id = ?
                 ORDER BY id DESC LIMIT ?
                 """,
-                (limit,),
+                (self.organization_id, limit),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -562,9 +609,9 @@ class DraftRepository:
                 """
                 UPDATE drafts
                 SET status = 'ready', scheduled_at = NULL
-                WHERE id = ? AND status = 'scheduled'
+                WHERE id = ? AND organization_id = ? AND status = 'scheduled'
                 """,
-                (draft_id,),
+                (draft_id, self.organization_id),
             )
 
     def due_scheduled_drafts(self) -> list[dict]:
@@ -592,10 +639,73 @@ class DraftRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_drafts_page(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        search: str = "",
+        status: str = "",
+        sort: str = "created_at",
+        direction: str = "desc",
+    ) -> dict:
+        sort_columns = {
+            "created_at": "created_at",
+            "title": "title COLLATE NOCASE",
+            "status": "status",
+            "scheduled_at": "scheduled_at",
+        }
+        clauses = ["organization_id = ?"]
+        params: list[object] = [self.organization_id]
+        if search.strip():
+            clauses.append("(title LIKE ? OR caption_html LIKE ?)")
+            needle = f"%{search.strip()}%"
+            params.extend([needle, needle])
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        return self._paginate_table(
+            "drafts",
+            where=" AND ".join(clauses),
+            params=params,
+            page=page,
+            per_page=per_page,
+            order_by=sort_columns.get(sort, "created_at"),
+            direction=direction,
+        )
+
     def draft_record(self, draft_id: int) -> dict:
         with self._connect() as connection:
             row = self._ensure_owned(connection, "drafts", draft_id)
         return dict(row)
+
+    def delete_draft(self, draft_id: int) -> dict:
+        draft = self.draft_record(draft_id)
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM social_variants WHERE draft_id = ? AND organization_id = ?",
+                (draft_id, self.organization_id),
+            )
+            connection.execute(
+                "DELETE FROM drafts WHERE id = ? AND organization_id = ?",
+                (draft_id, self.organization_id),
+            )
+        return draft
+
+    def assign_drafts_rubric(self, draft_ids: list[int], rubric_slug: str) -> int:
+        self.get_rubric(rubric_slug)
+        if not draft_ids:
+            return 0
+        placeholders = ",".join("?" for _ in draft_ids)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE drafts SET product = ?
+                WHERE id IN ({placeholders}) AND organization_id = ?
+                """,
+                (rubric_slug, *draft_ids, self.organization_id),
+            )
+        return int(cursor.rowcount)
 
     def recent_titles(self, limit: int = 20) -> list[str]:
         with self._connect() as connection:
@@ -618,7 +728,9 @@ class DraftRepository:
                 SELECT id, title, caption_html, link_url,
                     title_options, cta_options
                 FROM drafts
-                """
+                WHERE organization_id = ?
+                """,
+                (self.organization_id,),
             ).fetchall()
             for row in rows:
                 title = plain_text(row["title"])
@@ -660,9 +772,9 @@ class DraftRepository:
                     UPDATE drafts
                     SET title = ?, caption_html = ?,
                         title_options = ?, cta_options = ?
-                    WHERE id = ?
+                    WHERE id = ? AND organization_id = ?
                     """,
-                    (*values, row["id"]),
+                    (*values, row["id"], self.organization_id),
                 )
                 repaired += 1
         return repaired
@@ -730,15 +842,30 @@ class DraftRepository:
         description: str,
         instructions: str = "",
         default_link: str = "",
+        goal: str = "",
+        tone: str = "",
+        example_topic: str = "",
+        active: bool = True,
     ) -> dict:
         with self._connect() as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO content_rubrics (
-                    slug, name, description, instructions, default_link
-                ) VALUES (?, ?, ?, ?, ?)
+                    slug, name, description, instructions, default_link,
+                    goal, tone, example_topic, active
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (slug, name, description, instructions, default_link),
+                (
+                    slug,
+                    name,
+                    description,
+                    instructions,
+                    default_link,
+                    goal,
+                    tone,
+                    example_topic,
+                    int(active),
+                ),
             )
             rubric_id = int(cursor.lastrowid)
         return self.get_rubric_by_id(rubric_id)
@@ -752,14 +879,18 @@ class DraftRepository:
         instructions: str,
         default_link: str,
         active: bool,
+        goal: str = "",
+        tone: str = "",
+        example_topic: str = "",
     ) -> dict:
         with self._connect() as connection:
             connection.execute(
                 """
                 UPDATE content_rubrics
                 SET name = ?, description = ?, instructions = ?,
-                    default_link = ?, active = ?
-                WHERE id = ?
+                    default_link = ?, active = ?, goal = ?, tone = ?,
+                    example_topic = ?
+                WHERE id = ? AND organization_id = ?
                 """,
                 (
                     name,
@@ -767,7 +898,11 @@ class DraftRepository:
                     instructions,
                     default_link,
                     int(active),
+                    goal,
+                    tone,
+                    example_topic,
                     rubric_id,
+                    self.organization_id,
                 ),
             )
         return self.get_rubric_by_id(rubric_id)
@@ -798,6 +933,66 @@ class DraftRepository:
         with self._connect() as connection:
             rows = connection.execute(query, (self.organization_id,)).fetchall()
         return [dict(row) for row in rows]
+
+    def list_rubrics_page(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        search: str = "",
+        active: str = "",
+        sort: str = "name",
+        direction: str = "asc",
+    ) -> dict:
+        clauses = ["organization_id = ?"]
+        params: list[object] = [self.organization_id]
+        if search.strip():
+            clauses.append("(name LIKE ? OR description LIKE ?)")
+            needle = f"%{search.strip()}%"
+            params.extend([needle, needle])
+        if active in {"yes", "no"}:
+            clauses.append("active = ?")
+            params.append(1 if active == "yes" else 0)
+        return self._paginate_table(
+            "content_rubrics",
+            where=" AND ".join(clauses),
+            params=params,
+            page=page,
+            per_page=per_page,
+            order_by={"name": "name COLLATE NOCASE", "created_at": "created_at"}.get(
+                sort,
+                "name COLLATE NOCASE",
+            ),
+            direction=direction,
+        )
+
+    def set_rubrics_active(self, rubric_ids: list[int], active: bool) -> int:
+        if not rubric_ids:
+            return 0
+        placeholders = ",".join("?" for _ in rubric_ids)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE content_rubrics SET active = ?
+                WHERE id IN ({placeholders}) AND organization_id = ?
+                """,
+                (int(active), *rubric_ids, self.organization_id),
+            )
+        return int(cursor.rowcount)
+
+    def delete_rubrics(self, rubric_ids: list[int]) -> int:
+        if not rubric_ids:
+            return 0
+        placeholders = ",".join("?" for _ in rubric_ids)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                f"""
+                DELETE FROM content_rubrics
+                WHERE id IN ({placeholders}) AND organization_id = ?
+                """,
+                (*rubric_ids, self.organization_id),
+            )
+        return int(cursor.rowcount)
 
     def save_social_variant(
         self,
@@ -1102,6 +1297,43 @@ class DraftRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_ideas_page(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        search: str = "",
+        rubric: str = "",
+        plan_only: bool = False,
+        sort: str = "created_at",
+        direction: str = "desc",
+    ) -> dict:
+        clauses = ["organization_id = ?"]
+        params: list[object] = [self.organization_id]
+        if search.strip():
+            clauses.append("(title LIKE ? OR angle LIKE ?)")
+            needle = f"%{search.strip()}%"
+            params.extend([needle, needle])
+        if rubric and rubric != "all":
+            clauses.append("product = ?")
+            params.append(rubric)
+        if plan_only:
+            clauses.append("plan_id IS NOT NULL")
+        return self._paginate_table(
+            "content_ideas",
+            where=" AND ".join(clauses),
+            params=params,
+            page=page,
+            per_page=per_page,
+            order_by={
+                "created_at": "created_at",
+                "title": "title COLLATE NOCASE",
+                "planned_for": "planned_for",
+                "status": "status",
+            }.get(sort, "created_at"),
+            direction=direction,
+        )
+
     def all_idea_signatures(self, limit: int = 1000) -> list[dict]:
         with self._connect() as connection:
             rows = connection.execute(
@@ -1160,7 +1392,39 @@ class DraftRepository:
     def delete_idea(self, idea_id: int) -> None:
         self.get_idea(idea_id)
         with self._connect() as connection:
-            connection.execute("DELETE FROM content_ideas WHERE id = ?", (idea_id,))
+            connection.execute(
+                "DELETE FROM content_ideas WHERE id = ? AND organization_id = ?",
+                (idea_id, self.organization_id),
+            )
+
+    def delete_ideas(self, idea_ids: list[int]) -> int:
+        if not idea_ids:
+            return 0
+        placeholders = ",".join("?" for _ in idea_ids)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                f"""
+                DELETE FROM content_ideas
+                WHERE id IN ({placeholders}) AND organization_id = ?
+                """,
+                (*idea_ids, self.organization_id),
+            )
+        return int(cursor.rowcount)
+
+    def assign_ideas_rubric(self, idea_ids: list[int], rubric_slug: str) -> int:
+        self.get_rubric(rubric_slug)
+        if not idea_ids:
+            return 0
+        placeholders = ",".join("?" for _ in idea_ids)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE content_ideas SET product = ?
+                WHERE id IN ({placeholders}) AND organization_id = ?
+                """,
+                (rubric_slug, *idea_ids, self.organization_id),
+            )
+        return int(cursor.rowcount)
 
     def add_custom_template(
         self,
@@ -1171,15 +1435,33 @@ class DraftRepository:
         prompt: str,
         layout: str,
         accent: str,
+        mood: str = "",
+        use_rules: str = "",
+        avoid_rules: str = "",
+        prompt_examples: str = "",
+        active: bool = True,
     ) -> dict:
         with self._connect() as connection:
             connection.execute(
                 """
                 INSERT INTO custom_visual_templates (
-                    id, name, description, prompt, layout, accent
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    id, name, description, prompt, layout, accent, mood,
+                    use_rules, avoid_rules, prompt_examples, active
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (template_id, name, description, prompt, layout, accent),
+                (
+                    template_id,
+                    name,
+                    description,
+                    prompt,
+                    layout,
+                    accent,
+                    mood,
+                    use_rules,
+                    avoid_rules,
+                    prompt_examples,
+                    int(active),
+                ),
             )
         return self.get_custom_template(template_id)
 
@@ -1203,32 +1485,112 @@ class DraftRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def update_custom_template(self, template_id: str, **values: object) -> dict:
+        self.get_custom_template(template_id)
+        allowed = {
+            "name",
+            "description",
+            "prompt",
+            "layout",
+            "accent",
+            "mood",
+            "use_rules",
+            "avoid_rules",
+            "prompt_examples",
+            "active",
+        }
+        values = {key: value for key, value in values.items() if key in allowed}
+        if "active" in values:
+            values["active"] = int(bool(values["active"]))
+        if values:
+            assignments = ", ".join(f"{key} = ?" for key in values)
+            with self._connect() as connection:
+                connection.execute(
+                    f"""
+                    UPDATE custom_visual_templates
+                    SET {assignments}, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND organization_id = ?
+                    """,
+                    (*values.values(), template_id, self.organization_id),
+                )
+        return self.get_custom_template(template_id)
+
+    def list_custom_templates_page(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        search: str = "",
+        active: str = "",
+    ) -> dict:
+        clauses = ["organization_id = ?"]
+        params: list[object] = [self.organization_id]
+        if search.strip():
+            clauses.append("(name LIKE ? OR description LIKE ?)")
+            needle = f"%{search.strip()}%"
+            params.extend([needle, needle])
+        if active in {"yes", "no"}:
+            clauses.append("active = ?")
+            params.append(1 if active == "yes" else 0)
+        return self._paginate_table(
+            "custom_visual_templates",
+            where=" AND ".join(clauses),
+            params=params,
+            page=page,
+            per_page=per_page,
+            order_by="created_at",
+            direction="desc",
+        )
+
     def set_template_preview(self, template_id: str, preview_path: str) -> None:
         with self._connect() as connection:
             connection.execute(
-                "UPDATE custom_visual_templates SET preview_path = ? WHERE id = ?",
-                (preview_path, template_id),
+                "UPDATE custom_visual_templates SET preview_path = ? WHERE id = ? AND organization_id = ?",
+                (preview_path, template_id, self.organization_id),
             )
 
     def delete_custom_template(self, template_id: str) -> dict:
         template = self.get_custom_template(template_id)
         with self._connect() as connection:
             connection.execute(
-                "DELETE FROM custom_visual_templates WHERE id = ?",
-                (template_id,),
+                "DELETE FROM custom_visual_templates WHERE id = ? AND organization_id = ?",
+                (template_id, self.organization_id),
             )
         return template
 
     def add_reference(
-        self, *, name: str, filename: str, path: str, media_type: str
+        self,
+        *,
+        name: str,
+        filename: str,
+        path: str,
+        media_type: str,
+        material_type: str = "reference_image",
+        description: str = "",
+        source_url: str = "",
+        active: bool = True,
+        created_by_user_id: int | None = None,
     ) -> dict:
         with self._connect() as connection:
             cursor = connection.execute(
                 """
-                INSERT INTO reference_assets (name, filename, path, media_type)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO reference_assets (
+                    name, filename, path, media_type, material_type,
+                    description, source_url, active, created_by_user_id,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 """,
-                (name, filename, path, media_type),
+                (
+                    name,
+                    filename,
+                    path,
+                    media_type,
+                    material_type,
+                    description,
+                    source_url,
+                    int(active),
+                    created_by_user_id,
+                ),
             )
             reference_id = int(cursor.lastrowid)
         return self.get_reference(reference_id)
@@ -1249,6 +1611,56 @@ class DraftRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_references_page(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        search: str = "",
+        material_type: str = "",
+        active: str = "",
+    ) -> dict:
+        clauses = ["organization_id = ?"]
+        params: list[object] = [self.organization_id]
+        if search.strip():
+            clauses.append("(name LIKE ? OR description LIKE ?)")
+            needle = f"%{search.strip()}%"
+            params.extend([needle, needle])
+        if material_type:
+            clauses.append("material_type = ?")
+            params.append(material_type)
+        if active in {"yes", "no"}:
+            clauses.append("active = ?")
+            params.append(1 if active == "yes" else 0)
+        return self._paginate_table(
+            "reference_assets",
+            where=" AND ".join(clauses),
+            params=params,
+            page=page,
+            per_page=per_page,
+            order_by="created_at",
+            direction="desc",
+        )
+
+    def update_reference(self, reference_id: int, **values: object) -> dict:
+        self.get_reference(reference_id)
+        allowed = {"name", "description", "material_type", "source_url", "active"}
+        values = {key: value for key, value in values.items() if key in allowed}
+        if "active" in values:
+            values["active"] = int(bool(values["active"]))
+        if values:
+            assignments = ", ".join(f"{key} = ?" for key in values)
+            with self._connect() as connection:
+                connection.execute(
+                    f"""
+                    UPDATE reference_assets
+                    SET {assignments}, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND organization_id = ?
+                    """,
+                    (*values.values(), reference_id, self.organization_id),
+                )
+        return self.get_reference(reference_id)
+
     def references_by_ids(self, reference_ids: list[int]) -> list[dict]:
         if not reference_ids:
             return []
@@ -1268,9 +1680,63 @@ class DraftRepository:
         reference = self.get_reference(reference_id)
         with self._connect() as connection:
             connection.execute(
-                "DELETE FROM reference_assets WHERE id = ?", (reference_id,)
+                "DELETE FROM reference_assets WHERE id = ? AND organization_id = ?",
+                (reference_id, self.organization_id),
             )
         return reference
+
+    def delete_job(self, job_id: int) -> dict:
+        job = self.get_job(job_id)
+        if job.status not in {"failed", "cancelled"}:
+            raise ValueError("Видалити можна лише помилкове або скасоване завдання")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                DELETE FROM generation_jobs
+                WHERE id = ? AND organization_id = ?
+                """,
+                (job_id, self.organization_id),
+            )
+        return {"id": job.id, "status": job.status}
+
+    def _paginate_table(
+        self,
+        table: str,
+        *,
+        where: str,
+        params: list[object],
+        page: int,
+        per_page: int,
+        order_by: str,
+        direction: str,
+    ) -> dict:
+        page = max(1, int(page))
+        per_page = min(100, max(1, int(per_page)))
+        direction = "ASC" if direction.lower() == "asc" else "DESC"
+        with self._connect() as connection:
+            total = int(
+                connection.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE {where}",
+                    params,
+                ).fetchone()[0]
+            )
+            rows = connection.execute(
+                f"""
+                SELECT * FROM {table}
+                WHERE {where}
+                ORDER BY {order_by} {direction}
+                LIMIT ? OFFSET ?
+                """,
+                (*params, per_page, (page - 1) * per_page),
+            ).fetchall()
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        return {
+            "items": [dict(row) for row in rows],
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "total_pages": total_pages,
+        }
 
     def get_job(self, job_id: int) -> GenerationJob:
         with self._connect() as connection:
@@ -1307,10 +1773,11 @@ class DraftRepository:
                 raise ValueError(f"Unsupported job field: {key}")
             assignments.append(f"{key} = ?")
             values.append(value)
-        values.append(job_id)
+        values.extend([job_id, self.organization_id])
         with self._connect() as connection:
             connection.execute(
-                f"UPDATE generation_jobs SET {', '.join(assignments)} WHERE id = ?",
+                f"UPDATE generation_jobs SET {', '.join(assignments)} "
+                "WHERE id = ? AND organization_id = ?",
                 values,
             )
 
@@ -1360,8 +1827,9 @@ class DraftRepository:
         with self._connect() as connection:
             if user_id is None and job_id > 0:
                 row = connection.execute(
-                    "SELECT created_by_user_id FROM generation_jobs WHERE id = ?",
-                    (job_id,),
+                    "SELECT created_by_user_id FROM generation_jobs "
+                    "WHERE id = ? AND organization_id = ?",
+                    (job_id, self.organization_id),
                 ).fetchone()
                 user_id = row["created_by_user_id"] if row else None
             connection.execute(
@@ -1389,16 +1857,19 @@ class DraftRepository:
                 """
                 SELECT 1
                 FROM usage_events
-                WHERE job_id = ? AND kind = ?
+                WHERE job_id = ? AND kind = ? AND organization_id = ?
                 LIMIT 1
                 """,
-                (job_id, kind),
+                (job_id, kind, self.organization_id),
             ).fetchone()
         return row is not None
 
     def usage_summary(self, *, since: str | None = None) -> dict:
-        where = "WHERE created_at >= ?" if since else ""
-        params = (since,) if since else ()
+        where = "WHERE organization_id = ?"
+        params: tuple[object, ...] = (self.organization_id,)
+        if since:
+            where += " AND created_at >= ?"
+            params += (since,)
         with self._connect() as connection:
             totals = connection.execute(
                 f"""
@@ -1459,8 +1930,12 @@ class DraftRepository:
         }
 
     def usage_by_rubric(self, *, since: str | None = None) -> list[dict]:
-        conditions = ["u.job_id = j.id"]
-        params: list[object] = []
+        conditions = [
+            "u.job_id = j.id",
+            "u.organization_id = ?",
+            "j.organization_id = ?",
+        ]
+        params: list[object] = [self.organization_id, self.organization_id]
         if since:
             conditions.append("u.created_at >= ?")
             params.append(since)
@@ -1485,9 +1960,11 @@ class DraftRepository:
                 """
                 SELECT COALESCE(SUM(cost), 0)
                 FROM usage_events
-                WHERE STRFTIME('%Y-%m', created_at) =
+                WHERE organization_id = ?
+                  AND STRFTIME('%Y-%m', created_at) =
                     STRFTIME('%Y-%m', 'now')
-                """
+                """,
+                (self.organization_id,),
             ).fetchone()
         return float(row[0] or 0)
 
@@ -1497,26 +1974,36 @@ class DraftRepository:
                 """
                 SELECT COUNT(*)
                 FROM drafts
-                WHERE status = 'published'
+                WHERE organization_id = ?
+                  AND status = 'published'
                   AND STRFTIME('%Y-%m', published_at) =
                     STRFTIME('%Y-%m', 'now')
-                """
+                """,
+                (self.organization_id,),
             ).fetchone()
         return int(row[0] or 0)
 
     def dashboard(self) -> dict:
         with self._connect() as connection:
             job_counts = connection.execute(
-                "SELECT status, COUNT(*) count FROM generation_jobs GROUP BY status"
+                "SELECT status, COUNT(*) count FROM generation_jobs "
+                "WHERE organization_id = ? GROUP BY status",
+                (self.organization_id,),
             ).fetchall()
             batches = connection.execute(
-                "SELECT * FROM batch_runs ORDER BY created_at DESC LIMIT 50"
+                "SELECT * FROM batch_runs WHERE organization_id = ? "
+                "ORDER BY created_at DESC LIMIT 50",
+                (self.organization_id,),
             ).fetchall()
             jobs = connection.execute(
-                "SELECT * FROM generation_jobs ORDER BY id DESC LIMIT 500"
+                "SELECT * FROM generation_jobs WHERE organization_id = ? "
+                "ORDER BY id DESC LIMIT 500",
+                (self.organization_id,),
             ).fetchall()
             drafts = connection.execute(
-                "SELECT * FROM drafts ORDER BY id DESC LIMIT 500"
+                "SELECT * FROM drafts WHERE organization_id = ? "
+                "ORDER BY id DESC LIMIT 500",
+                (self.organization_id,),
             ).fetchall()
             ideas = connection.execute(
                 """
@@ -1529,12 +2016,22 @@ class DraftRepository:
                         WHEN d.id IS NOT NULL THEN d.status
                         ELSE COALESCE(j.status, i.status)
                     END effective_status,
-                    j.draft_id
+                    j.id job_id,
+                    j.draft_id,
+                    j.error
                 FROM content_ideas i
-                LEFT JOIN generation_jobs j ON j.idea_id = i.id
+                LEFT JOIN generation_jobs j ON j.id = (
+                    SELECT MAX(latest.id)
+                    FROM generation_jobs latest
+                    WHERE latest.idea_id = i.id
+                      AND latest.organization_id = i.organization_id
+                )
                 LEFT JOIN drafts d ON d.id = j.draft_id
+                    AND d.organization_id = i.organization_id
+                WHERE i.organization_id = ?
                 ORDER BY i.id DESC LIMIT 500
-                """
+                """,
+                (self.organization_id,),
             ).fetchall()
             totals = connection.execute(
                 """
@@ -1543,15 +2040,19 @@ class DraftRepository:
                     COALESCE(SUM(CASE WHEN kind = 'text' THEN cost ELSE 0 END), 0) text_cost,
                     COALESCE(SUM(CASE WHEN kind = 'image' THEN cost ELSE 0 END), 0) image_cost
                 FROM usage_events
-                """
+                WHERE organization_id = ?
+                """,
+                (self.organization_id,),
             ).fetchone()
             daily = connection.execute(
                 """
                 SELECT DATE(created_at) day, SUM(cost) cost
                 FROM usage_events
+                WHERE organization_id = ?
                 GROUP BY DATE(created_at)
                 ORDER BY day DESC LIMIT 30
-                """
+                """,
+                (self.organization_id,),
             ).fetchall()
         return {
             "job_counts": {row["status"]: row["count"] for row in job_counts},
