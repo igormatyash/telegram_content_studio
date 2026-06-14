@@ -532,9 +532,9 @@ class DraftRepository:
                 """
                 UPDATE drafts
                 SET status = 'scheduled', scheduled_at = ?
-                WHERE id = ? AND image_path != ''
+                WHERE id = ? AND organization_id = ? AND image_path != ''
                 """,
-                (scheduled_at, draft_id),
+                (scheduled_at, draft_id, self.organization_id),
             )
 
     def transition_draft(self, draft_id: int, status: str) -> dict:

@@ -13,6 +13,8 @@ const state = {
   calendarDate: new Date(),
   onboardingStep: 1,
   usage: null,
+  platformUsage: null,
+  platformPeriod: "month",
 };
 const titles = {
   home: ["Головна", "Огляд вашого контенту та найближчих дій."],
@@ -31,10 +33,22 @@ const statusLabels = {
   text_batch: "Генерується", image_batch: "Візуал", failed: "Помилка",
 };
 const statusOrder = ["idea", "draft", "review", "needs_changes", "ready", "scheduled", "published"];
+const statusActions = {
+  draft: [["review","На перевірку"],["ready","Позначити готовим"]],
+  review: [["needs_changes","Повернути на правки"],["ready","Погодити"]],
+  needs_changes: [["draft","Повернути в чернетки"]],
+  ready: [["draft","Повернути в чернетки"]],
+};
 const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
 const money = value => `$${Number(value || 0).toFixed(2)}`;
 const formatDate = value => value ? new Date(value).toLocaleDateString("uk-UA", {day:"2-digit",month:"short"}) : "Без дати";
 const plain = value => String(value || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+const icon = name => ({
+  ideas: '<svg viewBox="0 0 24 24"><path d="M9 18h6M10 22h4"/><path d="M8.2 15.4A7 7 0 1 1 15.8 15.4C14.7 16.2 14 17 14 18h-4c0-1-.7-1.8-1.8-2.6Z"/></svg>',
+  plan: '<svg viewBox="0 0 24 24"><path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5"/></svg>',
+  drafts: '<svg viewBox="0 0 24 24"><path d="M4 5h6v14H4zM14 5h6v8h-6zM14 17h6v2h-6z"/></svg>',
+  calendar: '<svg viewBox="0 0 24 24"><path d="M5 4h14a2 2 0 0 1 2 2v14H3V6a2 2 0 0 1 2-2ZM3 9h18M8 2v4M16 2v4"/></svg>',
+}[name] || "");
 
 async function api(path, options = {}) {
   const headers = {...(options.headers || {})};
@@ -76,6 +90,38 @@ function pill(status) {
 }
 function empty(title, text, action = "") {
   return `<div class="empty-state"><div style="font-size:28px;color:#818cf8">✦</div><h3>${esc(title)}</h3><p class="muted">${esc(text)}</p>${action}</div>`;
+}
+function notificationItems() {
+  const failed = (state.data?.jobs || []).filter(job => job.status === "failed");
+  const items = failed.map(job => ({
+    type: "error",
+    jobId: job.id,
+    title: "Не вдалося згенерувати матеріал",
+    text: job.topic || job.error || `Завдання #${job.id}`,
+    action: "Перейдіть у чернетки, перевірте дані та повторіть генерацію.",
+  }));
+  const expiry = state.company?.plan_expires_at
+    ? Math.ceil((new Date(state.company.plan_expires_at) - new Date()) / 86400000)
+    : null;
+  if (state.company?.plan_code === "trial" && expiry !== null && expiry <= 7) {
+    items.push({
+      type: expiry <= 0 ? "error" : "warning",
+      title: expiry <= 0 ? "Trial завершився" : "Trial скоро завершиться",
+      text: expiry <= 0 ? "Оберіть тариф для продовження роботи." : `Залишилося ${expiry} дн.`,
+      action: "Перевірте тариф у налаштуваннях workspace.",
+    });
+  }
+  const spend = Number(state.company?.ai_spend || state.data?.totals?.total_cost || 0);
+  const budget = Number(state.company?.monthly_ai_budget || 0);
+  if (budget && spend / budget >= .7) {
+    items.push({
+      type: spend >= budget ? "error" : "warning",
+      title: "AI-бюджет майже використано",
+      text: `${money(spend)} з ${money(budget)} (${Math.round(spend / budget * 100)}%).`,
+      action: "Відкрийте розділ «Витрати» для деталізації.",
+    });
+  }
+  return items;
 }
 function setView(view) {
   state.view = view;
@@ -120,6 +166,11 @@ function applyIdentity() {
     const node = document.querySelector(selector);
     if (node) node.hidden = readOnly;
   });
+  const notificationCount = notificationItems().length;
+  const notificationBadge = document.querySelector("#notificationCount");
+  notificationBadge.textContent = notificationCount;
+  notificationBadge.hidden = notificationCount === 0;
+  document.querySelector("#notificationsButton").classList.toggle("has-events", notificationCount > 0);
   renderSystemBanner();
 }
 
@@ -165,10 +216,10 @@ function renderHome() {
     ["published","Опубліковано",counts.published,"За весь час"],
   ].map(([status,label,value,note]) => `<article class="card metric">${pill(status)}<strong>${value}</strong><small>${note}</small></article>`).join("");
   document.querySelector("#quickActions").innerHTML = `
-    <div class="quick-action featured" data-action="ideas"><span style="font-size:22px">✦</span><div><strong>Згенерувати ідеї</strong><small style="display:block;color:#c7d2fe">AI запропонує теми на основі бренду</small></div></div>
-    <div class="quick-action" data-action="plan"><span>▤</span><div><strong>Створити контент-план</strong><small class="muted">На тиждень або місяць</small></div></div>
-    <div class="quick-action" data-action="drafts"><span>☷</span><div><strong>Створити чернетку</strong><small class="muted">З ідеї або з нуля</small></div></div>
-    <div class="quick-action" data-action="calendar"><span>□</span><div><strong>Запланувати пост</strong><small class="muted">Готова чернетка → календар</small></div></div>`;
+    <div class="quick-action featured" data-action="ideas"><span class="action-icon">${icon("ideas")}</span><div><strong>Згенерувати ідеї</strong><small style="display:block;color:#c7d2fe">AI запропонує теми на основі бренду</small></div></div>
+    <div class="quick-action" data-action="plan"><span class="action-icon">${icon("plan")}</span><div><strong>Створити контент-план</strong><small class="muted">На тиждень або місяць</small></div></div>
+    <div class="quick-action" data-action="drafts"><span class="action-icon">${icon("drafts")}</span><div><strong>Створити чернетку</strong><small class="muted">З ідеї або з нуля</small></div></div>
+    <div class="quick-action" data-action="calendar"><span class="action-icon">${icon("calendar")}</span><div><strong>Запланувати пост</strong><small class="muted">Чернетка з візуалом → календар</small></div></div>`;
   document.querySelectorAll(".quick-action").forEach(node => node.onclick = () => setView(node.dataset.action));
   const upcoming = drafts.filter(x => x.scheduled_at).sort((a,b) => new Date(a.scheduled_at)-new Date(b.scheduled_at)).slice(0,6);
   document.querySelector("#upcomingList").innerHTML = upcoming.length ? upcoming.map(item => `<button class="quick-action" data-draft="${item.id}"><strong style="min-width:54px">${formatDate(item.scheduled_at)}</strong><span style="text-align:left">${esc(item.title)}</span>${pill(item.status)}</button>`).join("") : empty("Публікацій ще немає","Підготуйте чернетку та додайте її до календаря.");
@@ -191,8 +242,14 @@ function renderFilters(target, values, active, callback) {
 function renderIdeas() {
   renderFilters(document.querySelector("#ideaFilters"), [["all","Усі рубрики"],...(state.data.rubrics||[]).map(x => [x.slug,x.name])], state.ideaFilter, value => {state.ideaFilter=value;renderIdeas();});
   const items = (state.data.ideas || []).filter(x => state.ideaFilter === "all" || x.product === state.ideaFilter);
-  document.querySelector("#ideasGrid").innerHTML = items.length ? items.map(item => `<article class="card idea-card"><div class="row between"><span class="pill idea">${esc((state.data.rubrics||[]).find(x=>x.slug===item.product)?.name||item.product)}</span><button class="icon-button ghost" aria-label="Меню">⋯</button></div><h3>${esc(item.title)}</h3><p>${esc(item.angle || "Перспективна тема для майбутньої публікації.")}</p><footer><small class="muted">${formatDate(item.planned_for)}</small><button class="dark-button" data-generate-idea="${item.id}">Створити чернетку</button></footer></article>`).join("") : empty("У вас ще немає ідей","Згенеруйте перші теми на основі бренду та рубрик.",'<button class="primary" id="emptyGenerateIdeas">✦ Згенерувати ідеї</button>');
+  document.querySelector("#ideasGrid").innerHTML = items.length ? items.map(item => `<article class="card idea-card"><div class="row between"><span class="pill idea">${esc((state.data.rubrics||[]).find(x=>x.slug===item.product)?.name||item.product)}</span><small class="muted">${formatDate(item.planned_for)}</small></div><h3>${esc(item.title)}</h3><p>${esc(item.angle || "Перспективна тема для майбутньої публікації.")}</p><footer><button class="ghost danger" data-delete-idea="${item.id}">Видалити</button><button class="dark-button" data-generate-idea="${item.id}">Створити чернетку</button></footer></article>`).join("") : empty("У вас ще немає ідей","Згенеруйте перші теми на основі бренду та рубрик.",'<button class="primary" id="emptyGenerateIdeas">✦ Згенерувати ідеї</button>');
   document.querySelectorAll("[data-generate-idea]").forEach(button => button.onclick = () => generateIdea(button));
+  document.querySelectorAll("[data-delete-idea]").forEach(button => button.onclick = async () => {
+    if (!confirm("Видалити цю ідею?")) return;
+    await api(`api/ideas/${button.dataset.deleteIdea}`, {method:"DELETE"});
+    toast("Ідею видалено");
+    await refresh();
+  });
   document.querySelector("#emptyGenerateIdeas")?.addEventListener("click", () => document.querySelector("#generateIdeas").click());
 }
 async function generateIdea(button) {
@@ -221,19 +278,26 @@ function renderDrafts() {
   const drafts = (state.data.drafts||[]).filter(x => state.draftFilter === "all" || x.status === state.draftFilter);
   const target = document.querySelector("#draftsContent");
   if (kanban) {
-    target.innerHTML = `<div class="kanban-board">${statusOrder.map(status => {const rows = status==="idea" ? [] : drafts.filter(x=>x.status===status);return `<section class="kanban-column"><div class="kanban-head"><span>${statusLabels[status]}</span><span>${rows.length}</span></div>${rows.map(item=>`<article class="kanban-card" data-open-draft="${item.id}">${pill(item.status)}<h4>${esc(item.title)}</h4><small class="muted">${formatDate(item.scheduled_at||item.created_at)}</small></article>`).join("")}</section>`;}).join("")}</div>`;
+    target.innerHTML = `<div class="kanban-board">${statusOrder.map(status => {const rows = status==="idea" ? [] : drafts.filter(x=>x.status===status);return `<section class="kanban-column"><div class="kanban-head"><span>${statusLabels[status]}</span><span>${rows.length}</span></div>${rows.map(item=>`<article class="kanban-card"><button class="kanban-open" data-open-draft="${item.id}">${pill(item.status)}<h4>${esc(item.title)}</h4><small class="muted">${formatDate(item.scheduled_at||item.created_at)}</small></button><div class="kanban-actions">${(statusActions[item.status]||[]).map(([next,label])=>`<button data-transition-draft="${item.id}" data-transition-status="${next}">${label}</button>`).join("")}</div></article>`).join("")}</section>`;}).join("")}</div>`;
   } else {
     target.innerHTML = drafts.length ? `<div class="draft-grid">${drafts.map(item => `<article class="card draft-card"><div class="draft-cover">${item.image_path?`<img src="${apiUrl(`api/drafts/${item.id}/image`)}" alt="">`:`<strong>${esc(item.visual_title||item.title)}</strong>`}</div><div class="draft-body">${pill(item.status)}<h3>${esc(item.title)}</h3><p class="muted">${esc(plain(item.caption_html).slice(0,130))}</p><footer><small class="muted">${formatDate(item.scheduled_at||item.created_at)}</small><button data-open-draft="${item.id}">Відкрити</button></footer></div></article>`).join("")}</div>` : empty("Чернеток ще немає","Створіть чернетку з ідеї або додайте матеріал вручну.");
   }
   document.querySelectorAll("[data-open-draft]").forEach(node => node.onclick = () => openEditor(Number(node.dataset.openDraft)));
+  document.querySelectorAll("[data-transition-draft]").forEach(node => node.onclick = async () => {
+    await api(`api/drafts/${node.dataset.transitionDraft}/status`, {method:"POST",body:JSON.stringify({status:node.dataset.transitionStatus})});
+    toast(`Статус змінено: ${statusLabels[node.dataset.transitionStatus]}`);
+    await refresh();
+  });
 }
 
 function renderCalendar() {
   const year = state.calendarDate.getFullYear(), month = state.calendarDate.getMonth();
   document.querySelector("#calendarTitle").textContent = state.calendarDate.toLocaleDateString("uk-UA",{month:"long",year:"numeric"});
   const drafts = state.data.drafts || [];
-  const ready = drafts.filter(x => x.status === "ready");
-  document.querySelector("#calendarReady").innerHTML = ready.length ? ready.map(x=>`<button class="quick-action" data-open-draft="${x.id}">${pill(x.status)}<span style="text-align:left">${esc(x.title)}</span></button>`).join("") : `<p class="muted">Немає готових чернеток.</p>`;
+  const schedulable = drafts.filter(x => x.status !== "published" && !x.scheduled_at);
+  document.querySelector("#calendarReady").innerHTML = schedulable.length
+    ? schedulable.map(x=>`<button class="quick-action" data-schedule-draft="${x.id}">${pill(x.status)}<span style="min-width:0;text-align:left"><strong>${esc(x.title)}</strong><small class="muted">${x.image_path ? "Можна запланувати" : "Спочатку потрібен візуал"}</small></span></button>`).join("")
+    : `<p class="muted">Усі матеріали вже заплановані або опубліковані.</p>`;
   const first = new Date(year,month,1), offset = (first.getDay()+6)%7;
   const start = new Date(year,month,1-offset);
   const cells = [];
@@ -245,13 +309,39 @@ function renderCalendar() {
   }
   document.querySelector("#calendarGrid").innerHTML = ["Пн","Вт","Ср","Чт","Пт","Сб","Нд"].map(x=>`<div class="calendar-weekday">${x}</div>`).join("")+cells.join("");
   document.querySelectorAll("[data-open-draft]").forEach(node => node.onclick = () => openEditor(Number(node.dataset.openDraft)));
+  document.querySelectorAll("[data-schedule-draft]").forEach(node => node.onclick = () => openScheduleForm(Number(node.dataset.scheduleDraft)));
+}
+function openScheduleForm(selectedId = null) {
+  const drafts = (state.data.drafts || []).filter(x => x.status !== "published" && !x.scheduled_at);
+  const eligible = drafts.filter(x => x.image_path);
+  if (!eligible.length) {
+    showForm(
+      "Немає матеріалів для планування",
+      `<div class="wide callout warning"><strong>Чому список порожній?</strong><p>У календар можна додати будь-яку неопубліковану чернетку, але для публікації потрібен готовий візуал. Відкрийте чернетку та згенеруйте або додайте зображення.</p></div>${drafts.map(x=>`<div class="wide schedule-row">${pill(x.status)}<span>${esc(x.title)}</span><small>Немає візуалу</small></div>`).join("")}`,
+      null,
+    );
+    return;
+  }
+  showForm(
+    "Запланувати публікацію",
+    `<div class="wide callout"><strong>Чернетка буде затверджена</strong><p>Після вибору дати матеріал отримає статус «Заплановано». Перед публікацією його ще можна відкрити, відредагувати або повернути в готові.</p></div>
+    <label class="wide">Матеріал<select name="draft_id">${eligible.map(x=>`<option value="${x.id}" ${x.id===selectedId?"selected":""}>${esc(x.title)} — ${esc(statusLabels[x.status]||x.status)}</option>`).join("")}</select></label>
+    <label class="wide">Дата і час<input name="scheduled_at" type="datetime-local" min="${new Date(Date.now()+60000).toISOString().slice(0,16)}" required></label>`,
+    async form => {
+      await api(`api/drafts/${form.get("draft_id")}/schedule`,{method:"POST",body:JSON.stringify({scheduled_at:new Date(form.get("scheduled_at")).toISOString()})});
+      toast("Публікацію додано до календаря");
+      await refresh();
+      renderCalendar();
+    },
+    {submitLabel:"Запланувати"},
+  );
 }
 
 function renderBrand() {
   const settings = state.company.settings || {};
   const target = document.querySelector("#brandContent");
-  if (state.brandTab === "profile") target.innerHTML = `<div class="brand-layout"><article class="card brand-summary"><div class="row"><span class="workspace-logo">${initials(state.company.name)}</span><div><h2 style="margin:0">${esc(state.company.name)}</h2><span class="muted">${esc(settings.key_services||"Додайте ключові послуги")}</span></div></div><div class="form-grid" style="margin-top:22px"><label>Сайт<input id="brandWebsite" value="${esc(settings.website_url||"")}"></label><label>Основний колір<input id="brandColor" type="color" value="${esc(settings.brand_primary_color||"#6366f1")}"></label><label class="wide">Опис компанії<textarea id="brandDescription">${esc(settings.company_description||"")}</textarea></label></div><button class="primary" id="saveBrandProfile" style="margin-top:14px">Зберегти профіль</button></article><aside class="card panel"><h2>Рубрики</h2>${(state.data.rubrics||[]).map(x=>`<div class="usage-row"><span>${esc(x.name)}</span><strong>${(state.data.ideas||[]).filter(i=>i.product===x.slug).length}</strong></div>`).join("")||'<p class="muted">Ще немає рубрик.</p>'}</aside></div>`;
-  else if (state.brandTab === "tone") target.innerHTML = `<article class="card panel"><div class="row between"><div><div class="eyebrow">Стиль комунікації</div><h2>Tone of voice</h2></div><button class="primary" id="saveTone">Зберегти</button></div><textarea id="toneValue">${esc(settings.tone_of_voice||"")}</textarea><div class="tone-boxes" style="margin-top:14px"><div class="tone-good"><strong>✓ Що можна</strong><p>Писати зрозуміло, конкретно та впевнено.</p></div><div class="tone-bad"><strong>× Чого не можна</strong><p>${esc(settings.forbidden_phrases||"Додайте заборонені формулювання.")}</p></div></div></article>`;
+  if (state.brandTab === "profile") target.innerHTML = `<div class="brand-layout"><article class="card brand-summary"><div class="row"><span class="workspace-logo">${initials(state.company.name)}</span><div><h2 style="margin:0">${esc(state.company.name)}</h2><span class="muted">${esc(settings.key_services||"Додайте ключові послуги")}</span></div></div><div class="form-grid" style="margin-top:22px"><label>Сайт<input id="brandWebsite" type="url" placeholder="https://company.ua" value="${esc(settings.website_url||"")}"><small class="field-help">Сайт допомагає AI точніше зрозуміти продукт і термінологію.</small></label><label>Основний колір<input id="brandColor" type="color" value="${esc(settings.brand_primary_color||"#6366f1")}"><small class="field-help">Використовується у візуальних шаблонах.</small></label><label class="wide">Опис компанії<textarea id="brandDescription" placeholder="Хто ви, для кого працюєте, яку проблему вирішуєте і чим відрізняєтесь. 3–6 конкретних речень.">${esc(settings.company_description||"")}</textarea><small class="field-help">Приклад: «VoicerHub допомагає бізнесу автоматизувати голосові комунікації. Наші клієнти — контакт-центри та сервісні команди…»</small></label><label class="wide">Ключові продукти або послуги<textarea id="brandServices" placeholder="Назва продукту — коротко яку задачу він вирішує">${esc(settings.key_services||"")}</textarea><small class="field-help">Додайте конкретні назви, цільову аудиторію та користь. Це стане контекстом для генерації.</small></label></div><button class="primary" id="saveBrandProfile" style="margin-top:14px">Зберегти профіль</button></article><aside class="card panel"><h2>Рубрики</h2>${(state.data.rubrics||[]).map(x=>`<div class="usage-row"><span>${esc(x.name)}</span><strong>${(state.data.ideas||[]).filter(i=>i.product===x.slug).length}</strong></div>`).join("")||'<p class="muted">Ще немає рубрик.</p>'}</aside></div>`;
+  else if (state.brandTab === "tone") target.innerHTML = `<article class="card panel"><div class="row between"><div><div class="eyebrow">Стиль комунікації</div><h2>Tone of voice</h2><p class="muted">Опишіть, як бренд звучить у текстах. Не використовуйте абстрактні слова без прикладів.</p></div><button class="primary" id="saveTone">Зберегти</button></div><textarea id="toneValue" placeholder="Пишемо українською, короткими реченнями. Звертаємося на «ви». Тон експертний, але доброзичливий. Пояснюємо терміни простими словами.">${esc(settings.tone_of_voice||"")}</textarea><small class="field-help">Добре: правила, довжина речень, форма звертання, рівень експертності та 1–2 приклади. Погано: лише «професійно та сучасно».</small><div class="tone-boxes" style="margin-top:14px"><div class="tone-good"><strong>✓ Що можна</strong><p>Писати зрозуміло, конкретно та впевнено; підкріплювати тези прикладами.</p></div><div class="tone-bad"><strong>× Чого не можна</strong><p>${esc(settings.forbidden_phrases||"Вкажіть кліше, перебільшення, небажані слова та обіцянки.")}</p></div></div></article>`;
   else if (state.brandTab === "rubrics") target.innerHTML = `<article class="card panel"><div class="row between"><h2>Рубрики контенту</h2><button class="primary" id="addRubric">＋ Додати</button></div>${(state.data.rubrics||[]).map(x=>`<div class="usage-row"><span><strong>${esc(x.name)}</strong><small class="muted" style="display:block">${esc(x.description)}</small></span><span>${x.active===0?"Неактивна":"Активна"}</span></div>`).join("")}</article>`;
   else if (state.brandTab === "visuals") target.innerHTML = `<div class="asset-grid">${(state.data.templates||[]).map(x=>`<article class="card asset-card"><img src="${apiUrl(`api/templates/${encodeURIComponent(x.id)}/preview`)}" alt=""><div style="padding:11px"><strong>${esc(x.name)}</strong><small class="muted" style="display:block">${esc(x.description)}</small></div></article>`).join("")}</div>`;
   else target.innerHTML = `<div class="asset-grid">${(state.data.references||[]).map(x=>`<article class="card asset-card"><img src="${apiUrl(`api/references/${x.id}/image`)}" alt=""><div style="padding:10px">${esc(x.name||x.filename||"Матеріал")}</div></article>`).join("")||empty("Матеріалів ще немає","Завантажте логотипи, фото або референси.")}</div>`;
@@ -275,6 +365,37 @@ function renderAnalytics() {
   document.querySelector("#modelUsage").innerHTML = models.map(row=>`<div class="usage-row"><span>${esc(row.model)}<small class="muted" style="display:block">${row.operations} операцій</small></span><strong>${money(row.cost)}</strong></div>`).join("")||'<p class="muted">Немає даних.</p>';
   const rubrics = state.usage?.rubrics || [];
   document.querySelector("#rubricUsage").innerHTML = rubrics.map(row=>`<div class="usage-row"><span>${esc((state.data.rubrics||[]).find(x=>x.slug===row.rubric_slug)?.name||row.rubric_slug)}</span><strong>${money(row.cost)}</strong></div>`).join("")||'<p class="muted">Немає даних.</p>';
+  renderPlatformAnalytics();
+}
+
+function renderPlatformAnalytics() {
+  const target = document.querySelector("#platformAnalytics");
+  if (!state.me?.is_super_admin) {
+    target.hidden = true;
+    return;
+  }
+  target.hidden = false;
+  const report = state.platformUsage;
+  target.innerHTML = `<article class="card panel platform-panel">
+    <div class="row between platform-head">
+      <div><div class="eyebrow">Platform admin</div><h2>Витрати всіх компаній</h2><p class="muted">Агрегований звіт без перемикання між workspace.</p></div>
+      <div class="filters">${[["today","Сьогодні"],["7d","7 днів"],["month","Місяць"],["all","Весь час"]].map(([value,label])=>`<button class="${state.platformPeriod===value?"active":""}" data-platform-period="${value}">${label}</button>`).join("")}</div>
+    </div>
+    ${report ? `<div class="analytics-metrics platform-metrics">
+      <div class="card metric"><span>Загальні витрати</span><strong>${money(report.totals.cost)}</strong></div>
+      <div class="card metric"><span>Операції</span><strong>${report.totals.operations}</strong></div>
+      <div class="card metric"><span>Тексти</span><strong>${report.totals.text_generations}</strong></div>
+      <div class="card metric"><span>Зображення</span><strong>${report.totals.image_generations}</strong></div>
+    </div>
+    <div class="table-wrap"><table class="users-table"><thead><tr><th>Компанія</th><th>Операції</th><th>Тексти</th><th>Зображення</th><th>Витрати</th></tr></thead><tbody>${report.companies.map(row=>`<tr><td><strong>${esc(row.organization_name)}</strong></td><td>${row.operations}</td><td>${row.text_generations}</td><td>${row.image_generations}</td><td><strong>${money(row.cost)}</strong></td></tr>`).join("")}</tbody></table></div>` : '<div class="skeleton" style="min-height:160px"></div>'}
+  </article>`;
+  target.querySelectorAll("[data-platform-period]").forEach(button => button.onclick = async () => {
+    state.platformPeriod = button.dataset.platformPeriod;
+    state.platformUsage = null;
+    renderPlatformAnalytics();
+    state.platformUsage = await api(`api/platform/usage?period=${state.platformPeriod}`);
+    renderPlatformAnalytics();
+  });
 }
 
 function renderSettings() {
@@ -283,7 +404,7 @@ function renderSettings() {
   if (state.settingsTab === "workspace") target.innerHTML = `<article class="card settings-card"><div class="row"><span class="workspace-logo">${initials(state.company.name)}</span><div><h2 style="margin:0">${esc(state.company.name)}</h2><span class="muted">${esc(state.company.slug)}</span></div></div><div class="analytics-metrics" style="margin-top:20px"><div class="card metric"><span>Тариф</span><strong>${esc(state.company.plan_code||"custom")}</strong></div><div class="card metric"><span>Користувачі</span><strong>${state.company.user_count}/${state.company.max_users}</strong></div><div class="card metric"><span>Публікації</span><strong>${state.company.publication_count}/${state.company.monthly_publications}</strong></div><div class="card metric"><span>AI-бюджет</span><strong>${money(state.company.monthly_ai_budget)}</strong></div></div><button id="restartOnboarding">Повторити onboarding</button></article>`;
   else if (state.settingsTab === "mode") target.innerHTML = `<article class="card settings-card"><div class="eyebrow">Загальні</div><h2>Режим роботи workspace</h2><p class="muted">Оберіть, як ваша команда працює з контентом.</p><div class="mode-grid"><label class="card panel"><input type="radio" name="workspaceMode" value="pipeline" ${settings.workspace_mode==="pipeline"?"checked":""}> <strong>Редакційний pipeline</strong><p class="muted">Послідовний процес: ідеї → план → чернетки → календар.</p></label><label class="card panel"><input type="radio" name="workspaceMode" value="kanban" ${settings.workspace_mode==="kanban"?"checked":""}> <strong>Контент-дошка Kanban</strong><p class="muted">Усі матеріали за статусами на одній дошці.</p></label></div><button class="primary" id="saveWorkspaceMode">Зберегти режим</button></article>`;
   else if (state.settingsTab === "users") target.innerHTML = `<article class="card settings-card"><div class="row between"><div><h2 style="margin:0">Користувачі workspace</h2><p class="muted">Ролі та доступ команди.</p></div><button class="primary" id="inviteUser">＋ Запросити користувача</button></div><table class="users-table"><thead><tr><th>Користувач</th><th>Роль</th><th>Статус</th><th></th></tr></thead><tbody>${state.users.map(x=>`<tr><td><strong>${esc(x.display_name||x.username)}</strong><small class="muted" style="display:block">${esc(x.email||x.username)}</small></td><td>${esc(x.role||"editor")}</td><td>${x.active?"Активний":"Вимкнений"}</td><td><button data-reset-user="${x.id}">Reset link</button></td></tr>`).join("")}</tbody></table></article>`;
-  else if (state.settingsTab === "integrations") target.innerHTML = `<article class="card settings-card"><div class="eyebrow">Telegram</div><h2>Підключення каналу</h2><div class="form-grid"><label>Channel username<input id="telegramChannel" value="${esc(state.company.telegram?.channel_id||"")}"></label><label>Bot token<input id="telegramToken" type="password" placeholder="Вставте новий токен"></label></div><button class="primary" id="saveTelegram" style="margin-top:14px">Перевірити та зберегти</button></article>`;
+  else if (state.settingsTab === "integrations") target.innerHTML = `<article class="card settings-card"><div class="eyebrow">Telegram</div><h2>Підключення каналу</h2><p class="muted">1. Створіть бота через @BotFather. 2. Додайте його адміністратором каналу. 3. Вкажіть @username каналу та token.</p><div class="form-grid"><label>Channel username<input id="telegramChannel" placeholder="@company_channel" value="${esc(state.company.telegram?.channel_id||"")}"><small class="field-help">Канал має бути публічним або доступним боту.</small></label><label>Bot token<input id="telegramToken" type="password" placeholder="123456789:AA..."><small class="field-help">Token зберігається зашифрованим і не показується повторно.</small></label></div><div class="connection-status ${state.company.telegram?.connected?"success":""}" id="telegramStatus">${state.company.telegram?.connected?`Підключено: @${esc(state.company.telegram.bot_username||"bot")}`:"Введіть дані для автоматичної перевірки."}</div><div class="row" style="margin-top:14px"><button id="testTelegram">Перевірити підключення</button><button class="primary" id="saveTelegram">Перевірити та зберегти</button></div></article>`;
   else target.innerHTML = `<article class="card settings-card"><h2>Безпека</h2><p class="muted">Змініть пароль або створіть одноразове посилання через адміністратора workspace.</p><div class="form-grid"><label>Новий пароль<input id="ownPassword" type="password" minlength="10"></label></div><button class="primary" id="changePassword" style="margin-top:14px">Змінити пароль</button></article>`;
   bindSettingsActions();
 }
@@ -294,7 +415,7 @@ async function openEditor(id, push = true) {
     state.currentDraft = draft;
     if (push) history.pushState({draft:id},"",`${basePath}/workspace/${state.me.organization_slug}/drafts/${id}`);
     const target = document.querySelector("#editorContent");
-    target.innerHTML = `<header class="editor-header"><div class="row"><button id="closeEditor">←</button><div>${pill(draft.status)} <strong style="margin-left:8px">${esc(draft.title)}</strong></div></div><div class="row"><button id="regenText">Перегенерувати текст</button><button id="saveDraft">Зберегти</button><button class="primary" id="publishDraft">Опублікувати</button></div></header><div class="editor-grid"><form class="editor-form" id="editorForm"><div class="form-grid"><label>Рубрика<input value="${esc(draft.product)}" disabled></label><label>Дата і час<input id="scheduleAt" type="datetime-local" value="${draft.scheduled_at?new Date(draft.scheduled_at).toISOString().slice(0,16):""}"></label></div><label>Заголовок для поста<input id="editorTitle" value="${esc(draft.title)}"></label><label>Заголовок на візуалі<input id="editorVisualTitle" value="${esc(draft.visual_title||draft.title)}"><small class="muted">Без emoji та зайвих символів.</small></label><label>Текст публікації<textarea id="editorCaption" style="min-height:330px">${esc(draft.caption_html)}</textarea></label><label>Посилання<input id="editorLink" value="${esc(draft.link_url||"")}"></label><div class="row"><button type="button" id="scheduleDraft">Запланувати</button><button type="button" id="cancelSchedule">Повернути в готові</button><button type="button" id="proofreadDraft">Перевірити текст</button></div></form><aside class="editor-preview"><div class="editor-preview-card"><div class="row"><span class="workspace-logo" style="width:30px;height:30px">${initials(state.company.name)}</span><div><strong>${esc(state.company.name)}</strong><small style="display:block;color:#94a3b8">Telegram</small></div></div><img src="${apiUrl(`api/drafts/${id}/image`)}" alt="" onerror="this.style.display='none'"><h2 id="previewTitle">${esc(draft.visual_title||draft.title)}</h2><p id="previewText" style="color:#cbd5e1;white-space:pre-wrap">${esc(plain(draft.caption_html).slice(0,650))}</p></div></aside></div>`;
+    target.innerHTML = `<header class="editor-header"><div class="row"><button id="closeEditor">←</button><div>${pill(draft.status)} <strong style="margin-left:8px">${esc(draft.title)}</strong></div></div><div class="row"><button id="regenText">Перегенерувати текст</button><button id="saveDraft">Зберегти</button><button class="primary" id="publishDraft" ${["ready","scheduled"].includes(draft.status)?"":"disabled title=\"Спочатку погодьте матеріал\""}>Опублікувати</button></div></header><div class="editor-grid"><form class="editor-form" id="editorForm"><div class="status-actions">${(statusActions[draft.status]||[]).map(([next,label])=>`<button type="button" data-editor-status="${next}">${label}</button>`).join("")}</div><div class="form-grid"><label>Рубрика<input value="${esc(draft.product)}" disabled></label><label>Дата і час<input id="scheduleAt" type="datetime-local" value="${draft.scheduled_at?new Date(draft.scheduled_at).toISOString().slice(0,16):""}"></label></div><label>Заголовок для поста<input id="editorTitle" value="${esc(draft.title)}"></label><label>Заголовок на візуалі<input id="editorVisualTitle" value="${esc(draft.visual_title||draft.title)}"><small class="muted">Без emoji та зайвих символів.</small></label><label>Текст публікації<textarea id="editorCaption" style="min-height:330px">${esc(draft.caption_html)}</textarea></label><label>Посилання<input id="editorLink" value="${esc(draft.link_url||"")}"></label><div class="row"><button type="button" id="scheduleDraft" ${draft.image_path?"":"disabled title=\"Спочатку потрібен візуал\""}>Запланувати</button><button type="button" id="cancelSchedule" ${draft.status==="scheduled"?"":"hidden"}>Повернути в готові</button><button type="button" id="proofreadDraft">Перевірити текст</button></div></form><aside class="editor-preview"><div class="editor-preview-card"><div class="row"><span class="workspace-logo" style="width:30px;height:30px">${initials(state.company.name)}</span><div><strong>${esc(state.company.name)}</strong><small style="display:block;color:#94a3b8">Telegram</small></div></div><img src="${apiUrl(`api/drafts/${id}/image`)}" alt="" onerror="this.style.display='none'"><h2 id="previewTitle">${esc(draft.visual_title||draft.title)}</h2><p id="previewText" style="color:#cbd5e1;white-space:pre-wrap">${esc(plain(draft.caption_html).slice(0,650))}</p></div></aside></div>`;
     document.querySelector("#editorOverlay").hidden = false;
     bindEditorActions();
   } catch (error) { toast(error.message,true); }
@@ -304,13 +425,19 @@ function closeEditor() {
   if (location.pathname.includes("/drafts/")) history.pushState({},"",`${basePath}/`);
 }
 
-function showForm(title, fields, submit) {
+function showForm(title, fields, submit, options = {}) {
   document.querySelector("#formTitle").textContent = title;
   document.querySelector("#formBody").innerHTML = `<div class="form-grid">${fields}</div><div class="form-error" id="dynamicError"></div>`;
   document.querySelector("#formOverlay").hidden = false;
   const form = document.querySelector("#dynamicForm");
+  const submitButton = form.querySelector('button[type="submit"]');
+  const cancelButton = form.querySelector("[data-close-overlay]");
+  submitButton.hidden = !submit;
+  submitButton.textContent = options.submitLabel || "Зберегти";
+  cancelButton.textContent = submit ? "Скасувати" : "Закрити";
   form.onsubmit = async event => {
     event.preventDefault();
+    if (!submit) return;
     try { await submit(new FormData(form)); document.querySelector("#formOverlay").hidden=true; }
     catch (error) { document.querySelector("#dynamicError").textContent=error.message; }
   };
@@ -318,10 +445,44 @@ function showForm(title, fields, submit) {
 function renderWorkspaceChooser(force = false) {
   const workspaces = state.me.workspaces || [];
   if (!force && workspaces.length < 2 && !state.me.is_super_admin) return;
-  document.querySelector("#workspaceGrid").innerHTML = workspaces.map(x=>`<button class="card workspace-card ${x.id===state.me.organization_id?"active":""}" data-workspace="${x.id}"><span class="workspace-logo">${initials(x.name)}</span><h3>${esc(x.name)}</h3><p class="muted">${esc(x.plan_code||"custom")} plan</p><div class="workspace-meta"><span>${esc(x.role||"workspace")}</span><span>${x.user_count||0} корист.</span></div></button>`).join("")+`<button class="card workspace-card workspace-create" id="createWorkspace"><span style="font-size:28px">＋</span><strong>Створити workspace</strong><small class="muted">14 днів trial</small></button>`;
+  document.querySelector("#workspaceGrid").innerHTML = workspaces.map(x=>`<button class="card workspace-card ${x.id===state.me.organization_id?"active":""}" data-workspace="${x.id}"><span class="workspace-logo">${initials(x.name)}</span><h3>${esc(x.name)}</h3><p class="muted">${esc(x.plan_code||"custom")} plan</p><div class="workspace-meta"><span>${esc(x.role||"workspace")}</span><span>${x.user_count||0} корист.</span></div></button>`).join("")+`<button class="card workspace-card workspace-create" id="createWorkspace"><span style="font-size:28px">＋</span><strong>${state.me.is_super_admin?"Створити компанію":"Створити workspace"}</strong><small class="muted">${state.me.is_super_admin?"Разом із власником":"14 днів trial"}</small></button>`;
   document.querySelector("#workspaceOverlay").hidden = false;
   document.querySelectorAll("[data-workspace]").forEach(button=>button.onclick=async()=>{await api("api/workspace/select",{method:"POST",body:JSON.stringify({organization_id:Number(button.dataset.workspace)})});location.href=`${basePath}/`;});
-  document.querySelector("#createWorkspace").onclick = () => showForm("Створити workspace", `<label>Назва<input name="name" required></label><label>Slug<input name="slug" pattern="[A-Za-z0-9-]+" required></label>`, async form => {await api("api/account/trial-workspace",{method:"POST",body:JSON.stringify({name:form.get("name"),slug:form.get("slug")})});location.href=`${basePath}/`;});
+  document.querySelector("#createWorkspace").onclick = () => {
+    if (state.me.is_super_admin) {
+      showForm(
+        "Створити компанію та власника",
+        `<div class="wide callout"><strong>Що відбудеться</strong><p>Буде створено порожній workspace і окремий owner-акаунт. Onboarding відкриється власнику під час першого входу, а не вам.</p></div>
+        <label>Назва компанії<input name="name" required placeholder="Acme Ukraine"></label>
+        <label>Slug<input name="slug" pattern="[A-Za-z0-9-]+" required placeholder="acme-ukraine"><small class="field-help">Латиниця, цифри та дефіс.</small></label>
+        <label>Ім’я власника<input name="owner_display_name" required placeholder="Олена Коваль"></label>
+        <label>Email власника<input name="owner_email" type="email" placeholder="owner@company.ua"></label>
+        <label>Логін власника<input name="owner_username" required pattern="[A-Za-z0-9._-]+" placeholder="acme.owner"></label>
+        <label>Тимчасовий пароль<input name="owner_password" type="password" minlength="10" required></label>
+        <label>Ліміт користувачів<input name="max_users" type="number" min="1" max="50" value="3"></label>
+        <label>Публікацій на місяць<input name="monthly_publications" type="number" min="1" value="30"></label>
+        <label>AI-бюджет, $<input name="monthly_ai_budget" type="number" min="0" step="0.01" value="8"></label>`,
+        async form => {
+          const created = await api("api/organizations", {method:"POST", body:JSON.stringify({
+            name: form.get("name"), slug: form.get("slug"),
+            owner_display_name: form.get("owner_display_name"),
+            owner_email: form.get("owner_email") || null,
+            owner_username: form.get("owner_username"),
+            owner_password: form.get("owner_password"),
+            max_users: Number(form.get("max_users")), max_channels: 1,
+            monthly_publications: Number(form.get("monthly_publications")),
+            monthly_ai_budget: Number(form.get("monthly_ai_budget")),
+          })});
+          state.me = await api("api/me");
+          toast(`Компанію ${created.name} створено. Передайте власнику логін і тимчасовий пароль.`);
+          renderWorkspaceChooser(true);
+        },
+        {submitLabel:"Створити компанію"},
+      );
+    } else {
+      showForm("Створити workspace", `<label>Назва<input name="name" required></label><label>Slug<input name="slug" pattern="[A-Za-z0-9-]+" required></label>`, async form => {await api("api/account/trial-workspace",{method:"POST",body:JSON.stringify({name:form.get("name"),slug:form.get("slug")})});location.href=`${basePath}/`;});
+    }
+  };
 }
 
 function showOnboarding(step) {
@@ -334,13 +495,27 @@ function showOnboarding(step) {
   const settings = state.company.settings || {};
   const contents = {
     1:`<h2>Ласкаво просимо до Content Studio</h2><p class="muted">Налаштуйте workspace за п’ять коротких кроків. Прогрес зберігається після кожного кроку.</p><div class="progress">${[1,2,3,4,5].map(x=>`<span class="${x<=state.onboardingStep?"active":""}"></span>`).join("")}</div><div class="form-grid"><label>Назва компанії<input id="obName" value="${esc(state.company.name)}"></label><label>Slug<input id="obSlug" value="${esc(state.company.slug)}"></label></div>`,
-    2:`<h2>Бренд та стиль комунікації</h2><div class="form-grid"><label class="wide">Опис компанії<textarea id="obDescription">${esc(settings.company_description||"")}</textarea></label><label class="wide">Tone of voice<textarea id="obTone">${esc(settings.tone_of_voice||"")}</textarea></label><label>Ключові послуги<textarea id="obServices">${esc(settings.key_services||"")}</textarea></label><label>Заборонені фрази<textarea id="obForbidden">${esc(settings.forbidden_phrases||"")}</textarea></label></div>`,
-    3:`<h2>Підключіть Telegram-канал</h2><p class="muted">Цей крок можна пропустити та повернутися в налаштуваннях.</p><div class="form-grid"><label>Channel username<input id="obChannel" value="${esc(state.company.telegram?.channel_id||"")}"></label><label>Bot token<input id="obToken" type="password"></label></div>`,
-    4:`<h2>Оберіть рубрики контенту</h2><p class="muted">Додайте по одній рубриці в кожному рядку.</p><textarea id="obRubrics">${(state.data.rubrics||[]).map(x=>x.name).join("\n")}</textarea>`,
-    5:`<h2>Створіть перший контент-план</h2><div class="form-grid"><label>Період<select id="obPeriod"><option value="week">Тиждень</option><option value="month">Місяць</option></select></label><label>Кількість постів<input id="obPosts" type="number" value="5" min="1" max="31"></label><label class="wide">Мета<textarea id="obFocus"></textarea></label></div>`,
+    2:`<h2>Бренд та стиль комунікації</h2><p class="muted">Ці дані використовуються як постійний контекст для AI. Пишіть факти й правила, а не рекламні гасла.</p><div class="form-grid"><label class="wide">Опис компанії<textarea id="obDescription" placeholder="Хто ви, для кого працюєте, яку проблему вирішуєте і чим відрізняєтесь.">${esc(settings.company_description||"")}</textarea><small class="field-help">3–6 конкретних речень. Назвіть аудиторію, продукт і користь.</small></label><label class="wide">Tone of voice<textarea id="obTone" placeholder="Пишемо коротко, звертаємося на «ви», пояснюємо терміни простими словами…">${esc(settings.tone_of_voice||"")}</textarea><small class="field-help">Опишіть форму звертання, довжину, емоційність, рівень експертності та наведіть приклад.</small></label><label>Ключові послуги<textarea id="obServices" placeholder="Продукт — яку задачу вирішує">${esc(settings.key_services||"")}</textarea></label><label>Заборонені фрази<textarea id="obForbidden" placeholder="Кліше, перебільшення, небажані обіцянки">${esc(settings.forbidden_phrases||"")}</textarea></label></div>`,
+    3:`<h2>Підключіть Telegram-канал</h2><p class="muted">Додайте бота адміністратором каналу. Ми перевіримо token, канал і права до збереження.</p><div class="form-grid"><label>Channel username<input id="obChannel" placeholder="@company_channel" value="${esc(state.company.telegram?.channel_id||"")}"></label><label>Bot token<input id="obToken" type="password" placeholder="123456789:AA..."></label></div><div class="connection-status" id="obTelegramStatus">Введіть обидва значення для перевірки.</div><button type="button" id="obTestTelegram" style="margin-top:12px">Перевірити зараз</button>`,
+    4:`<h2>Додайте рубрики контенту</h2><p class="muted">Рубрика — це постійний напрям контенту. Для кожної вкажіть назву та поясніть, про що писати.</p><div class="rubric-builder" id="obRubricRows"></div><button type="button" id="obAddRubric">＋ Додати рубрику</button>`,
+    5:`<h2>Створіть перший контент-план</h2><p class="muted">AI використає бренд-профіль і рубрики. План створиться як ідеї, які можна переглянути до генерації чернеток.</p><div class="form-grid"><label>Період<select id="obPeriod"><option value="week">Тиждень</option><option value="month">Місяць</option></select></label><label>Кількість постів<input id="obPosts" type="number" value="5" min="1" max="31"></label><label class="wide">Мета<textarea id="obFocus" placeholder="Наприклад: познайомити аудиторію з новим продуктом і зібрати заявки"></textarea></label></div>`,
   };
   document.querySelector("#onboardingBody").innerHTML = contents[state.onboardingStep];
   document.querySelector("#onboardingOverlay").hidden = false;
+  if (state.onboardingStep === 3) bindTelegramValidation("obChannel", "obToken", "obTelegramStatus", "obTestTelegram");
+  if (state.onboardingStep === 4) {
+    const container = document.querySelector("#obRubricRows");
+    const existing = (state.data.rubrics || []).map(row => ({name:row.name,description:row.description}));
+    const addRow = (rubric = {}) => {
+      const row = document.createElement("div");
+      row.className = "rubric-row";
+      row.innerHTML = `<label>Назва<input data-rubric-name value="${esc(rubric.name||"")}" placeholder="Експертні поради"></label><label>Що публікуємо<textarea data-rubric-description placeholder="Практичні інструкції, кейси та відповіді на часті питання.">${esc(rubric.description||"")}</textarea></label><button type="button" class="icon-button danger" data-remove-rubric aria-label="Видалити рубрику">×</button>`;
+      row.querySelector("[data-remove-rubric]").onclick = () => row.remove();
+      container.append(row);
+    };
+    (existing.length ? existing : [{name:"",description:""}]).forEach(addRow);
+    document.querySelector("#obAddRubric").onclick = () => addRow();
+  }
 }
 async function saveOnboarding() {
   const step = state.onboardingStep;
@@ -348,8 +523,13 @@ async function saveOnboarding() {
   if (step === 2) await api("api/onboarding/brand",{method:"PUT",body:JSON.stringify({company_description:document.querySelector("#obDescription").value,tone_of_voice:document.querySelector("#obTone").value,key_services:document.querySelector("#obServices").value,forbidden_phrases:document.querySelector("#obForbidden").value,website_url:""})});
   if (step === 3 && document.querySelector("#obToken").value) await api("api/company/telegram",{method:"PUT",body:JSON.stringify({channel_id:document.querySelector("#obChannel").value,bot_token:document.querySelector("#obToken").value})});
   if (step === 4) {
-    const rubrics=document.querySelector("#obRubrics").value.split("\n").map(x=>x.trim()).filter(Boolean).map(name=>({name,description:`Публікації для рубрики «${name}».`}));
-    if (rubrics.length) await api("api/onboarding/rubrics",{method:"POST",body:JSON.stringify({rubrics})});
+    const rubrics = [...document.querySelectorAll(".rubric-row")].map(row => ({
+      name: row.querySelector("[data-rubric-name]").value.trim(),
+      description: row.querySelector("[data-rubric-description]").value.trim(),
+    })).filter(row => row.name || row.description);
+    if (!rubrics.length) throw new Error("Додайте хоча б одну рубрику");
+    if (rubrics.some(row => row.name.length < 2 || row.description.length < 10)) throw new Error("Для кожної рубрики заповніть назву та опис від 10 символів");
+    await api("api/onboarding/rubrics",{method:"POST",body:JSON.stringify({rubrics})});
   }
   if (step === 5) {
     await api("api/content-plan/generate",{method:"POST",body:JSON.stringify({product:"all",period:document.querySelector("#obPeriod").value,posts:Number(document.querySelector("#obPosts").value),start_date:new Date().toISOString().slice(0,10),focus:document.querySelector("#obFocus").value,text_model:"gpt-5.4-mini",create_as:"ideas",rubric_slugs:[],channel_ids:[]})});
@@ -364,22 +544,77 @@ async function saveOnboarding() {
 
 function bindViewLinks() { document.querySelectorAll("[data-open-view]").forEach(node=>node.onclick=()=>setView(node.dataset.openView)); }
 function bindBrandActions() {
-  document.querySelector("#saveBrandProfile")?.addEventListener("click",async()=>{await api("api/onboarding/brand",{method:"PUT",body:JSON.stringify({company_description:document.querySelector("#brandDescription").value,tone_of_voice:state.company.settings.tone_of_voice||"",key_services:state.company.settings.key_services||"",forbidden_phrases:state.company.settings.forbidden_phrases||"",website_url:document.querySelector("#brandWebsite").value})});toast("Профіль збережено");await refresh();});
+  document.querySelector("#saveBrandProfile")?.addEventListener("click",async()=>{
+    await api("api/onboarding/company",{method:"PUT",body:JSON.stringify({name:state.company.name,slug:state.company.slug,primary_language:state.company.settings.primary_language||"uk",brand_primary_color:document.querySelector("#brandColor").value,brand_logo_asset_id:state.company.settings.brand_logo_asset_id||null})});
+    await api("api/onboarding/brand",{method:"PUT",body:JSON.stringify({company_description:document.querySelector("#brandDescription").value,tone_of_voice:state.company.settings.tone_of_voice||"",key_services:document.querySelector("#brandServices").value,forbidden_phrases:state.company.settings.forbidden_phrases||"",website_url:document.querySelector("#brandWebsite").value})});
+    toast("Профіль збережено");
+    await refresh();
+  });
   document.querySelector("#saveTone")?.addEventListener("click",async()=>{await api("api/onboarding/brand",{method:"PUT",body:JSON.stringify({company_description:state.company.settings.company_description||"",tone_of_voice:document.querySelector("#toneValue").value,key_services:state.company.settings.key_services||"",forbidden_phrases:state.company.settings.forbidden_phrases||"",website_url:state.company.settings.website_url||""})});toast("Tone of voice збережено");await refresh();});
   document.querySelector("#addRubric")?.addEventListener("click",()=>showForm("Додати рубрику",`<label>Назва<input name="name" required></label><label>Slug<input name="slug" pattern="[a-z0-9-]+" required></label><label class="wide">Опис<textarea name="description" minlength="20" required></textarea></label><label class="wide">Інструкції для AI<textarea name="instructions"></textarea></label>`,async form=>{await api("api/rubrics",{method:"POST",body:JSON.stringify({name:form.get("name"),slug:form.get("slug"),description:form.get("description"),instructions:form.get("instructions"),default_link:""})});toast("Рубрику створено");await refresh();renderBrand();}));
+}
+function bindTelegramValidation(channelId, tokenId, statusId, buttonId) {
+  const channel = document.querySelector(`#${channelId}`);
+  const token = document.querySelector(`#${tokenId}`);
+  const status = document.querySelector(`#${statusId}`);
+  const button = document.querySelector(`#${buttonId}`);
+  let timer;
+  const validate = async () => {
+    if (!channel.value.trim() || token.value.trim().length < 20) {
+      status.className = "connection-status";
+      status.textContent = "Введіть @username каналу та повний bot token.";
+      return false;
+    }
+    status.className = "connection-status checking";
+    status.textContent = "Перевіряємо бота, канал і права адміністратора…";
+    try {
+      const result = await api("api/company/telegram/validate", {method:"POST",body:JSON.stringify({channel_id:channel.value.trim(),bot_token:token.value.trim()})});
+      status.className = "connection-status success";
+      status.textContent = `Підключення працює: @${result.bot_username}, права ${result.membership_status}.`;
+      return true;
+    } catch (error) {
+      status.className = "connection-status error";
+      status.textContent = error.message;
+      return false;
+    }
+  };
+  const queue = () => {
+    clearTimeout(timer);
+    timer = setTimeout(validate, 700);
+  };
+  channel.addEventListener("input", queue);
+  token.addEventListener("input", queue);
+  channel.addEventListener("blur", validate);
+  token.addEventListener("blur", validate);
+  if (button) button.onclick = validate;
+  return validate;
 }
 function bindSettingsActions() {
   document.querySelector("#saveWorkspaceMode")?.addEventListener("click",async()=>{const mode=document.querySelector('[name="workspaceMode"]:checked').value;await api("api/workspace/mode",{method:"PUT",body:JSON.stringify({workspace_mode:mode})});state.company.settings.workspace_mode=mode;applyIdentity();renderSettings();toast("Режим збережено");});
   document.querySelector("#restartOnboarding")?.addEventListener("click",async()=>{await api("api/onboarding/restart",{method:"POST"});showOnboarding(1);});
   document.querySelector("#inviteUser")?.addEventListener("click",()=>showForm("Запросити користувача",`<label>Email<input name="email" type="email" required></label><label>Роль<select name="role"><option value="editor">Editor</option><option value="admin">Admin</option><option value="viewer">Viewer</option></select></label>`,async form=>{const result=await api("api/invitations",{method:"POST",body:JSON.stringify({email:form.get("email"),role:form.get("role")})});await navigator.clipboard.writeText(result.url);toast("Посилання скопійовано");}));
   document.querySelectorAll("[data-reset-user]").forEach(button=>button.onclick=async()=>{const result=await api("api/password-reset/link",{method:"POST",body:JSON.stringify({user_id:Number(button.dataset.resetUser)})});await navigator.clipboard.writeText(result.url);toast("Reset-посилання скопійовано");});
-  document.querySelector("#saveTelegram")?.addEventListener("click",async()=>{await api("api/company/telegram",{method:"PUT",body:JSON.stringify({channel_id:document.querySelector("#telegramChannel").value,bot_token:document.querySelector("#telegramToken").value})});toast("Telegram підключено");await refresh();});
+  const telegramValidator = document.querySelector("#telegramChannel")
+    ? bindTelegramValidation("telegramChannel", "telegramToken", "telegramStatus", "testTelegram")
+    : null;
+  document.querySelector("#saveTelegram")?.addEventListener("click",async()=>{
+    if (!await telegramValidator()) return;
+    await api("api/company/telegram",{method:"PUT",body:JSON.stringify({channel_id:document.querySelector("#telegramChannel").value,bot_token:document.querySelector("#telegramToken").value})});
+    toast("Telegram підключено");
+    await refresh();
+  });
   document.querySelector("#changePassword")?.addEventListener("click",async()=>{await api("api/account/password",{method:"PUT",body:JSON.stringify({password:document.querySelector("#ownPassword").value})});location.href=`${basePath}/`;});
 }
 function bindEditorActions() {
   document.querySelector("#closeEditor").onclick=closeEditor;
   const updatePreview=()=>{document.querySelector("#previewTitle").textContent=document.querySelector("#editorVisualTitle").value;document.querySelector("#previewText").textContent=plain(document.querySelector("#editorCaption").value).slice(0,650);};
   document.querySelector("#editorVisualTitle").oninput=updatePreview;document.querySelector("#editorCaption").oninput=updatePreview;
+  document.querySelectorAll("[data-editor-status]").forEach(button => button.onclick = async () => {
+    const draft = await api(`api/drafts/${state.currentDraft.id}/status`, {method:"POST",body:JSON.stringify({status:button.dataset.editorStatus})});
+    toast(`Статус змінено: ${statusLabels[draft.status]}`);
+    await refresh(true);
+    await openEditor(draft.id, false);
+  });
   document.querySelector("#saveDraft").onclick=async()=>{await api(`api/drafts/${state.currentDraft.id}`,{method:"PUT",body:JSON.stringify({title:document.querySelector("#editorTitle").value,visual_title:document.querySelector("#editorVisualTitle").value,caption_html:document.querySelector("#editorCaption").value,link_url:document.querySelector("#editorLink").value})});toast("Зміни збережено");await refresh();};
   document.querySelector("#regenText").onclick=async()=>{await api(`api/drafts/${state.currentDraft.id}/regenerate-text`,{method:"POST",body:JSON.stringify(generationPayload())});toast("Нову версію поставлено в чергу");closeEditor();await refresh();};
   document.querySelector("#proofreadDraft").onclick=async()=>{const draft=await api(`api/drafts/${state.currentDraft.id}/proofread`,{method:"POST",body:JSON.stringify({text_model:"gpt-5.4-mini"})});document.querySelector("#editorCaption").value=draft.caption_html;toast("Текст перевірено");};
@@ -392,9 +627,10 @@ async function refresh(background = false) {
   try {
     const [me, company, data, usage] = await Promise.all([api("api/me"),api("api/company"),api("api/dashboard"),api("api/usage")]);
     state.me=me;state.company=company;state.data=data;state.usage=usage;
+    if (me.is_super_admin) state.platformUsage = await api(`api/platform/usage?period=${state.platformPeriod}`);
     if (me.is_admin) state.users=await api("api/users");
     applyIdentity();renderCurrent();
-    if (!background && company.settings && !["completed","skipped"].includes(company.settings.onboarding_status) && me.is_admin) showOnboarding(Math.max(1,Number(company.settings.onboarding_step||0)+1));
+    if (!background && company.settings && !["completed","skipped"].includes(company.settings.onboarding_status) && ["owner","admin"].includes(me.role)) showOnboarding(Math.max(1,Number(company.settings.onboarding_step||0)+1));
     const parts=location.pathname.split("/").filter(Boolean);const index=parts.indexOf("workspace");
     if (!background && index>=0 && parts[index+2]==="drafts" && Number(parts[index+3])) openEditor(Number(parts[index+3]),false);
   } catch (error) { if (!background) toast(error.message,true); }
@@ -426,7 +662,7 @@ window.addEventListener("offline", renderSystemBanner);
 document.querySelector("#generateIdeas").onclick=event=>showForm("Згенерувати ідеї",`<label>Рубрика<select name="product"><option value="all">Усі рубрики</option>${(state.data?.rubrics||[]).map(x=>`<option value="${esc(x.slug)}">${esc(x.name)}</option>`).join("")}</select></label><label>Кількість<input name="count" type="number" min="1" max="12" value="8"></label><label class="wide">Фокус<textarea name="focus"></textarea></label>`,async form=>{await api("api/ideas/generate",{method:"POST",body:JSON.stringify({product:form.get("product"),count:Number(form.get("count")),focus:form.get("focus"),text_model:"gpt-5.4-mini",tone:"expert"})});toast("Ідеї створено");await refresh();});
 document.querySelector("#manualIdea").onclick=()=>showForm("Створити ідею",`<label class="wide">Назва<input name="title" required></label><label>Рубрика<select name="product">${(state.data.rubrics||[]).map(x=>`<option value="${esc(x.slug)}">${esc(x.name)}</option>`).join("")}</select></label><label>Орієнтовна дата<input name="planned_for" type="date"></label><label class="wide">Кут подачі<textarea name="angle"></textarea></label>`,async form=>{await api("api/ideas",{method:"POST",body:JSON.stringify({title:form.get("title"),product:form.get("product"),planned_for:form.get("planned_for")||null,angle:form.get("angle")})});toast("Ідею додано");await refresh();});
 document.querySelector("#manualDraft").onclick=()=>showForm("Створити чернетку",`<label class="wide">Заголовок<input name="title" required></label><label>Рубрика<select name="product">${(state.data.rubrics||[]).map(x=>`<option value="${esc(x.slug)}">${esc(x.name)}</option>`).join("")}</select></label><label>Заголовок на візуалі<input name="visual_title"></label><label class="wide">Текст<textarea name="caption_html" minlength="20" required></textarea></label><label class="wide">Посилання<input name="link_url" type="url"></label>`,async form=>{const draft=await api("api/drafts",{method:"POST",body:JSON.stringify({title:form.get("title"),visual_title:form.get("visual_title"),product:form.get("product"),caption_html:form.get("caption_html"),link_url:form.get("link_url")})});toast("Чернетку створено");await refresh();openEditor(draft.id);});
-document.querySelector("#calendarSchedule").onclick=()=>{const ready=(state.data.drafts||[]).filter(x=>x.status==="ready");showForm("Запланувати пост",`<label class="wide">Чернетка<select name="draft_id">${ready.map(x=>`<option value="${x.id}">${esc(x.title)}</option>`).join("")}</select></label><label class="wide">Дата і час<input name="scheduled_at" type="datetime-local" required></label>`,async form=>{await api(`api/drafts/${form.get("draft_id")}/schedule`,{method:"POST",body:JSON.stringify({scheduled_at:new Date(form.get("scheduled_at")).toISOString()})});toast("Публікацію заплановано");await refresh();});};
+document.querySelector("#calendarSchedule").onclick=()=>openScheduleForm();
 document.querySelector("#planForm").onsubmit=async event=>{event.preventDefault();await loading(event.submitter,async()=>{await api("api/content-plan/generate",{method:"POST",body:JSON.stringify({product:document.querySelector("#planProduct").value,period:document.querySelector("#planPeriod").value,posts:Number(document.querySelector("#planPosts").value),start_date:document.querySelector("#planStart").value,focus:document.querySelector("#planFocus").value,text_model:"gpt-5.4-mini",create_as:document.querySelector("#planCreateAs").value,rubric_slugs:[],channel_ids:[]})});toast("Контент-план створено");await refresh();renderPlan();},"Створюємо…");};
 document.querySelector("#calendarPrev").onclick=()=>{state.calendarDate=new Date(state.calendarDate.getFullYear(),state.calendarDate.getMonth()-1,1);renderCalendar();};
 document.querySelector("#calendarNext").onclick=()=>{state.calendarDate=new Date(state.calendarDate.getFullYear(),state.calendarDate.getMonth()+1,1);renderCalendar();};
@@ -441,8 +677,37 @@ document.querySelector("#searchButton").onclick=()=>{
   const input=document.querySelector("#globalSearch"),results=document.querySelector("#searchResults");
   input.oninput=()=>{const query=input.value.trim().toLowerCase();if(!query){results.innerHTML="";return}const rows=[...(state.data.ideas||[]).map(x=>({...x,type:"Ідея",view:"ideas"})),...(state.data.drafts||[]).map(x=>({...x,type:"Чернетка",view:"drafts"}))].filter(x=>`${x.title} ${x.angle||""} ${plain(x.caption_html||"")}`.toLowerCase().includes(query)).slice(0,8);results.innerHTML=rows.map(x=>`<button type="button" class="quick-action" data-search-view="${x.view}" data-search-draft="${x.type==="Чернетка"?x.id:""}"><span class="pill ${x.type==="Ідея"?"idea":"draft"}">${x.type}</span><span>${esc(x.title)}</span></button>`).join("")||'<p class="muted">Нічого не знайдено.</p>';results.querySelectorAll("button").forEach(button=>button.onclick=()=>{document.querySelector("#formOverlay").hidden=true;if(button.dataset.searchDraft)openEditor(Number(button.dataset.searchDraft));else setView(button.dataset.searchView);});};
 };
-document.querySelector("#createButton").onclick=()=>setView("ideas");
-document.querySelector("#notificationsButton").onclick=()=>{const failed=(state.data?.jobs||[]).filter(x=>x.status==="failed");const expiry=state.company?.plan_expires_at?Math.ceil((new Date(state.company.plan_expires_at)-new Date())/86400000):null;const messages=[];if(failed.length)messages.push(`Помилок генерації: ${failed.length}`);if(state.company?.plan_code==="trial"&&expiry!==null)messages.push(`Trial: ${Math.max(0,expiry)} дн.`);const spend=Number(state.company?.ai_spend||0),budget=Number(state.company?.monthly_ai_budget||0);if(budget&&spend/budget>=.7)messages.push(`Використано ${Math.round(spend/budget*100)}% AI-бюджету`);toast(messages.join(" · ")||"Нових сповіщень немає",!!failed.length);};
+document.querySelector("#createButton").onclick=()=>showForm(
+  "Що створити?",
+  `<button type="button" class="wide quick-action" data-create-action="idea"><span class="action-icon">✦</span><span><strong>Ідеї з AI</strong><small class="muted">Згенерувати теми за брендом і рубриками</small></span></button>
+   <button type="button" class="wide quick-action" data-create-action="draft"><span class="action-icon">＋</span><span><strong>Чернетку вручну</strong><small class="muted">Додати готовий текст або почати з нуля</small></span></button>
+   <button type="button" class="wide quick-action" data-create-action="plan"><span class="action-icon">▤</span><span><strong>Контент-план</strong><small class="muted">Спланувати публікації на період</small></span></button>`,
+  null,
+);
+document.querySelector("#formBody").addEventListener("click", event => {
+  const button = event.target.closest("[data-create-action]");
+  if (!button) return;
+  document.querySelector("#formOverlay").hidden = true;
+  if (button.dataset.createAction === "idea") { setView("ideas"); document.querySelector("#generateIdeas").click(); }
+  if (button.dataset.createAction === "draft") { setView("drafts"); document.querySelector("#manualDraft").click(); }
+  if (button.dataset.createAction === "plan") setView("plan");
+});
+document.querySelector("#notificationsButton").onclick=()=>{
+  const items = notificationItems();
+  showForm(
+    "Сповіщення",
+    items.length ? items.map(item=>`<article class="wide notification-item ${item.type}"><strong>${esc(item.title)}</strong><p>${esc(item.text)}</p><small>${esc(item.action)}</small>${item.jobId?`<button type="button" data-retry-job="${item.jobId}">Повторити швидку генерацію</button>`:""}</article>`).join("") : `<div class="wide empty-state"><h3>Все гаразд</h3><p class="muted">Немає помилок генерації, попереджень про тариф або бюджет.</p></div>`,
+    null,
+  );
+  document.querySelectorAll("[data-retry-job]").forEach(button => button.onclick = async () => {
+    await loading(button, async () => {
+      await api(`api/jobs/${button.dataset.retryJob}/retry-fast`, {method:"POST"});
+      toast("Генерацію перезапущено");
+      document.querySelector("#formOverlay").hidden = true;
+      await refresh();
+    }, "Запускаємо…");
+  });
+};
 document.querySelector("#exportPlan").onclick=()=>exportCsv("content-plan.csv",(state.data.ideas||[]).filter(x=>x.plan_id),["planned_for","title","product","status"]);
 document.querySelector("#exportDrafts").onclick=()=>exportCsv("drafts.csv",state.data.drafts||[],["id","title","product","status","scheduled_at"]);
 document.querySelector("#exportUsage").onclick=()=>exportCsv("usage.csv",state.data.daily||[],["day","cost"]);
