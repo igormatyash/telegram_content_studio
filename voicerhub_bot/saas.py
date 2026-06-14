@@ -1,3 +1,4 @@
+import hashlib
 import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -32,9 +33,15 @@ class SecretCipher:
 
 
 class SaasRepository:
-    def __init__(self, database_path: Path, encryption_key: str = "") -> None:
+    def __init__(
+        self,
+        database_path: Path,
+        encryption_key: str = "",
+        hash_salt: str = "",
+    ) -> None:
         self.database_path = database_path
         self.cipher = SecretCipher(encryption_key)
+        self.hash_salt = hash_salt
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -138,6 +145,24 @@ class SaasRepository:
                 "organizations",
                 "referred_by_organization_id",
                 "INTEGER",
+            )
+            self._ensure_column(
+                connection,
+                "audit_events",
+                "ip_hash",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                connection,
+                "audit_events",
+                "user_agent",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_audit_events_activity
+                ON audit_events(created_at, action)
+                """
             )
 
     @staticmethod
@@ -425,6 +450,20 @@ class SaasRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def all_memberships(self) -> list[dict]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT m.organization_id, m.user_id, m.role, m.created_at,
+                    o.name organization_name, o.slug organization_slug,
+                    o.active organization_active
+                FROM organization_members m
+                JOIN organizations o ON o.id = m.organization_id
+                ORDER BY m.user_id, m.organization_id
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def role_for_user(self, organization_id: int, user_id: int) -> str | None:
         with self._connect() as connection:
             row = connection.execute(
@@ -527,15 +566,82 @@ class SaasRepository:
         user_id: int | None,
         action: str,
         details: str = "",
+        *,
+        ip_address: str = "",
+        user_agent: str = "",
     ) -> None:
+        ip_hash = (
+            hashlib.sha256(
+                f"{self.hash_salt}:{ip_address.strip()}".encode()
+            ).hexdigest()
+            if ip_address
+            else ""
+        )
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO audit_events (organization_id, user_id, action, details)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO audit_events (
+                    organization_id, user_id, action, details,
+                    ip_hash, user_agent
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (organization_id, user_id, action, details[:1000]),
+                (
+                    organization_id,
+                    user_id,
+                    action,
+                    details[:1000],
+                    ip_hash,
+                    user_agent[:500],
+                ),
             )
+
+    def list_audit_events(
+        self,
+        *,
+        limit: int = 500,
+        user_id: int | None = None,
+        organization_id: int | None = None,
+    ) -> list[dict]:
+        conditions: list[str] = []
+        params: list[object] = []
+        if user_id is not None:
+            conditions.append("a.user_id = ?")
+            params.append(user_id)
+        if organization_id is not None:
+            conditions.append("a.organization_id = ?")
+            params.append(organization_id)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.append(max(1, min(limit, 2000)))
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT a.*, u.username, u.email, u.display_name,
+                    o.name organization_name, o.slug organization_slug
+                FROM audit_events a
+                LEFT JOIN users u ON u.id = a.user_id
+                LEFT JOIN organizations o ON o.id = a.organization_id
+                {where}
+                ORDER BY a.id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def last_activity_by_organization(self) -> dict[int, str]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT organization_id, MAX(created_at) last_activity_at
+                FROM audit_events
+                WHERE organization_id IS NOT NULL
+                GROUP BY organization_id
+                """
+            ).fetchall()
+        return {
+            int(row["organization_id"]): row["last_activity_at"]
+            for row in rows
+        }
 
     def create_billing_order(
         self,

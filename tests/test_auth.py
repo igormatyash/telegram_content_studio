@@ -77,3 +77,40 @@ def test_oauth_state_is_one_time(tmp_path) -> None:
         pass
     else:
         raise AssertionError("OAuth state must only be consumed once")
+
+
+def test_login_analytics_are_hashed_and_migrations_are_idempotent(tmp_path) -> None:
+    database = tmp_path / "auth.sqlite3"
+    repository = AuthRepository(database, "private-test-salt")
+    user = repository.create_user(
+        "client",
+        "client-password",
+        is_admin=False,
+        email="client@example.com",
+    )
+
+    repository.record_login(
+        user_id=user["id"],
+        organization_id=None,
+        ip_address="203.0.113.9",
+        user_agent="Test browser",
+        success=True,
+    )
+    repository.record_login(
+        user_id=user["id"],
+        organization_id=None,
+        ip_address="203.0.113.9",
+        user_agent="Test browser",
+        success=False,
+        failure_reason="invalid_credentials",
+    )
+    AuthRepository(database, "private-test-salt")
+
+    updated = repository.get_user(user["id"])
+    events = repository.list_login_events(user_id=user["id"])
+    assert updated["login_count"] == 1
+    assert updated["last_login_at"]
+    assert updated["last_seen_at"]
+    assert len(events) == 2
+    assert events[0]["ip_hash"] != "203.0.113.9"
+    assert len(events[0]["ip_hash"]) == 64

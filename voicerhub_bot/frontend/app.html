@@ -29,6 +29,18 @@
       <button class="nav-item" data-view="analytics"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg></span><span id="analyticsNavLabel">Витрати</span></button>
       <button class="nav-item" data-view="settings"><span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg></span>Налаштування</button>
     </nav>
+    <div id="platformNav" hidden>
+      <div class="nav-title">Платформа</div>
+      <nav class="nav-list">
+        <button class="nav-item" data-platform-section="overview">Огляд</button>
+        <button class="nav-item" data-platform-section="clients">Клієнти</button>
+        <button class="nav-item" data-platform-section="organizations">Компанії</button>
+        <button class="nav-item" data-platform-section="users">Користувачі</button>
+        <button class="nav-item" data-platform-section="referrals">Реферали</button>
+        <button class="nav-item" data-platform-section="activity">Активність</button>
+        <button class="nav-item" data-platform-section="expenses">Витрати</button>
+      </nav>
+    </div>
     <div class="sidebar-user">
       <img class="avatar" id="userAvatar" alt="">
       <span style="min-width:0"><strong id="userName">—</strong><small id="userRole">—</small></span>
@@ -117,6 +129,14 @@
           <div id="settingsContent"></div>
         </div>
       </section>
+
+      <section class="view" id="platformView">
+        <div class="platform-page-head">
+          <div><div class="eyebrow">Super Admin Dashboard</div><h2 id="platformHeading">Огляд платформи</h2><p class="muted" id="platformDescription">Клієнти, workspace, активність і AI-витрати в одному місці.</p></div>
+          <button id="platformRefresh">Оновити дані</button>
+        </div>
+        <div id="platformContent"><span class="skeleton"></span></div>
+      </section>
     </main>
   </section>
 </div>
@@ -127,6 +147,6 @@
 <div class="overlay" id="editorOverlay" role="dialog" aria-modal="true" aria-label="Редактор публікації" hidden><div class="editor-page" id="editorContent"></div></div>
 <div class="toast" id="toast" hidden></div>
 <div hidden>CONTENT STUDIO · Налаштування workspace · Voicer Wave</div>
-<script src="__BASE_PATH__/static/app.js?v=6" defer></script>
+<script src="__BASE_PATH__/static/app.js?v=7" defer></script>
 </body>
 </html>

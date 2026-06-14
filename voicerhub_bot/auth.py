@@ -41,8 +41,9 @@ def verify_password(password: str, encoded: str) -> bool:
 
 
 class AuthRepository:
-    def __init__(self, database_path: Path) -> None:
+    def __init__(self, database_path: Path, hash_salt: str = "") -> None:
         self.database_path = database_path
+        self.hash_salt = hash_salt
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -79,11 +80,23 @@ class AuthRepository:
                 "display_name": "TEXT NOT NULL DEFAULT ''",
                 "avatar_url": "TEXT NOT NULL DEFAULT ''",
                 "referred_by_user_id": "INTEGER",
+                "updated_at": "TEXT",
+                "last_login_at": "TEXT",
+                "last_seen_at": "TEXT",
+                "login_count": "INTEGER NOT NULL DEFAULT 0",
+                "email_verified_at": "TEXT",
             }.items():
                 if column not in columns:
                     connection.execute(
                         f"ALTER TABLE users ADD COLUMN {column} {definition}"
                     )
+            connection.execute(
+                """
+                UPDATE users
+                SET updated_at = COALESCE(updated_at, created_at)
+                WHERE updated_at IS NULL
+                """
+            )
             connection.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email "
                 "ON users(email COLLATE NOCASE) WHERE email IS NOT NULL"
@@ -153,6 +166,19 @@ class AuthRepository:
                     expires_at TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
+                CREATE TABLE IF NOT EXISTS login_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    organization_id INTEGER,
+                    ip_hash TEXT NOT NULL DEFAULT '',
+                    user_agent TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    success INTEGER NOT NULL,
+                    failure_reason TEXT NOT NULL DEFAULT '',
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_login_events_user
+                    ON login_events(user_id, created_at);
                 """
             )
 
@@ -203,6 +229,10 @@ class AuthRepository:
                 ),
             )
             user_id = int(cursor.lastrowid)
+            connection.execute(
+                "UPDATE users SET updated_at = created_at WHERE id = ?",
+                (user_id,),
+            )
             if organization_id is not None and self._table_exists(
                 connection, "organization_members"
             ):
@@ -225,7 +255,8 @@ class AuthRepository:
                 """
                 SELECT id, username, is_admin, is_super_admin, active, created_at,
                     email, google_subject, display_name, avatar_url,
-                    referred_by_user_id
+                    referred_by_user_id, updated_at, last_login_at,
+                    last_seen_at, login_count, email_verified_at
                 FROM users WHERE id = ?
                 """,
                 (user_id,),
@@ -243,7 +274,9 @@ class AuthRepository:
                     """
                     SELECT u.id, u.username, u.is_admin, u.is_super_admin,
                         u.active, u.created_at, u.email, u.google_subject,
-                        u.display_name, u.avatar_url, u.referred_by_user_id
+                        u.display_name, u.avatar_url, u.referred_by_user_id,
+                        u.updated_at, u.last_login_at, u.last_seen_at,
+                        u.login_count, u.email_verified_at
                     FROM users u
                     JOIN organization_members m ON m.user_id = u.id
                     WHERE m.organization_id = ?
@@ -256,7 +289,8 @@ class AuthRepository:
                     """
                     SELECT id, username, is_admin, is_super_admin, active, created_at,
                         email, google_subject, display_name, avatar_url,
-                        referred_by_user_id
+                        referred_by_user_id, updated_at, last_login_at,
+                        last_seen_at, login_count, email_verified_at
                     FROM users ORDER BY username COLLATE NOCASE
                     """
                 ).fetchall()
@@ -327,6 +361,8 @@ class AuthRepository:
                 SELECT u.id, u.username, u.is_admin, u.is_super_admin,
                     u.active, u.created_at, u.email, u.google_subject,
                     u.display_name, u.avatar_url, u.referred_by_user_id,
+                    u.updated_at, u.last_login_at, u.last_seen_at,
+                    u.login_count, u.email_verified_at,
                     s.selected_organization_id
                 FROM user_sessions s
                 JOIN users u ON u.id = s.user_id
@@ -334,6 +370,20 @@ class AuthRepository:
                 """,
                 (token_hash, now),
             ).fetchone()
+            if row is not None:
+                threshold = datetime.now(timezone.utc) - timedelta(minutes=10)
+                connection.execute(
+                    """
+                    UPDATE users
+                    SET last_seen_at = ?, updated_at = ?
+                    WHERE id = ?
+                      AND (
+                        last_seen_at IS NULL
+                        OR last_seen_at <= ?
+                      )
+                    """,
+                    (now, now, row["id"], threshold.isoformat()),
+                )
         return self._public_user(
             row,
             selected_organization_id=(
@@ -446,7 +496,9 @@ class AuthRepository:
                     """
                     SELECT u.id, u.username, u.is_admin, u.is_super_admin,
                         u.active, u.created_at, u.email, u.google_subject,
-                        u.display_name, u.avatar_url, u.referred_by_user_id
+                        u.display_name, u.avatar_url, u.referred_by_user_id,
+                        u.updated_at, u.last_login_at, u.last_seen_at,
+                        u.login_count, u.email_verified_at
                     FROM users u WHERE u.id = ?
                     """,
                     (user_id,),
@@ -473,7 +525,8 @@ class AuthRepository:
                 """
                 SELECT id, username, is_admin, is_super_admin, active, created_at,
                     email, google_subject, display_name, avatar_url,
-                    referred_by_user_id
+                    referred_by_user_id, updated_at, last_login_at,
+                    last_seen_at, login_count, email_verified_at
                 FROM users WHERE email = ? COLLATE NOCASE
                 """,
                 (email.strip(),),
@@ -486,7 +539,8 @@ class AuthRepository:
                 """
                 SELECT id, username, is_admin, is_super_admin, active, created_at,
                     email, google_subject, display_name, avatar_url,
-                    referred_by_user_id
+                    referred_by_user_id, updated_at, last_login_at,
+                    last_seen_at, login_count, email_verified_at
                 FROM users WHERE google_subject = ?
                 """,
                 (subject,),
@@ -651,6 +705,12 @@ class AuthRepository:
             "avatar_url": row["avatar_url"] or "",
             "google_connected": bool(row["google_subject"]),
             "referred_by_user_id": row["referred_by_user_id"],
+            "updated_at": row["updated_at"],
+            "last_login_at": row["last_login_at"],
+            "last_seen_at": row["last_seen_at"],
+            "login_count": int(row["login_count"] or 0),
+            "email_verified_at": row["email_verified_at"],
+            "email_verified": bool(row["email_verified_at"]),
         }
         with self._connect() as connection:
             if self._table_exists(connection, "organization_members"):
@@ -707,3 +767,108 @@ class AuthRepository:
     def delete_user(self, user_id: int) -> None:
         with self._connect() as connection:
             connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+    def auth_user_id(self, username_or_email: str) -> int | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id FROM users
+                WHERE username = ? COLLATE NOCASE
+                   OR email = ? COLLATE NOCASE
+                LIMIT 1
+                """,
+                (username_or_email.strip(), username_or_email.strip()),
+            ).fetchone()
+        return int(row["id"]) if row else None
+
+    def record_login(
+        self,
+        *,
+        user_id: int | None,
+        organization_id: int | None,
+        ip_address: str,
+        user_agent: str,
+        success: bool,
+        failure_reason: str = "",
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        ip_hash = (
+            hashlib.sha256(f"{self.hash_salt}:{ip_address}".encode()).hexdigest()
+            if ip_address
+            else ""
+        )
+        with self._connect() as connection:
+            if success and user_id is not None:
+                connection.execute(
+                    """
+                    UPDATE users
+                    SET last_login_at = ?, last_seen_at = ?, updated_at = ?,
+                        login_count = login_count + 1
+                    WHERE id = ?
+                    """,
+                    (now, now, now, user_id),
+                )
+            connection.execute(
+                """
+                INSERT INTO login_events (
+                    user_id, organization_id, ip_hash, user_agent,
+                    success, failure_reason
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    organization_id,
+                    ip_hash,
+                    user_agent[:500],
+                    int(success),
+                    failure_reason[:120],
+                ),
+            )
+
+    def mark_email_verified(self, user_id: int) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE users
+                SET email_verified_at = COALESCE(email_verified_at, ?),
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (now, now, user_id),
+            )
+
+    def list_login_events(
+        self,
+        limit: int = 500,
+        *,
+        user_id: int | None = None,
+    ) -> list[dict]:
+        where = "WHERE le.user_id = ?" if user_id is not None else ""
+        params: list[object] = [user_id] if user_id is not None else []
+        params.append(max(1, min(limit, 2000)))
+        with self._connect() as connection:
+            organization_join = (
+                "LEFT JOIN organizations o ON o.id = le.organization_id"
+                if self._table_exists(connection, "organizations")
+                else ""
+            )
+            organization_name = (
+                "o.name organization_name"
+                if organization_join
+                else "NULL organization_name"
+            )
+            rows = connection.execute(
+                f"""
+                SELECT le.*, u.username, u.email, u.display_name,
+                    {organization_name}
+                FROM login_events le
+                LEFT JOIN users u ON u.id = le.user_id
+                {organization_join}
+                {where}
+                ORDER BY le.id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]

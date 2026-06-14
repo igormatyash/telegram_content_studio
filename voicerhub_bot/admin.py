@@ -356,17 +356,24 @@ class ContentStatusRequest(BaseModel):
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     settings.prepare_directories()
-    repository = TenantRepository(settings.database_path, settings.organizations_dir)
-    auth = AuthRepository(settings.database_path)
-    auth.ensure_bootstrap_admin(settings.admin_username, settings.admin_password)
-    saas = SaasRepository(settings.database_path, settings.app_encryption_key)
-    saas.ensure_legacy_organization(channel_id=settings.telegram_channel)
-    referrals = ReferralRepository(
-        settings.database_path,
+    privacy_hash_salt = (
         settings.privacy_hash_salt
         or settings.app_encryption_key
         or settings.admin_password
-        or settings.product_name,
+        or settings.product_name
+    )
+    repository = TenantRepository(settings.database_path, settings.organizations_dir)
+    auth = AuthRepository(settings.database_path, privacy_hash_salt)
+    auth.ensure_bootstrap_admin(settings.admin_username, settings.admin_password)
+    saas = SaasRepository(
+        settings.database_path,
+        settings.app_encryption_key,
+        privacy_hash_salt,
+    )
+    saas.ensure_legacy_organization(channel_id=settings.telegram_channel)
+    referrals = ReferralRepository(
+        settings.database_path,
+        privacy_hash_salt,
     )
     repository.for_organization(1).ensure_legacy_rubrics(
         str(Path(__file__).parent / "assets" / "VoicerWave.jpg")
@@ -401,7 +408,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def record_referral_visit(code: str, request: Request) -> dict:
         query = request.query_params
-        return referrals.record_click(
+        click = referrals.record_click(
             code,
             ip_address=request_ip(request),
             user_agent=request.headers.get("user-agent", ""),
@@ -410,6 +417,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             utm_campaign=query.get("utm_campaign", ""),
             landing_url=str(request.url),
         )
+        referral = referrals.code(code)
+        if referral:
+            saas.audit(
+                referral.get("owner_organization_id"),
+                referral.get("owner_user_id"),
+                "referral_link_opened",
+                code,
+                ip_address=request_ip(request),
+                user_agent=request.headers.get("user-agent", ""),
+            )
+        return click
 
     def set_referral_cookies(response: Response, code: str, click_id: int) -> None:
         cookie_options = {
@@ -617,6 +635,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def dashboard(voicerhub_session: str | None = Cookie(default=None)) -> str:
         return application_shell(voicerhub_session)
 
+    @app.get("/platform", response_class=HTMLResponse)
+    @app.get("/platform/{platform_path:path}", response_class=HTMLResponse)
+    def platform_dashboard(
+        platform_path: str = "",
+        voicerhub_session: str | None = Cookie(default=None),
+    ) -> str:
+        del platform_path
+        user = auth.session_user(voicerhub_session)
+        if user is None:
+            return frontend_html("login.html")
+        if not user.get("is_super_admin"):
+            raise HTTPException(status_code=403, detail="Platform administrator required")
+        repository.use(int(user.get("organization_id") or 1))
+        return frontend_html("app.html")
+
     @app.get("/invite", response_class=HTMLResponse)
     def invitation_page() -> str:
         return frontend_html("action.html").replace("__ACTION__", "invite")
@@ -689,15 +722,52 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return frontend_html("app.html")
 
     @app.post("/api/login")
-    def login(payload: LoginRequest, response: Response) -> dict:
+    def login(payload: LoginRequest, request: Request, response: Response) -> dict:
         user = auth.authenticate(payload.username, payload.password)
         if user is None and "@" in payload.username:
             email_user = auth.find_by_email(payload.username)
             if email_user:
                 user = auth.authenticate(email_user["username"], payload.password)
         if user is None:
+            failed_user_id = auth.auth_user_id(payload.username)
+            failed_membership = (
+                saas.membership_for_user(failed_user_id)
+                if failed_user_id is not None
+                else None
+            )
+            auth.record_login(
+                user_id=failed_user_id,
+                organization_id=(
+                    int(failed_membership["organization_id"])
+                    if failed_membership
+                    else None
+                ),
+                ip_address=request_ip(request),
+                user_agent=request.headers.get("user-agent", ""),
+                success=False,
+                failure_reason="invalid_credentials",
+            )
             raise HTTPException(status_code=401, detail="Невірний логін або пароль")
         token = auth.create_session(user["id"])
+        membership = saas.membership_for_user(user["id"])
+        login_organization_id = (
+            int(membership["organization_id"]) if membership else None
+        )
+        auth.record_login(
+            user_id=user["id"],
+            organization_id=login_organization_id,
+            ip_address=request_ip(request),
+            user_agent=request.headers.get("user-agent", ""),
+            success=True,
+        )
+        saas.audit(
+            login_organization_id,
+            user["id"],
+            "user_logged_in",
+            "",
+            ip_address=request_ip(request),
+            user_agent=request.headers.get("user-agent", ""),
+        )
         response.set_cookie(
             "voicerhub_session",
             token,
@@ -711,6 +781,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/register")
     def register(
         payload: RegistrationRequest,
+        request: Request,
         response: Response,
         voicerhub_session: str | None = Cookie(default=None),
         voicerhub_referral: str | None = Cookie(default=None),
@@ -766,6 +837,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     detail="Такий логін або slug уже використовується",
                 ) from exc
             raise
+        saas.audit(
+            organization["id"],
+            user["id"],
+            "user_registered",
+            payload.email,
+            ip_address=request_ip(request),
+            user_agent=request.headers.get("user-agent", ""),
+        )
+        saas.audit(
+            organization["id"],
+            user["id"],
+            "organization_created",
+            organization["slug"],
+            ip_address=request_ip(request),
+            user_agent=request.headers.get("user-agent", ""),
+        )
         if referral:
             try:
                 referrals.complete_signup(
@@ -789,6 +876,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 pass
         session = auth.create_session(user["id"])
         auth.select_session_organization(session, organization["id"])
+        auth.record_login(
+            user_id=user["id"],
+            organization_id=organization["id"],
+            ip_address=request_ip(request),
+            user_agent=request.headers.get("user-agent", ""),
+            success=True,
+        )
+        saas.audit(
+            organization["id"],
+            user["id"],
+            "user_logged_in",
+            "registration",
+            ip_address=request_ip(request),
+            user_agent=request.headers.get("user-agent", ""),
+        )
         response.set_cookie(
             "voicerhub_session",
             session,
@@ -827,6 +929,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def google_login_callback(
         code: str,
         state: str,
+        request: Request,
         response: Response,
         voicerhub_referral: str | None = Cookie(default=None),
         voicerhub_referral_click: str | None = Cookie(default=None),
@@ -903,6 +1006,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 display_name=profile.get("name", ""),
                 avatar_url=profile.get("picture", ""),
             )
+        auth.mark_email_verified(user["id"])
         if oauth_state.get("invite_token_hash"):
             try:
                 invitation = auth.action_token_hash(
@@ -931,6 +1035,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     detail="Invitation is invalid or expired",
                 ) from exc
         membership = saas.membership_for_user(user["id"])
+        created_organization = None
         if membership is None:
             workspace_name = (
                 profile.get("name", "").strip()
@@ -942,6 +1047,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             saas.add_member(organization["id"], user["id"], "owner")
             repository.for_organization(organization["id"])
+            created_organization = organization
             membership = saas.membership_for_user(user["id"])
         session = auth.create_session(user["id"])
         if oauth_state.get("invite_token_hash"):
@@ -954,6 +1060,52 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 session,
                 int(membership["organization_id"]),
             )
+        selected_organization_id = (
+            int(invitation["organization_id"])
+            if oauth_state.get("invite_token_hash")
+            else int(membership["organization_id"]) if membership else None
+        )
+        if created_new_user:
+            saas.audit(
+                selected_organization_id,
+                user["id"],
+                "user_registered",
+                profile["email"],
+                ip_address=request_ip(request),
+                user_agent=request.headers.get("user-agent", ""),
+            )
+        if created_organization:
+            saas.audit(
+                created_organization["id"],
+                user["id"],
+                "organization_created",
+                created_organization["slug"],
+                ip_address=request_ip(request),
+                user_agent=request.headers.get("user-agent", ""),
+            )
+        saas.audit(
+            selected_organization_id,
+            user["id"],
+            "email_verified",
+            "google",
+            ip_address=request_ip(request),
+            user_agent=request.headers.get("user-agent", ""),
+        )
+        auth.record_login(
+            user_id=user["id"],
+            organization_id=selected_organization_id,
+            ip_address=request_ip(request),
+            user_agent=request.headers.get("user-agent", ""),
+            success=True,
+        )
+        saas.audit(
+            selected_organization_id,
+            user["id"],
+            "user_logged_in",
+            "google",
+            ip_address=request_ip(request),
+            user_agent=request.headers.get("user-agent", ""),
+        )
         if created_new_user and voicerhub_referral and membership:
             try:
                 referrals.complete_signup(
@@ -1089,6 +1241,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 voicerhub_session,
                 organization["id"],
             )
+            saas.audit(
+                organization["id"],
+                user["id"],
+                "organization_created",
+                organization["slug"],
+            )
         except (ValueError, Exception) as exc:
             if "UNIQUE constraint" in str(exc):
                 raise HTTPException(
@@ -1101,7 +1259,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return organization
 
     @app.post("/api/invitations/accept")
-    def accept_invitation(payload: InvitationAcceptRequest, response: Response) -> dict:
+    def accept_invitation(
+        payload: InvitationAcceptRequest,
+        request: Request,
+        response: Response,
+    ) -> dict:
         token = auth.action_token(payload.token, "workspace_invite")
         if token is None:
             raise HTTPException(status_code=400, detail="Запрошення недійсне")
@@ -1117,6 +1279,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     email=token["email"],
                     display_name=payload.display_name,
                 )
+                saas.audit(
+                    int(token["organization_id"]),
+                    user["id"],
+                    "user_registered",
+                    token["email"],
+                    ip_address=request_ip(request),
+                    user_agent=request.headers.get("user-agent", ""),
+                )
             saas.upsert_member(
                 int(token["organization_id"]),
                 user["id"],
@@ -1125,6 +1295,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             auth.consume_action_token(payload.token, "workspace_invite")
             session = auth.create_session(user["id"])
             auth.select_session_organization(session, int(token["organization_id"]))
+            auth.record_login(
+                user_id=user["id"],
+                organization_id=int(token["organization_id"]),
+                ip_address=request_ip(request),
+                user_agent=request.headers.get("user-agent", ""),
+                success=True,
+            )
+            saas.audit(
+                int(token["organization_id"]),
+                user["id"],
+                "user_logged_in",
+                "invitation",
+                ip_address=request_ip(request),
+                user_agent=request.headers.get("user-agent", ""),
+            )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         response.set_cookie(
@@ -1140,6 +1325,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/workspace/select")
     def select_workspace(
         payload: WorkspaceSelectRequest,
+        request: Request,
         voicerhub_session: str | None = Cookie(default=None),
         x_requested_with: str | None = Header(default=None),
         _: dict = Depends(authorize),
@@ -1160,6 +1346,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if user is None:
             raise HTTPException(status_code=401, detail="Authentication required")
         repository.use(organization_id(user))
+        saas.audit(
+            organization_id(user),
+            user["id"],
+            "workspace_selected",
+            user.get("organization_slug", ""),
+            ip_address=request_ip(request),
+            user_agent=request.headers.get("user-agent", ""),
+        )
         return user
 
     @app.get("/api/onboarding")
@@ -1193,6 +1387,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             primary_language=payload.primary_language,
             brand_primary_color=payload.brand_primary_color,
             brand_logo_asset_id=payload.brand_logo_asset_id,
+        )
+        saas.audit(
+            organization_id(user),
+            user["id"],
+            "organization_updated",
+            company["slug"],
         )
         return {"company": company, "settings": settings_row}
 
@@ -1366,11 +1566,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def platform_referrals(_: dict = Depends(authorize_super_admin)) -> dict:
         return referrals.platform_summary()
 
-    @app.get("/api/platform/usage")
-    def platform_usage(
-        period: str = "month",
-        _: dict = Depends(authorize_super_admin),
-    ) -> dict:
+    def platform_usage_data(period: str) -> dict:
         now = datetime.now(timezone.utc)
         if period == "today":
             since = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -1383,7 +1579,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         else:
             raise HTTPException(status_code=422, detail="Невідомий період звіту")
 
-        users = {user["id"]: user for user in auth.list_users()}
+        users_by_id = {user["id"]: user for user in auth.list_users()}
         companies = []
         user_rows = []
         model_rows = []
@@ -1411,16 +1607,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for key in totals:
                 totals[key] += company_totals[key]
             for row in report["users"]:
-                user = users.get(row["user_id"])
+                report_user = users_by_id.get(row["user_id"])
                 user_rows.append(
                     {
                         "organization_id": company["id"],
                         "organization_name": company["name"],
                         "user_id": row["user_id"],
                         "username": (
-                            user["username"] if user else "Система / не визначено"
+                            report_user["username"]
+                            if report_user
+                            else "Система / не визначено"
                         ),
-                        **{key: value for key, value in row.items() if key != "user_id"},
+                        **{
+                            key: value
+                            for key, value in row.items()
+                            if key != "user_id"
+                        },
                     }
                 )
             for row in report["models"]:
@@ -1431,11 +1633,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         **row,
                     }
                 )
+        totals["cost"] = round(float(totals["cost"]), 6)
         return {
             "period": period,
             "since": since.isoformat() if since else None,
             "totals": totals,
-            "companies": companies,
+            "companies": sorted(
+                companies,
+                key=lambda row: (-float(row["cost"]), row["organization_name"]),
+            ),
             "users": sorted(
                 user_rows,
                 key=lambda row: (-float(row["cost"]), row["organization_name"]),
@@ -1445,6 +1651,297 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 key=lambda row: (-float(row["cost"]), row["organization_name"]),
             ),
         }
+
+    def platform_organization_rows() -> list[dict]:
+        users_by_id = {user["id"]: user for user in auth.list_users()}
+        memberships = saas.all_memberships()
+        members_by_organization: dict[int, list[dict]] = {}
+        for membership in memberships:
+            members_by_organization.setdefault(
+                int(membership["organization_id"]),
+                [],
+            ).append(membership)
+        activity = saas.last_activity_by_organization()
+        rows = []
+        for company in saas.list_organizations():
+            tenant = repository.for_organization(company["id"])
+            drafts = tenant.list_drafts(limit=10000)
+            ideas = tenant.list_ideas(limit=10000)
+            usage = tenant.usage_summary()["totals"]
+            company_members = members_by_organization.get(company["id"], [])
+            owner_membership = next(
+                (item for item in company_members if item["role"] == "owner"),
+                company_members[0] if company_members else None,
+            )
+            owner = (
+                users_by_id.get(owner_membership["user_id"])
+                if owner_membership
+                else None
+            )
+            settings_row = saas.organization_settings(company["id"])
+            rows.append(
+                {
+                    **company,
+                    "owner_id": owner["id"] if owner else None,
+                    "owner_name": (
+                        (owner["display_name"] or owner["username"]) if owner else ""
+                    ),
+                    "owner_email": owner["email"] if owner else "",
+                    "idea_count": len(ideas),
+                    "draft_count": len(drafts),
+                    "scheduled_count": sum(
+                        item["status"] == "scheduled" for item in drafts
+                    ),
+                    "published_count": sum(
+                        item["status"] == "published" for item in drafts
+                    ),
+                    "ai_cost": round(float(usage["cost"]), 6),
+                    "onboarding_status": settings_row["onboarding_status"],
+                    "last_activity_at": activity.get(company["id"]),
+                }
+            )
+        return rows
+
+    def platform_client_rows() -> list[dict]:
+        users = auth.list_users()
+        memberships = saas.all_memberships()
+        memberships_by_user: dict[int, list[dict]] = {}
+        for membership in memberships:
+            memberships_by_user.setdefault(int(membership["user_id"]), []).append(
+                membership
+            )
+        referral_report = referrals.platform_summary()
+        signup_by_user = {
+            int(item["new_user_id"]): item for item in referral_report["signups"]
+        }
+        usage_by_user: dict[int, dict] = {}
+        for row in platform_usage_data("all")["users"]:
+            if row["user_id"] is None:
+                continue
+            current = usage_by_user.setdefault(
+                int(row["user_id"]),
+                {"operations": 0, "cost": 0.0},
+            )
+            current["operations"] += int(row["operations"])
+            current["cost"] += float(row["cost"])
+        rows = []
+        for user in users:
+            user_memberships = memberships_by_user.get(user["id"], [])
+            primary = user_memberships[0] if user_memberships else None
+            signup = signup_by_user.get(user["id"])
+            usage = usage_by_user.get(user["id"], {"operations": 0, "cost": 0.0})
+            rows.append(
+                {
+                    **user,
+                    "organization_count": len(user_memberships),
+                    "primary_organization_id": (
+                        primary["organization_id"] if primary else None
+                    ),
+                    "primary_organization_name": (
+                        primary["organization_name"] if primary else ""
+                    ),
+                    "role": (
+                        "platform_admin"
+                        if user["is_super_admin"]
+                        else primary["role"] if primary else ""
+                    ),
+                    "registration_source": "referral" if signup else "direct",
+                    "referral_code": signup["referral_code"] if signup else "",
+                    "referrer_username": (
+                        signup["referrer_username"] if signup else ""
+                    ),
+                    "utm_source": signup["utm_source"] if signup else "",
+                    "utm_campaign": signup["utm_campaign"] if signup else "",
+                    "usage_operations": usage["operations"],
+                    "ai_cost": round(float(usage["cost"]), 6),
+                }
+            )
+        return rows
+
+    @app.get("/api/platform/overview")
+    def platform_overview(_: dict = Depends(authorize_super_admin)) -> dict:
+        now = datetime.now(timezone.utc)
+        users = platform_client_rows()
+        organizations = platform_organization_rows()
+        referrals_report = referrals.platform_summary()
+        usage = platform_usage_data("month")
+        today = now.date().isoformat()
+        week_start = (now - timedelta(days=7)).date().isoformat()
+        month_start = now.replace(day=1).date().isoformat()
+        registrations_by_day: dict[str, int] = {}
+        for user in users:
+            day = str(user["created_at"])[:10]
+            registrations_by_day[day] = registrations_by_day.get(day, 0) + 1
+        return {
+            "metrics": {
+                "registrations_today": sum(
+                    str(user["created_at"])[:10] == today for user in users
+                ),
+                "registrations_7d": sum(
+                    str(user["created_at"])[:10] >= week_start for user in users
+                ),
+                "users_total": len(users),
+                "organizations_total": len(organizations),
+                "active_organizations": sum(
+                    bool(item["active"]) for item in organizations
+                ),
+                "new_workspaces_month": sum(
+                    str(item["created_at"])[:10] >= month_start
+                    for item in organizations
+                ),
+                "ai_cost_month": usage["totals"]["cost"],
+                "publications_total": sum(
+                    item["published_count"] for item in organizations
+                ),
+                "referral_signups": len(referrals_report["signups"]),
+            },
+            "registrations_by_day": [
+                {"day": day, "count": count}
+                for day, count in sorted(registrations_by_day.items())[-30:]
+            ],
+            "top_organizations": sorted(
+                organizations,
+                key=lambda item: -float(item["ai_cost"]),
+            )[:10],
+        }
+
+    @app.get("/api/platform/clients")
+    def platform_clients(
+        source: str = "",
+        period: str = "",
+        active: str = "",
+        workspace: str = "",
+        search: str = "",
+        _: dict = Depends(authorize_super_admin),
+    ) -> dict:
+        rows = platform_client_rows()
+        if source in {"referral", "direct"}:
+            rows = [row for row in rows if row["registration_source"] == source]
+        if active in {"yes", "no"}:
+            expected = active == "yes"
+            rows = [row for row in rows if bool(row["active"]) == expected]
+        if workspace in {"yes", "no"}:
+            expected = workspace == "yes"
+            rows = [
+                row
+                for row in rows
+                if bool(row["organization_count"]) == expected
+            ]
+        if period in {"7d", "30d"}:
+            since = (
+                datetime.now(timezone.utc)
+                - timedelta(days=7 if period == "7d" else 30)
+            ).date().isoformat()
+            rows = [row for row in rows if str(row["created_at"])[:10] >= since]
+        if search.strip():
+            needle = search.strip().lower()
+            rows = [
+                row
+                for row in rows
+                if needle
+                in " ".join(
+                    [
+                        row["username"],
+                        row["display_name"],
+                        row["email"] or "",
+                        row["primary_organization_name"],
+                    ]
+                ).lower()
+            ]
+        return {"clients": rows, "total": len(rows)}
+
+    @app.get("/api/platform/clients/{user_id}")
+    def platform_client_detail(
+        user_id: int,
+        _: dict = Depends(authorize_super_admin),
+    ) -> dict:
+        client = next(
+            (item for item in platform_client_rows() if item["id"] == user_id),
+            None,
+        )
+        if client is None:
+            raise HTTPException(status_code=404, detail="Клієнта не знайдено")
+        memberships = saas.memberships_for_user(user_id)
+        organization_rows = {
+            item["id"]: item for item in platform_organization_rows()
+        }
+        return {
+            "client": client,
+            "organizations": [
+                {
+                    **organization_rows.get(item["organization_id"], {}),
+                    "role": item["role"],
+                }
+                for item in memberships
+            ],
+            "content_totals": {
+                "ideas": sum(
+                    int(organization_rows.get(item["organization_id"], {}).get("idea_count", 0))
+                    for item in memberships
+                ),
+                "drafts": sum(
+                    int(organization_rows.get(item["organization_id"], {}).get("draft_count", 0))
+                    for item in memberships
+                ),
+                "published": sum(
+                    int(organization_rows.get(item["organization_id"], {}).get("published_count", 0))
+                    for item in memberships
+                ),
+            },
+            "activity": saas.list_audit_events(limit=200, user_id=user_id),
+            "logins": auth.list_login_events(limit=200, user_id=user_id),
+        }
+
+    @app.get("/api/platform/organizations/details")
+    def platform_organizations(
+        _: dict = Depends(authorize_super_admin),
+    ) -> dict:
+        return {"organizations": platform_organization_rows()}
+
+    @app.get("/api/platform/organizations/{target_organization_id}")
+    def platform_organization_detail(
+        target_organization_id: int,
+        _: dict = Depends(authorize_super_admin),
+    ) -> dict:
+        organization = next(
+            (
+                item
+                for item in platform_organization_rows()
+                if item["id"] == target_organization_id
+            ),
+            None,
+        )
+        if organization is None:
+            raise HTTPException(status_code=404, detail="Компанію не знайдено")
+        return {
+            "organization": organization,
+            "users": auth.list_users(target_organization_id),
+            "activity": saas.list_audit_events(
+                limit=200,
+                organization_id=target_organization_id,
+            ),
+        }
+
+    @app.get("/api/platform/users")
+    def platform_users(_: dict = Depends(authorize_super_admin)) -> dict:
+        return {"users": platform_client_rows()}
+
+    @app.get("/api/platform/activity")
+    def platform_activity(
+        limit: int = 300,
+        _: dict = Depends(authorize_super_admin),
+    ) -> dict:
+        return {
+            "events": saas.list_audit_events(limit=limit),
+            "logins": auth.list_login_events(limit=limit),
+        }
+
+    @app.get("/api/platform/usage")
+    def platform_usage(
+        period: str = "month",
+        _: dict = Depends(authorize_super_admin),
+    ) -> dict:
+        return platform_usage_data(period)
 
     @app.post("/api/organizations")
     def create_organization(
@@ -1485,8 +1982,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         saas.audit(
             organization["id"],
             current["id"],
-            "organization.created",
+            "organization_created",
             payload.slug,
+        )
+        saas.audit(
+            organization["id"],
+            owner["id"],
+            "user_registered",
+            payload.owner_email or payload.owner_username,
         )
         return {**organization, "owner": owner}
 
@@ -1576,7 +2079,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if "UNIQUE constraint failed" in str(exc):
                 raise HTTPException(status_code=409, detail="Такий slug уже існує") from exc
             raise
-        saas.audit(organization_id(user), user["id"], "rubric.created", slug)
+        saas.audit(organization_id(user), user["id"], "rubric_created", slug)
         return rubric
 
     @app.put("/api/rubrics/{rubric_id}")
@@ -1623,7 +2126,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         saas.audit(
             organization_id,
             user["id"],
-            "telegram.connected",
+            "telegram_connected",
             payload.channel_id,
         )
         saas.update_organization_settings(
@@ -1811,6 +2314,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         record_text_usage(payload.text_model, input_tokens, output_tokens, user["id"])
         saved = save_ideas(ideas.ideas, forced_tone=payload.tone)
+        saas.audit(
+            organization_id(user),
+            user["id"],
+            "idea_created",
+            f"generated:{len(saved)}",
+        )
         return {"ideas": saved}
 
     @app.post("/api/ideas")
@@ -1834,6 +2343,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "created_by_user_id": user["id"],
                 }
             ]
+        )
+        saas.audit(
+            organization_id(user),
+            user["id"],
+            "idea_created",
+            str(rows[0]["id"]),
         )
         return rows[0]
 
@@ -2290,6 +2805,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             link_url=payload.link_url,
             tone="expert",
         )
+        saas.audit(
+            organization_id(user),
+            user["id"],
+            "draft_created",
+            str(draft.id),
+        )
         return repository.draft_record(draft.id)
 
     @app.post("/api/drafts/{draft_id}/proofread")
@@ -2606,13 +3127,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         repository.mark_published(draft_id)
         repository.set_telegram_message_id(draft_id, message.message_id)
+        saas.audit(
+            organization_id(user),
+            user["id"],
+            "draft_published",
+            str(draft_id),
+        )
         return {"message_id": message.message_id}
 
     @app.post("/api/drafts/{draft_id}/schedule")
     def schedule_draft(
         draft_id: int,
         payload: ScheduleRequest,
-        _: str = Depends(authorize_write),
+        user: dict = Depends(authorize_write),
     ) -> dict:
         scheduled_at = payload.scheduled_at
         draft = repository.draft_record(draft_id)
@@ -2634,6 +3161,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=422, detail="Schedule time must be in the future")
         value = scheduled_at.strftime("%Y-%m-%dT%H:%M:%SZ")
         repository.schedule_draft(draft_id, value)
+        saas.audit(
+            organization_id(user),
+            user["id"],
+            "draft_scheduled",
+            f"{draft_id}:{value}",
+        )
         return {"scheduled_at": value}
 
     @app.post("/api/drafts/{draft_id}/cancel-schedule")
