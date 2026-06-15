@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from voicerhub_bot.admin import create_app
 from voicerhub_bot.config import Settings
 from voicerhub_bot.formatting import sanitize_preview_html, strip_formatting
-from voicerhub_bot.permissions import has_permission, permissions_for
+from voicerhub_bot.permissions import has_permission, permissions_for, role_catalog
 from voicerhub_bot.saas import SaasRepository
 from voicerhub_bot.slugs import generate_slug
 from voicerhub_bot.storage import DraftRepository
@@ -155,6 +155,13 @@ def test_workspace_roles_have_expected_permissions() -> None:
     assert not has_permission("viewer", "content.edit")
     assert has_permission("viewer", "content.view")
     assert has_permission("viewer", "platform.view", platform_admin=True)
+    owner = role_catalog()[0]
+    publish = next(
+        item for item in owner["permission_details"]
+        if item["key"] == "content.publish"
+    )
+    assert publish["label"] == "Публікація контенту"
+    assert "підключених каналах" in publish["description"]
 
 
 def test_content_plan_exposes_clear_error_and_cancelled_labels(tmp_path) -> None:
@@ -213,9 +220,37 @@ def test_ui_contains_pagination_roles_and_appearance(tmp_path) -> None:
     assert page.status_code == 200
     assert 'data-brand-tab="appearance"' in page.text
     assert 'data-settings="roles"' in page.text
-    assert "static/app.js?v=8" in page.text
-    script = client.get("/static/app.js?v=8")
+    assert "static/app.js?v=9" in page.text
+    assert 'class="ideas-content" id="ideasGrid"' in page.text
+    assert 'class="sidebar-scroll"' in page.text
+    assert "interactive-widget=resizes-content" in page.text
+    assert "static/styles.css?v=9" in page.text
+    script = client.get("/static/app.js?v=9")
     assert script.status_code == 200
     assert "function pagination(" in script.text
     assert "function safeHtml(" in script.text
+    assert "function syncVisualViewport(" in script.text
+    assert "Прочитати все" in script.text
+    assert "permission-chip" in script.text
     assert "Обрано:" in script.text
+    styles = client.get("/static/styles.css")
+    assert styles.status_code == 200
+    assert ".sidebar-scroll" in styles.text
+    assert "height: var(--visual-viewport-height)" in styles.text
+    assert ".idea-grid { min-width: 0;" in styles.text
+
+
+def test_roles_api_exposes_translated_permission_help(tmp_path) -> None:
+    client = TestClient(make_app(tmp_path))
+    assert login(client).status_code == 200
+
+    response = client.get("/api/roles")
+
+    assert response.status_code == 200
+    owner = response.json()["items"][0]
+    permission = next(
+        item for item in owner["permission_details"]
+        if item["key"] == "workspace.settings"
+    )
+    assert permission["label"] == "Налаштування workspace"
+    assert "загальні параметри" in permission["description"]

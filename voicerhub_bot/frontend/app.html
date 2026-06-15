@@ -2,9 +2,9 @@
 <html lang="uk">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
   <title>Content Studio</title>
-  <link rel="stylesheet" href="__BASE_PATH__/static/styles.css">
+  <link rel="stylesheet" href="__BASE_PATH__/static/styles.css?v=9">
 </head>
 <body data-base-path="__BASE_PATH__">
 <div class="app-shell">
@@ -15,23 +15,24 @@
       <span style="min-width:0;text-align:left"><strong id="workspaceName">Workspace</strong><small id="workspacePlan">Завантаження…</small></span>
       <span style="margin-left:auto">⌄</span>
     </button>
-    <div class="nav-title">Workspace</div>
-    <nav class="nav-list" id="mainNav">
+    <div class="sidebar-scroll">
+      <div class="nav-title">Workspace</div>
+      <nav class="nav-list" id="mainNav">
       <button class="nav-item active" data-view="home"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v10h13V10M9 20v-6h6v6"/></svg></span>Головна</button>
       <button class="nav-item" data-view="ideas"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M9 18h6M10 22h4"/><path d="M8.2 15.4A7 7 0 1 1 15.8 15.4C14.7 16.2 14 17 14 18h-4c0-1-.7-1.8-1.8-2.6Z"/></svg></span>Ідеї<span class="nav-count" id="ideasCount">0</span></button>
       <button class="nav-item pipeline-only" data-view="plan"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5"/></svg></span>Контент-план</button>
       <button class="nav-item" data-view="drafts" data-kanban-label="Дошка"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 5h6v14H4zM14 5h6v8h-6zM14 17h6v2h-6z"/></svg></span><span id="draftsNavLabel">Чернетки</span><span class="nav-count" id="draftsCount">0</span></button>
       <button class="nav-item" data-view="calendar"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M5 4h14a2 2 0 0 1 2 2v14H3V6a2 2 0 0 1 2-2ZM3 9h18M8 2v4M16 2v4"/></svg></span>Календар</button>
-    </nav>
-    <div class="nav-title">Налаштування</div>
-    <nav class="nav-list">
+      </nav>
+      <div class="nav-title">Налаштування</div>
+      <nav class="nav-list">
       <button class="nav-item" data-view="brand"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="m12 3 8 5-8 5-8-5 8-5Z"/><path d="m4 12 8 5 8-5M4 16l8 5 8-5"/></svg></span>Бренд</button>
       <button class="nav-item" data-view="analytics"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg></span><span id="analyticsNavLabel">Витрати</span></button>
       <button class="nav-item" data-view="settings"><span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg></span>Налаштування</button>
-    </nav>
-    <div id="platformNav" hidden>
-      <div class="nav-title">Платформа</div>
-      <nav class="nav-list">
+      </nav>
+      <div id="platformNav" hidden>
+        <div class="nav-title">Платформа</div>
+        <nav class="nav-list">
         <button class="nav-item" data-platform-section="overview">Огляд</button>
         <button class="nav-item" data-platform-section="clients">Клієнти</button>
         <button class="nav-item" data-platform-section="organizations">Компанії</button>
@@ -39,7 +40,8 @@
         <button class="nav-item" data-platform-section="referrals">Реферали</button>
         <button class="nav-item" data-platform-section="activity">Активність</button>
         <button class="nav-item" data-platform-section="expenses">Витрати</button>
-      </nav>
+        </nav>
+      </div>
     </div>
     <div class="sidebar-user">
       <img class="avatar" id="userAvatar" alt="">
@@ -72,7 +74,7 @@
 
       <section class="view" id="ideasView">
         <div class="page-actions"><div class="filters" id="ideaFilters"></div><div class="row"><button id="manualIdea">Створити вручну</button><button class="primary" id="generateIdeas">✦ Згенерувати ідеї</button></div></div>
-        <div class="idea-grid" id="ideasGrid"></div>
+        <div class="ideas-content" id="ideasGrid"></div>
       </section>
 
       <section class="view" id="planView">
@@ -147,6 +149,6 @@
 <div class="overlay" id="editorOverlay" role="dialog" aria-modal="true" aria-label="Редактор публікації" hidden><div class="editor-page" id="editorContent"></div></div>
 <div class="toast" id="toast" hidden></div>
 <div hidden>CONTENT STUDIO · Налаштування workspace · Voicer Wave</div>
-<script src="__BASE_PATH__/static/app.js?v=8" defer></script>
+<script src="__BASE_PATH__/static/app.js?v=9" defer></script>
 </body>
 </html>

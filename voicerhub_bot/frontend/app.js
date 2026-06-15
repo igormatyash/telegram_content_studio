@@ -227,9 +227,23 @@ function pill(status) {
 function empty(title, text, action = "") {
   return `<div class="empty-state"><div style="font-size:28px;color:#818cf8">✦</div><h3>${esc(title)}</h3><p class="muted">${esc(text)}</p>${action}</div>`;
 }
-function notificationItems() {
+function notificationStorageKey() {
+  return `content-studio:read-notifications:${state.me?.id || "guest"}:${state.me?.organization_id || "none"}`;
+}
+function readNotificationKeys() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(notificationStorageKey()) || "[]"));
+  } catch {
+    return new Set();
+  }
+}
+function saveReadNotificationKeys(keys) {
+  localStorage.setItem(notificationStorageKey(), JSON.stringify([...keys]));
+}
+function notificationItems({includeRead = false} = {}) {
   const failed = (state.data?.jobs || []).filter(job => job.status === "failed");
   const items = failed.map(job => ({
+    key: `failed-job:${job.id}`,
     type: "error",
     jobId: job.id,
     title: "Не вдалося згенерувати матеріал",
@@ -241,6 +255,7 @@ function notificationItems() {
     : null;
   if (state.company?.plan_code === "trial" && expiry !== null && expiry <= 7) {
     items.push({
+      key: `trial:${state.company.plan_expires_at}`,
       type: expiry <= 0 ? "error" : "warning",
       title: expiry <= 0 ? "Trial завершився" : "Trial скоро завершиться",
       text: expiry <= 0 ? "Оберіть тариф для продовження роботи." : `Залишилося ${expiry} дн.`,
@@ -251,13 +266,24 @@ function notificationItems() {
   const budget = Number(state.company?.monthly_ai_budget || 0);
   if (budget && spend / budget >= .7) {
     items.push({
+      key: `budget:${new Date().toISOString().slice(0, 7)}:${budget}`,
       type: spend >= budget ? "error" : "warning",
       title: "AI-бюджет майже використано",
       text: `${money(spend)} з ${money(budget)} (${Math.round(spend / budget * 100)}%).`,
       action: "Відкрийте розділ «Витрати» для деталізації.",
     });
   }
-  return items;
+  const readKeys = readNotificationKeys();
+  return items
+    .map(item => ({...item, read: readKeys.has(item.key)}))
+    .filter(item => includeRead || !item.read);
+}
+function updateNotificationBadge() {
+  const notificationCount = notificationItems().length;
+  const notificationBadge = document.querySelector("#notificationCount");
+  notificationBadge.textContent = notificationCount;
+  notificationBadge.hidden = notificationCount === 0;
+  document.querySelector("#notificationsButton").classList.toggle("has-events", notificationCount > 0);
 }
 function appPathname() {
   const normalizedBase = basePath.replace(/\/+$/, "");
@@ -413,11 +439,7 @@ function applyIdentity() {
     const node = document.querySelector(selector);
     if (node) node.hidden = readOnly;
   });
-  const notificationCount = notificationItems().length;
-  const notificationBadge = document.querySelector("#notificationCount");
-  notificationBadge.textContent = notificationCount;
-  notificationBadge.hidden = notificationCount === 0;
-  document.querySelector("#notificationsButton").classList.toggle("has-events", notificationCount > 0);
+  updateNotificationBadge();
   renderSystemBanner();
 }
 
@@ -866,7 +888,7 @@ function renderSettings() {
   }
   else if (state.settingsTab === "roles") {
     if(!state.roles){target.innerHTML='<span class="skeleton"></span>';api("api/roles").then(data=>{state.roles=data;renderSettings();}).catch(error=>toast(error.message,true));return;}
-    target.innerHTML=`<article class="card settings-card"><div class="eyebrow">Права доступу</div><h2>Ролі workspace</h2><p class="muted">Platform Admin є окремою платформною роллю. Ролі нижче діють лише всередині поточного workspace.</p><div class="roles-list">${state.roles.items.map(role=>`<details class="role-card"><summary><span><strong>${esc(role.label)}</strong><small>${esc(role.description)}</small></span><span>${role.user_count} корист. · ${role.permissions.length} прав</span></summary><div class="permission-grid">${role.permissions.map(permission=>`<span>${esc(permission)}</span>`).join("")}</div></details>`).join("")}</div></article>`;
+    target.innerHTML=`<article class="card settings-card"><div class="eyebrow">Права доступу</div><h2>Ролі workspace</h2><p class="muted">Platform Admin є окремою платформною роллю. Ролі нижче діють лише всередині поточного workspace. Наведіть курсор або сфокусуйте право, щоб побачити пояснення.</p><div class="roles-list">${state.roles.items.map(role=>`<details class="role-card"><summary><span><strong>${esc(role.label)}</strong><small>${esc(role.description)}</small></span><span>${role.user_count} корист. · ${role.permissions.length} прав</span></summary><div class="permission-grid">${(role.permission_details||role.permissions.map(key=>({key,label:key,description:key}))).map(permission=>`<span class="permission-chip" tabindex="0" data-tooltip="${esc(permission.description)}" aria-label="${esc(`${permission.label}. ${permission.description}`)}"><strong>${esc(permission.label)}</strong><small>${esc(permission.key)}</small></span>`).join("")}</div></details>`).join("")}</div></article>`;
   }
   else if (state.settingsTab === "referral") {
     const referral = state.referral || {};
@@ -890,7 +912,7 @@ async function openEditor(id, push = true) {
       );
     }
     const target = document.querySelector("#editorContent");
-    target.innerHTML = `<header class="editor-header"><div class="row"><button id="closeEditor">←</button><div>${pill(draft.status)} <strong style="margin-left:8px">${esc(plain(draft.title))}</strong></div></div><div class="row"><button id="regenText">Перегенерувати текст</button><button id="saveDraft">Зберегти</button><button class="primary" id="publishDraft" ${["ready","scheduled"].includes(draft.status)?"":"disabled title=\"Спочатку погодьте матеріал\""}>Опублікувати</button></div></header><div class="editor-grid"><form class="editor-form" id="editorForm"><div class="status-actions">${(statusActions[draft.status]||[]).map(([next,label])=>`<button type="button" data-editor-status="${next}">${label}</button>`).join("")}</div><div class="form-grid"><label>Рубрика<input value="${esc(draft.product)}" disabled></label><label>Дата і час<input id="scheduleAt" type="datetime-local" value="${draft.scheduled_at?new Date(draft.scheduled_at).toISOString().slice(0,16):""}"></label></div><label>Заголовок для поста<input id="editorTitle" value="${esc(draft.title)}"></label><label>Заголовок на візуалі<input id="editorVisualTitle" value="${esc(draft.visual_title||draft.title)}"><small class="muted">Без emoji та зайвих символів.</small></label><label>Текст публікації<textarea id="editorCaption" style="min-height:330px">${esc(draft.caption_html)}</textarea></label><label>Посилання<input id="editorLink" value="${esc(draft.link_url||"")}"></label><div class="row"><button type="button" id="scheduleDraft" ${draft.image_path?"":"disabled title=\"Спочатку потрібен візуал\""}>Запланувати</button><button type="button" id="cancelSchedule" ${draft.status==="scheduled"?"":"hidden"}>Повернути в готові</button><button type="button" id="proofreadDraft">Перевірити текст</button></div></form><aside class="editor-preview"><div class="editor-preview-card"><div class="row"><span class="workspace-logo" style="width:30px;height:30px">${initials(state.company.name)}</span><div><strong>${esc(state.company.name)}</strong><small style="display:block;color:#94a3b8">Telegram</small></div></div><img src="${apiUrl(`api/drafts/${id}/image`)}" alt="" onerror="this.style.display='none'"><h2 id="previewTitle">${esc(plain(draft.visual_title||draft.title))}</h2><div id="previewText" class="telegram-preview-text">${safeHtml(draft.caption_html)}</div></div></aside></div>`;
+    target.innerHTML = `<header class="editor-header"><div class="row editor-title-row"><button id="closeEditor">←</button><div>${pill(draft.status)} <strong style="margin-left:8px">${esc(plain(draft.title))}</strong></div></div><div class="row editor-actions"><button id="regenText">Перегенерувати текст</button><button id="saveDraft">Зберегти</button><button class="primary" id="publishDraft" ${["ready","scheduled"].includes(draft.status)?"":"disabled title=\"Спочатку погодьте матеріал\""}>Опублікувати</button></div></header><div class="editor-grid"><form class="editor-form" id="editorForm"><div class="status-actions">${(statusActions[draft.status]||[]).map(([next,label])=>`<button type="button" data-editor-status="${next}">${label}</button>`).join("")}</div><div class="form-grid"><label>Рубрика<input value="${esc(draft.product)}" disabled></label><label>Дата і час<input id="scheduleAt" type="datetime-local" value="${draft.scheduled_at?new Date(draft.scheduled_at).toISOString().slice(0,16):""}"></label></div><label>Заголовок для поста<input id="editorTitle" value="${esc(draft.title)}"></label><label>Заголовок на візуалі<input id="editorVisualTitle" value="${esc(draft.visual_title||draft.title)}"><small class="muted">Без emoji та зайвих символів.</small></label><label>Текст публікації<textarea id="editorCaption" style="min-height:330px">${esc(draft.caption_html)}</textarea></label><label>Посилання<input id="editorLink" value="${esc(draft.link_url||"")}"></label><div class="row editor-secondary-actions"><button type="button" id="scheduleDraft" ${draft.image_path?"":"disabled title=\"Спочатку потрібен візуал\""}>Запланувати</button><button type="button" id="cancelSchedule" ${draft.status==="scheduled"?"":"hidden"}>Повернути в готові</button><button type="button" id="proofreadDraft">Перевірити текст</button></div></form><aside class="editor-preview"><div class="editor-preview-card"><div class="row"><span class="workspace-logo" style="width:30px;height:30px">${initials(state.company.name)}</span><div><strong>${esc(state.company.name)}</strong><small style="display:block;color:#94a3b8">Telegram</small></div></div><img src="${apiUrl(`api/drafts/${id}/image`)}" alt="" onerror="this.style.display='none'"><h2 id="previewTitle">${esc(plain(draft.visual_title||draft.title))}</h2><div id="previewText" class="telegram-preview-text">${safeHtml(draft.caption_html)}</div></div></aside></div>`;
     document.querySelector("#editorOverlay").hidden = false;
     bindEditorActions();
   } catch (error) { toast(error.message,true); }
@@ -1183,8 +1205,8 @@ async function refresh(background = false) {
   } catch (error) { if (!background) toast(error.message,true); }
 }
 
-document.querySelectorAll(".nav-item[data-view]").forEach(node=>node.onclick=()=>setView(node.dataset.view));
-document.querySelectorAll("[data-platform-section]").forEach(node=>node.onclick=()=>openPlatformSection(node.dataset.platformSection));
+document.querySelectorAll(".nav-item[data-view]").forEach(node=>node.onclick=()=>{document.body.classList.remove("menu-open");setView(node.dataset.view);});
+document.querySelectorAll("[data-platform-section]").forEach(node=>node.onclick=()=>{document.body.classList.remove("menu-open");openPlatformSection(node.dataset.platformSection);});
 document.querySelector("#platformRefresh").onclick=()=>loadPlatformSection(true);
 document.querySelector("#mobileMenu").onclick=()=>document.body.classList.add("menu-open");
 document.addEventListener("click",event=>{if(document.body.classList.contains("menu-open")&&!event.target.closest(".sidebar")&&!event.target.closest("#mobileMenu"))document.body.classList.remove("menu-open");});
@@ -1208,6 +1230,23 @@ document.addEventListener("keydown", event => {
 });
 window.addEventListener("online", renderSystemBanner);
 window.addEventListener("offline", renderSystemBanner);
+function syncVisualViewport() {
+  const viewport = window.visualViewport;
+  const height = Math.round(viewport?.height || window.innerHeight);
+  const offsetTop = Math.round(viewport?.offsetTop || 0);
+  const keyboardInset = Math.max(0, Math.round(window.innerHeight - height - offsetTop));
+  document.documentElement.style.setProperty("--visual-viewport-height", `${height}px`);
+  document.documentElement.style.setProperty("--visual-viewport-top", `${offsetTop}px`);
+  document.documentElement.style.setProperty("--keyboard-inset", `${keyboardInset}px`);
+  document.body.classList.toggle("keyboard-open", keyboardInset > 120);
+  if (keyboardInset > 120 && document.activeElement?.matches("input,textarea,select")) {
+    requestAnimationFrame(() => document.activeElement?.scrollIntoView({block:"nearest"}));
+  }
+}
+window.visualViewport?.addEventListener("resize", syncVisualViewport);
+window.visualViewport?.addEventListener("scroll", syncVisualViewport);
+window.addEventListener("resize", syncVisualViewport);
+syncVisualViewport();
 document.querySelector("#generateIdeas").onclick=event=>showForm("Згенерувати ідеї",`<label>Рубрика<select name="product"><option value="all">Усі рубрики</option>${(state.data?.rubrics||[]).map(x=>`<option value="${esc(x.slug)}">${esc(x.name)}</option>`).join("")}</select></label><label>Кількість<input name="count" type="number" min="1" max="12" value="8"></label><label class="wide">Фокус<textarea name="focus"></textarea></label>`,async form=>{await api("api/ideas/generate",{method:"POST",body:JSON.stringify({product:form.get("product"),count:Number(form.get("count")),focus:form.get("focus"),text_model:"gpt-5.4-mini",tone:"expert"})});toast("Ідеї створено");await refresh();});
 document.querySelector("#manualIdea").onclick=()=>showForm("Створити ідею",`<label class="wide">Назва<input name="title" required></label><label>Рубрика<select name="product">${(state.data.rubrics||[]).map(x=>`<option value="${esc(x.slug)}">${esc(x.name)}</option>`).join("")}</select></label><label>Орієнтовна дата<input name="planned_for" type="date"></label><label class="wide">Кут подачі<textarea name="angle"></textarea></label>`,async form=>{await api("api/ideas",{method:"POST",body:JSON.stringify({title:form.get("title"),product:form.get("product"),planned_for:form.get("planned_for")||null,angle:form.get("angle")})});toast("Ідею додано");await refresh();});
 document.querySelector("#manualDraft").onclick=()=>showForm("Створити чернетку",`<label class="wide">Заголовок<input name="title" required></label><label>Рубрика<select name="product">${(state.data.rubrics||[]).map(x=>`<option value="${esc(x.slug)}">${esc(x.name)}</option>`).join("")}</select></label><label>Заголовок на візуалі<input name="visual_title"></label><label class="wide">Текст<textarea name="caption_html" minlength="20" required></textarea></label><label class="wide">Посилання<input name="link_url" type="url"></label>`,async form=>{const draft=await api("api/drafts",{method:"POST",body:JSON.stringify({title:form.get("title"),visual_title:form.get("visual_title"),product:form.get("product"),caption_html:form.get("caption_html"),link_url:form.get("link_url")})});toast("Чернетку створено");await refresh();openEditor(draft.id);});
@@ -1241,22 +1280,32 @@ document.querySelector("#formBody").addEventListener("click", event => {
   if (button.dataset.createAction === "draft") { setView("drafts"); document.querySelector("#manualDraft").click(); }
   if (button.dataset.createAction === "plan") setView("plan");
 });
-document.querySelector("#notificationsButton").onclick=()=>{
-  const items = notificationItems();
+function openNotifications() {
+  const items = notificationItems({includeRead:true});
+  const unreadCount = items.filter(item => !item.read).length;
   showForm(
     "Сповіщення",
-    items.length ? items.map(item=>`<article class="wide notification-item ${item.type}"><strong>${esc(item.title)}</strong><p>${esc(item.text)}</p><small>${esc(item.action)}</small>${item.jobId?`<button type="button" data-retry-job="${item.jobId}">Повторити швидку генерацію</button>`:""}</article>`).join("") : `<div class="wide empty-state"><h3>Все гаразд</h3><p class="muted">Немає помилок генерації, попереджень про тариф або бюджет.</p></div>`,
+    items.length ? `<div class="wide notification-toolbar"><span>${unreadCount ? `Непрочитаних: ${unreadCount}` : "Усі сповіщення прочитані"}</span><button type="button" id="readAllNotifications" ${unreadCount ? "" : "disabled"}>Прочитати все</button></div>${items.map(item=>`<article class="wide notification-item ${item.type} ${item.read?"read":""}"><div class="row between"><strong>${esc(item.title)}</strong>${item.read?'<span class="notification-read-label">Прочитано</span>':""}</div><p>${esc(item.text)}</p><small>${esc(item.action)}</small>${item.jobId?`<button type="button" data-retry-job="${item.jobId}">Повторити швидку генерацію</button>`:""}</article>`).join("")}` : `<div class="wide empty-state"><h3>Все гаразд</h3><p class="muted">Немає помилок генерації, попереджень про тариф або бюджет.</p></div>`,
     null,
   );
+  document.querySelector("#readAllNotifications")?.addEventListener("click", () => {
+    saveReadNotificationKeys(new Set(items.map(item => item.key)));
+    updateNotificationBadge();
+    openNotifications();
+  });
   document.querySelectorAll("[data-retry-job]").forEach(button => button.onclick = async () => {
     await loading(button, async () => {
+      const readKeys = readNotificationKeys();
+      readKeys.delete(`failed-job:${button.dataset.retryJob}`);
+      saveReadNotificationKeys(readKeys);
       await api(`api/jobs/${button.dataset.retryJob}/retry-fast`, {method:"POST"});
       toast("Генерацію перезапущено");
       document.querySelector("#formOverlay").hidden = true;
       await refresh();
     }, "Запускаємо…");
   });
-};
+}
+document.querySelector("#notificationsButton").onclick=openNotifications;
 document.querySelector("#exportPlan").onclick=()=>exportCsv("content-plan.csv",(state.data.ideas||[]).filter(x=>x.plan_id),["planned_for","title","product","status"]);
 document.querySelector("#exportDrafts").onclick=()=>exportCsv("drafts.csv",state.data.drafts||[],["id","title","product","status","scheduled_at"]);
 document.querySelector("#exportUsage").onclick=()=>exportCsv("usage.csv",state.data.daily||[],["day","cost"]);
