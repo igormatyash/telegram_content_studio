@@ -3,6 +3,7 @@ from datetime import date, datetime, timedelta, timezone
 import html
 import json
 from pathlib import Path
+import shutil
 from uuid import uuid4
 import re
 from urllib.parse import urlencode
@@ -381,6 +382,10 @@ class CheckoutRequest(BaseModel):
 
 class WorkspaceSelectRequest(BaseModel):
     organization_id: int = Field(ge=1)
+
+
+class WorkspaceDeleteRequest(BaseModel):
+    confirmation_name: str = Field(min_length=2, max_length=100)
 
 
 class WorkspaceModeRequest(BaseModel):
@@ -1537,6 +1542,57 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             user_agent=request.headers.get("user-agent", ""),
         )
         return user
+
+    @app.delete("/api/workspaces/{workspace_id}")
+    def delete_workspace(
+        workspace_id: int,
+        payload: WorkspaceDeleteRequest,
+        voicerhub_session: str | None = Cookie(default=None),
+        user: dict = Depends(authorize_write),
+    ) -> dict:
+        try:
+            workspace = saas.get_organization(workspace_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Workspace не знайдено") from exc
+        role = saas.role_for_user(workspace_id, user["id"])
+        if not user.get("is_super_admin") and role != "owner":
+            raise HTTPException(
+                status_code=403,
+                detail="Видалити workspace може лише його власник",
+            )
+        if payload.confirmation_name.strip() != str(workspace["name"]).strip():
+            raise HTTPException(
+                status_code=422,
+                detail="Введіть точну назву workspace для підтвердження",
+            )
+        try:
+            deleted = saas.delete_organization(workspace_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        repository.forget(workspace_id)
+        workspace_root = settings.organizations_dir / str(workspace_id)
+        if workspace_root.is_dir():
+            shutil.rmtree(workspace_root, ignore_errors=True)
+        next_user = auth.session_user(voicerhub_session)
+        if next_user is None or not next_user.get("organization_id"):
+            available = saas.organizations_for_user(
+                user["id"],
+                platform_admin=bool(user.get("is_super_admin")),
+            )
+            if available:
+                auth.select_session_organization(
+                    voicerhub_session,
+                    int(available[0]["id"]),
+                )
+                next_user = auth.session_user(voicerhub_session)
+        return {
+            "deleted": int(deleted["id"]),
+            "next_workspace_id": (
+                int(next_user["organization_id"])
+                if next_user and next_user.get("organization_id")
+                else None
+            ),
+        }
 
     @app.get("/api/onboarding")
     def onboarding_state(user: dict = Depends(authorize)) -> dict:
@@ -2755,6 +2811,111 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return {"company": company, "settings": appearance}
 
+    @app.post("/api/workspace/appearance/assets")
+    async def upload_workspace_appearance_asset(
+        kind: str = Form(...),
+        file: UploadFile = File(...),
+        user: dict = Depends(require_permission("workspace.settings")),
+    ) -> dict:
+        if kind not in {"avatar", "logo"}:
+            raise HTTPException(status_code=422, detail="Невідомий тип зображення")
+        media_type = file.content_type or ""
+        allowed_types = {
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/webp": ".webp",
+        }
+        if media_type not in allowed_types:
+            raise HTTPException(
+                status_code=422,
+                detail="Підтримуються PNG, JPG або WebP",
+            )
+        content = await file.read()
+        if not content or len(content) > 5 * 1024 * 1024:
+            raise HTTPException(
+                status_code=422,
+                detail="Зображення має бути меншим за 5 MB",
+            )
+        try:
+            image = Image.open(BytesIO(content))
+            image.load()
+            width, height = image.size
+        except Exception as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="Пошкоджений файл зображення",
+            ) from exc
+        if width < 256 or height < 120 or width > 4096 or height > 4096:
+            raise HTTPException(
+                status_code=422,
+                detail="Розмір зображення має бути від 256×120 до 4096×4096 px",
+            )
+        ratio = width / height
+        if kind == "avatar" and not 0.8 <= ratio <= 1.25:
+            raise HTTPException(
+                status_code=422,
+                detail="Для аватара потрібне квадратне зображення 1:1",
+            )
+        if kind == "logo" and not 0.5 <= ratio <= 8:
+            raise HTTPException(
+                status_code=422,
+                detail="Для логотипа використайте пропорції від 1:2 до 8:1",
+            )
+        suffix = allowed_types[media_type]
+        _, reference_dir = organization_dirs(repository.organization_id)
+        path = reference_dir / f"{uuid4().hex}{suffix}"
+        path.write_bytes(content)
+        reference = repository.add_reference(
+            name=("Аватар workspace" if kind == "avatar" else "Логотип компанії"),
+            filename=(file.filename or path.name)[:200],
+            path=str(path),
+            media_type=media_type,
+            material_type=f"workspace_{kind}",
+            description=f"Зображення оформлення {width}×{height}",
+            created_by_user_id=user["id"],
+        )
+        return {
+            **reference,
+            "url": f"api/references/{reference['id']}/image",
+            "width": width,
+            "height": height,
+        }
+
+    @app.get("/api/workspaces/{workspace_id}/appearance/{kind}")
+    def workspace_appearance_image(
+        workspace_id: int,
+        kind: str,
+        user: dict = Depends(authorize),
+    ) -> FileResponse:
+        if kind not in {"avatar", "logo"}:
+            raise HTTPException(status_code=404, detail="Зображення не знайдено")
+        if not user.get("is_super_admin") and not saas.role_for_user(
+            workspace_id,
+            user["id"],
+        ):
+            raise HTTPException(status_code=404, detail="Workspace не знайдено")
+        try:
+            appearance = saas.organization_settings(workspace_id)
+            asset_id = appearance[
+                "workspace_avatar_asset_id"
+                if kind == "avatar"
+                else "brand_logo_asset_id"
+            ]
+            if not asset_id:
+                raise KeyError("Appearance asset is not configured")
+            reference = repository.for_organization(workspace_id).get_reference(
+                int(asset_id)
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Зображення не знайдено",
+            ) from exc
+        path = Path(reference["path"])
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Файл зображення відсутній")
+        return FileResponse(path, media_type=reference["media_type"])
+
     @app.put("/api/company/telegram")
     async def connect_telegram(
         payload: TelegramConnectionRequest,
@@ -2916,6 +3077,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         per_page: int = 25,
         search: str = "",
         rubric: str = "",
+        date_from: str = "",
+        date_to: str = "",
         sort: str = "created_at",
         direction: str = "desc",
         _: dict = Depends(authorize),
@@ -2925,6 +3088,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             per_page=per_page,
             search=search,
             rubric=rubric,
+            date_from=date_from,
+            date_to=date_to,
             sort=sort,
             direction=direction,
         )
@@ -2992,6 +3157,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         per_page: int = 25,
         search: str = "",
         status: str = "",
+        rubric: str = "",
+        date_from: str = "",
+        date_to: str = "",
         sort: str = "created_at",
         direction: str = "desc",
         _: dict = Depends(authorize),
@@ -3001,6 +3169,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             per_page=per_page,
             search=search,
             status=status,
+            rubric=rubric,
+            date_from=date_from,
+            date_to=date_to,
             sort=sort,
             direction=direction,
         )

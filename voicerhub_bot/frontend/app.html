@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
   <title>Content Studio</title>
-  <link rel="stylesheet" href="__BASE_PATH__/static/styles.css?v=11">
+  <link rel="stylesheet" href="__BASE_PATH__/static/styles.css?v=12">
 </head>
 <body data-base-path="__BASE_PATH__">
 <div class="app-shell">
@@ -29,6 +29,7 @@
       <button class="nav-item" data-view="brand"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="m12 3 8 5-8 5-8-5 8-5Z"/><path d="m4 12 8 5 8-5M4 16l8 5 8-5"/></svg></span>Бренд</button>
       <button class="nav-item" data-view="analytics"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg></span><span id="analyticsNavLabel">Витрати</span></button>
       <button class="nav-item" data-view="settings"><span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg></span>Налаштування</button>
+      <button class="nav-item" id="openGuide"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11v17H6.5A2.5 2.5 0 0 0 4 22V5.5ZM20 5.5A2.5 2.5 0 0 0 17.5 3H13v17h4.5A2.5 2.5 0 0 1 20 22V5.5Z"/></svg></span>Гайд по сервісу</button>
       </nav>
       <div id="platformNav" hidden>
         <div class="nav-title">Платформа</div>
@@ -143,7 +144,7 @@
   </section>
 </div>
 
-<div class="overlay" id="workspaceOverlay" role="dialog" aria-modal="true" aria-label="Вибір workspace" hidden><div class="modal"><div class="modal-head"><div><div class="eyebrow">Вітаємо</div><h2 style="margin:3px 0">Оберіть workspace</h2></div><button class="icon-button" data-close-overlay aria-label="Закрити">×</button></div><div class="modal-body"><div class="workspace-grid" id="workspaceGrid"></div></div></div></div>
+<div class="overlay" id="workspaceOverlay" role="dialog" aria-modal="true" aria-label="Вибір workspace" hidden><div class="modal workspace-chooser-modal"><div class="modal-head"><div><div class="eyebrow">Ваші робочі простори</div><h2 style="margin:3px 0">Вибрати workspace</h2><p class="muted modal-subtitle">Кожен workspace має окремі бренд, контент, команду, канал і календар.</p></div><button class="icon-button" data-close-overlay aria-label="Закрити">×</button></div><div class="modal-body"><div class="workspace-grid" id="workspaceGrid"></div></div></div></div>
 <div class="overlay" id="onboardingOverlay" role="dialog" aria-modal="true" aria-labelledby="onboardingTitle" hidden><div class="modal" style="width:min(820px,100%)"><div class="onboarding-layout"><aside class="onboarding-steps" id="onboardingSteps"></aside><section><div class="modal-head"><div><div class="eyebrow">Налаштування workspace</div><h2 id="onboardingTitle" style="margin:3px 0"></h2></div><button class="ghost" id="skipOnboarding">Пропустити</button></div><div class="modal-body" id="onboardingBody"></div><div class="modal-foot"><button id="onboardingBack">← Назад</button><button class="primary" id="onboardingNext">Далі →</button></div></section></div></div></div>
 <div class="overlay" id="formOverlay" role="dialog" aria-modal="true" aria-labelledby="formTitle" hidden><div class="modal"><div class="modal-head"><h2 id="formTitle" style="margin:0"></h2><button class="icon-button" data-close-overlay aria-label="Закрити">×</button></div><form id="dynamicForm"><div class="modal-body" id="formBody"></div><div class="modal-foot"><button type="button" data-close-overlay>Скасувати</button><button class="primary" type="submit">Зберегти</button></div></form></div></div>
 <div class="overlay ai-progress-overlay" id="aiProgressOverlay" role="status" aria-live="polite" hidden>
@@ -157,8 +158,15 @@
   </div>
 </div>
 <div class="overlay" id="editorOverlay" role="dialog" aria-modal="true" aria-label="Редактор публікації" hidden><div class="editor-page" id="editorContent"></div></div>
+<div class="overlay" id="guideOverlay" role="dialog" aria-modal="true" aria-labelledby="guideTitle" hidden>
+  <div class="modal guide-modal">
+    <div class="modal-head"><div><div class="eyebrow">Content Studio Academy</div><h2 id="guideTitle" style="margin:3px 0">Як працювати із сервісом</h2></div><button class="icon-button" data-close-overlay aria-label="Закрити">×</button></div>
+    <div class="guide-content" id="guideContent"></div>
+    <div class="modal-foot guide-footer"><button id="guideBack">← Назад</button><div class="guide-dots" id="guideDots"></div><button class="primary" id="guideNext">Далі →</button></div>
+  </div>
+</div>
 <div class="toast" id="toast" hidden></div>
 <div hidden>CONTENT STUDIO · Налаштування workspace · Voicer Wave</div>
-  <script src="__BASE_PATH__/static/app.js?v=11" defer></script>
+  <script src="__BASE_PATH__/static/app.js?v=12" defer></script>
 </body>
 </html>

@@ -524,12 +524,18 @@ class SaasRepository:
             rows = connection.execute(
                 """
                 SELECT o.*,
+                    s.workspace_short_description,
+                    s.workspace_avatar_asset_id,
+                    s.brand_logo_asset_id,
+                    s.brand_primary_color,
+                    s.brand_secondary_color,
                     COUNT(DISTINCT m.user_id) user_count,
                     COUNT(DISTINCT CASE WHEN tc.active = 1 THEN tc.organization_id END)
                         channel_count
                 FROM organizations o
                 LEFT JOIN organization_members m ON m.organization_id = o.id
                 LEFT JOIN telegram_connections tc ON tc.organization_id = o.id
+                LEFT JOIN organization_settings s ON s.organization_id = o.id
                 WHERE o.company_id = ?
                 GROUP BY o.id
                 ORDER BY o.id
@@ -609,6 +615,106 @@ class SaasRepository:
                 (name.strip(), normalized, organization_id),
             )
         return self.get_organization(organization_id)
+
+    def delete_organization(self, organization_id: int) -> dict:
+        organization = self.get_organization(organization_id)
+        if organization_id == 1:
+            raise ValueError("Системний workspace не можна видалити")
+        company_id = int(organization["company_id"])
+        if len(self.workspaces_for_company(company_id)) <= 1:
+            raise ValueError(
+                "Не можна видалити єдиний workspace компанії. "
+                "Спочатку створіть інший workspace."
+            )
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE referral_signups
+                SET referrer_organization_id = NULL
+                WHERE referrer_organization_id = ?
+                """,
+                (organization_id,),
+            )
+            connection.execute(
+                """
+                UPDATE referral_signups
+                SET new_organization_id = NULL
+                WHERE new_organization_id = ?
+                """,
+                (organization_id,),
+            )
+            connection.execute(
+                """
+                UPDATE referral_codes
+                SET owner_organization_id = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE owner_organization_id = ?
+                """,
+                (organization_id,),
+            )
+            connection.execute(
+                """
+                UPDATE organizations
+                SET referred_by_organization_id = NULL
+                WHERE referred_by_organization_id = ?
+                """,
+                (organization_id,),
+            )
+            connection.execute(
+                "DELETE FROM auth_action_tokens WHERE organization_id = ?",
+                (organization_id,),
+            )
+            connection.execute(
+                "UPDATE login_events SET organization_id = NULL WHERE organization_id = ?",
+                (organization_id,),
+            )
+            connection.execute(
+                """
+                DELETE FROM star_payments
+                WHERE organization_id = ?
+                   OR order_id IN (
+                        SELECT id FROM billing_orders WHERE organization_id = ?
+                   )
+                """,
+                (organization_id, organization_id),
+            )
+            connection.execute(
+                "DELETE FROM billing_orders WHERE organization_id = ?",
+                (organization_id,),
+            )
+            connection.execute(
+                "DELETE FROM telegram_connections WHERE organization_id = ?",
+                (organization_id,),
+            )
+            connection.execute(
+                "DELETE FROM organization_settings WHERE organization_id = ?",
+                (organization_id,),
+            )
+            connection.execute(
+                "DELETE FROM organization_members WHERE organization_id = ?",
+                (organization_id,),
+            )
+            connection.execute(
+                """
+                UPDATE user_sessions
+                SET selected_organization_id = (
+                    SELECT m.organization_id
+                    FROM organization_members m
+                    JOIN organizations o ON o.id = m.organization_id
+                    WHERE m.user_id = user_sessions.user_id
+                      AND o.active = 1
+                    ORDER BY m.organization_id
+                    LIMIT 1
+                )
+                WHERE selected_organization_id = ?
+                """,
+                (organization_id,),
+            )
+            connection.execute(
+                "DELETE FROM organizations WHERE id = ?",
+                (organization_id,),
+            )
+        return organization
 
     def set_organizations_active(
         self,
@@ -747,6 +853,11 @@ class SaasRepository:
                 """
                 SELECT o.*,
                     c.name company_name, c.slug company_slug,
+                    s.workspace_short_description,
+                    s.workspace_avatar_asset_id,
+                    s.brand_logo_asset_id,
+                    s.brand_primary_color,
+                    s.brand_secondary_color,
                     COUNT(DISTINCT m.user_id) user_count,
                     COUNT(DISTINCT CASE WHEN tc.active = 1 THEN tc.organization_id END)
                         channel_count
@@ -754,6 +865,7 @@ class SaasRepository:
                 JOIN companies c ON c.id = o.company_id
                 LEFT JOIN organization_members m ON m.organization_id = o.id
                 LEFT JOIN telegram_connections tc ON tc.organization_id = o.id
+                LEFT JOIN organization_settings s ON s.organization_id = o.id
                 GROUP BY o.id
                 ORDER BY o.id
                 """

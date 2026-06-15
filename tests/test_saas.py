@@ -130,6 +130,21 @@ def test_trial_workspace_has_start_limits_and_expiration(tmp_path) -> None:
     )
 
 
+def test_workspace_delete_rejects_last_workspace(tmp_path) -> None:
+    database = tmp_path / "delete-last.sqlite3"
+    auth = AuthRepository(database)
+    auth.create_user("owner", "owner-password", is_admin=True)
+    saas = SaasRepository(database, Fernet.generate_key().decode())
+    organization = saas.ensure_legacy_organization()
+
+    try:
+        saas.delete_organization(organization["id"])
+    except ValueError as exc:
+        assert "Системний workspace" in str(exc)
+    else:
+        raise AssertionError("System workspace deletion must be rejected")
+
+
 def test_tenant_repositories_are_isolated(tmp_path) -> None:
     router = TenantRepository(
         tmp_path / "legacy.sqlite3",

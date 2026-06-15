@@ -1,9 +1,11 @@
 from io import BytesIO
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
+from io import BytesIO
 
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
+from PIL import Image
 from PIL import Image
 
 import voicerhub_bot.admin as admin_module
@@ -295,6 +297,90 @@ def test_invitation_reset_and_trial_workspace_flows(tmp_path) -> None:
     )
     assert trial.status_code == 200
     assert trial.json()["plan_code"] == "trial"
+
+
+def test_workspace_delete_requires_owner_name_and_preserves_company(tmp_path) -> None:
+    client = make_client(tmp_path)
+    assert login(client).status_code == 200
+    headers = {"X-Requested-With": "VoicerHubAdmin"}
+    created = client.post(
+        "/api/account/trial-workspace",
+        headers=headers,
+        json={"name": "Campaign Room", "slug": "campaign-room"},
+    )
+    assert created.status_code == 200
+    workspace_id = created.json()["id"]
+    assert (tmp_path / "organizations" / str(workspace_id)).is_dir()
+
+    wrong = client.request(
+        "DELETE",
+        f"/api/workspaces/{workspace_id}",
+        headers=headers,
+        json={"confirmation_name": "Campaign"},
+    )
+    assert wrong.status_code == 422
+
+    deleted = client.request(
+        "DELETE",
+        f"/api/workspaces/{workspace_id}",
+        headers=headers,
+        json={"confirmation_name": "Campaign Room"},
+    )
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] == workspace_id
+    assert deleted.json()["next_workspace_id"] == 1
+    assert not (tmp_path / "organizations" / str(workspace_id)).exists()
+    profile = client.get("/api/me").json()
+    assert profile["organization_id"] == 1
+    assert all(item["id"] != workspace_id for item in profile["workspaces"])
+
+
+def test_workspace_appearance_assets_are_direct_image_uploads(tmp_path) -> None:
+    client = make_client(tmp_path)
+    assert login(client).status_code == 200
+    headers = {"X-Requested-With": "VoicerHubAdmin"}
+    avatar = BytesIO()
+    Image.new("RGBA", (512, 512), (79, 70, 229, 255)).save(avatar, "PNG")
+    uploaded = client.post(
+        "/api/workspace/appearance/assets",
+        headers=headers,
+        data={"kind": "avatar"},
+        files={"file": ("avatar.png", avatar.getvalue(), "image/png")},
+    )
+    assert uploaded.status_code == 200
+    assert uploaded.json()["width"] == 512
+    assert uploaded.json()["material_type"] == "workspace_avatar"
+
+    saved = client.put(
+        "/api/workspace/appearance",
+        headers=headers,
+        json={
+            "name": "VoicerHub",
+            "slug": "",
+            "short_description": "Контент-команда",
+            "primary_color": "#4f46e5",
+            "secondary_color": "#a855f7",
+            "avatar_asset_id": uploaded.json()["id"],
+            "logo_asset_id": None,
+            "favicon_asset_id": None,
+        },
+    )
+    assert saved.status_code == 200
+    assert (
+        saved.json()["settings"]["workspace_avatar_asset_id"]
+        == uploaded.json()["id"]
+    )
+    assert client.get("/api/workspaces/1/appearance/avatar").status_code == 200
+
+    invalid_logo = BytesIO()
+    Image.new("RGB", (300, 3000), "white").save(invalid_logo, "JPEG")
+    rejected = client.post(
+        "/api/workspace/appearance/assets",
+        headers=headers,
+        data={"kind": "logo"},
+        files={"file": ("logo.jpg", invalid_logo.getvalue(), "image/jpeg")},
+    )
+    assert rejected.status_code == 422
 
 
 def test_google_signup_creates_trial_workspace(tmp_path, monkeypatch) -> None:

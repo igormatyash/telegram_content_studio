@@ -677,6 +677,9 @@ class DraftRepository:
         per_page: int = 25,
         search: str = "",
         status: str = "",
+        rubric: str = "",
+        date_from: str = "",
+        date_to: str = "",
         sort: str = "created_at",
         direction: str = "desc",
     ) -> dict:
@@ -695,6 +698,15 @@ class DraftRepository:
         if status:
             clauses.append("status = ?")
             params.append(status)
+        if rubric:
+            clauses.append("product = ?")
+            params.append(rubric)
+        if date_from:
+            clauses.append("DATE(COALESCE(scheduled_at, created_at)) >= DATE(?)")
+            params.append(date_from)
+        if date_to:
+            clauses.append("DATE(COALESCE(scheduled_at, created_at)) <= DATE(?)")
+            params.append(date_to)
         return self._paginate_table(
             "drafts",
             where=" AND ".join(clauses),
@@ -1344,6 +1356,8 @@ class DraftRepository:
         search: str = "",
         rubric: str = "",
         plan_only: bool = False,
+        date_from: str = "",
+        date_to: str = "",
         sort: str = "created_at",
         direction: str = "desc",
     ) -> dict:
@@ -1358,6 +1372,12 @@ class DraftRepository:
             params.append(rubric)
         if plan_only:
             clauses.append("plan_id IS NOT NULL")
+        if date_from:
+            clauses.append("DATE(COALESCE(planned_for, created_at)) >= DATE(?)")
+            params.append(date_from)
+        if date_to:
+            clauses.append("DATE(COALESCE(planned_for, created_at)) <= DATE(?)")
+            params.append(date_to)
         return self._paginate_table(
             "content_ideas",
             where=" AND ".join(clauses),
@@ -2175,6 +2195,11 @@ class TenantRepository:
                 organization_id=organization_id,
             )
         return self._repositories[organization_id]
+
+    def forget(self, organization_id: int) -> None:
+        if organization_id == 1:
+            return
+        self._repositories.pop(organization_id, None)
 
     def __getattr__(self, name: str):
         return getattr(self.for_organization(self.organization_id), name)
