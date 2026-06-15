@@ -142,4 +142,72 @@ def test_platform_routes_are_hidden_from_regular_users(tmp_path) -> None:
     assert 'id="platformNav"' in platform_page.text
     assert 'id="platformView"' in platform_page.text
     assert "data-platform-section=\"referrals\"" in platform_page.text
-    assert "static/app.js?v=9" in platform_page.text
+    assert "static/app.js?v=10" in platform_page.text
+
+
+def test_company_details_include_workspaces_users_and_roles(tmp_path) -> None:
+    app = make_app(tmp_path)
+    platform = TestClient(app)
+    assert platform.post(
+        "/api/login",
+        json={"username": "platform.owner", "password": "initial-password"},
+    ).status_code == 200
+    created = platform.post(
+        "/api/companies",
+        headers=HEADERS,
+        json={
+            "name": "Multi Workspace Company",
+            "slug": "multi-company",
+            "workspace_name": "Marketing",
+            "owner_username": "multi.owner",
+            "owner_password": "multi-owner-password",
+            "owner_email": "owner@multi.example",
+            "owner_display_name": "Марія Власниця",
+            "max_workspaces": 5,
+        },
+    )
+    assert created.status_code == 200
+    company_id = created.json()["company"]["id"]
+
+    owner = TestClient(app)
+    assert owner.post(
+        "/api/login",
+        json={"username": "multi.owner", "password": "multi-owner-password"},
+    ).status_code == 200
+    second_workspace = owner.post(
+        "/api/account/trial-workspace",
+        headers=HEADERS,
+        json={"name": "Sales", "slug": "multi-sales", "company_id": company_id},
+    )
+    assert second_workspace.status_code == 200
+    assert second_workspace.json()["company_id"] == company_id
+
+    companies = platform.get("/api/platform/companies", headers=HEADERS)
+    assert companies.status_code == 200
+    company = next(
+        item for item in companies.json()["companies"]
+        if item["id"] == company_id
+    )
+    assert company["workspace_count"] == 2
+    assert company["user_count"] == 1
+    assert company["role_counts"]["owner"] == 1
+
+    detail = platform.get(
+        f"/api/platform/companies/{company_id}",
+        headers=HEADERS,
+    )
+    assert detail.status_code == 200
+    assert {item["name"] for item in detail.json()["workspaces"]} == {
+        "Marketing",
+        "Sales",
+    }
+    user = detail.json()["users"][0]
+    assert user["display_name"] == "Марія Власниця"
+    assert user["email"] == "owner@multi.example"
+    assert user["company_role"] == "owner"
+    assert {item["role"] for item in user["workspace_roles"]} == {"owner"}
+
+    assert owner.get(
+        f"/api/platform/companies/{company_id}",
+        headers=HEADERS,
+    ).status_code == 403

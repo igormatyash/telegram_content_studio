@@ -18,6 +18,7 @@ const state = {
   platformPeriod: "month",
   platformSection: "overview",
   platformClientId: null,
+  platformCompanyId: null,
   platformData: {},
   lists: {},
   selected: {},
@@ -294,9 +295,13 @@ function appPathname() {
 function routeFromLocation() {
   const parts = appPathname().split("/").filter(Boolean);
   if (parts[0] === "platform") {
-    const sections = new Set(["clients","organizations","users","referrals","activity","expenses"]);
-    state.platformSection = sections.has(parts[1]) ? parts[1] : "overview";
+    const requestedSection = parts[1] === "organizations" ? "companies" : parts[1];
+    const sections = new Set(["clients","companies","users","referrals","activity","expenses"]);
+    state.platformSection = sections.has(requestedSection) ? requestedSection : "overview";
     state.platformClientId = state.platformSection === "clients" && Number(parts[2])
+      ? Number(parts[2])
+      : null;
+    state.platformCompanyId = state.platformSection === "companies" && Number(parts[2])
       ? Number(parts[2])
       : null;
     return {view:"platform",draftId:null};
@@ -352,7 +357,13 @@ function urlForView(view) {
   if (view === "platform") {
     route = state.platformSection === "overview"
       ? "platform"
-      : `platform/${state.platformSection}${state.platformClientId ? `/${state.platformClientId}` : ""}`;
+      : `platform/${state.platformSection}${
+        state.platformClientId
+          ? `/${state.platformClientId}`
+          : state.platformCompanyId
+          ? `/${state.platformCompanyId}`
+          : ""
+      }`;
   }
   return `${basePath}/${route}${query ? `?${query}` : ""}`;
 }
@@ -752,7 +763,7 @@ function renderPlatformAnalytics() {
 const platformMeta = {
   overview: ["Огляд платформи","Ключові метрики реєстрацій, клієнтів і використання."],
   clients: ["Клієнти","Усі зареєстровані клієнти та джерела їх залучення."],
-  organizations: ["Компанії","Workspace, власники, контент, ліміти та активність."],
+  companies: ["Компанії","Юридичні клієнти, їхні користувачі, ролі, workspace та активність."],
   users: ["Користувачі","Загальний список акаунтів сервісу."],
   referrals: ["Реферали","Посилання, переходи та реферальні реєстрації."],
   activity: ["Активність","Журнал важливих дій і входів без відкритих IP-адрес."],
@@ -764,9 +775,10 @@ const platformDate = value => value
 function platformEmpty(title, text) {
   return `<div class="empty-state"><h3>${esc(title)}</h3><p class="muted">${esc(text)}</p></div>`;
 }
-async function openPlatformSection(section, {push = true, clientId = null} = {}) {
+async function openPlatformSection(section, {push = true, clientId = null, companyId = null} = {}) {
   state.platformSection = section;
   state.platformClientId = clientId;
+  state.platformCompanyId = companyId;
   state.platformData[section] = null;
   setView("platform",{push});
   await loadPlatformSection();
@@ -774,7 +786,11 @@ async function openPlatformSection(section, {push = true, clientId = null} = {})
 async function loadPlatformSection(force = false) {
   if (!state.me?.is_super_admin) return;
   const section = state.platformSection;
-  const cacheKey = state.platformClientId ? `client-${state.platformClientId}` : section;
+  const cacheKey = state.platformClientId
+    ? `client-${state.platformClientId}`
+    : state.platformCompanyId
+    ? `company-${state.platformCompanyId}`
+    : section;
   if (!force && state.platformData[cacheKey]) {
     renderPlatform();
     return;
@@ -785,7 +801,8 @@ async function loadPlatformSection(force = false) {
     if (section === "overview") data = await api("api/platform/overview");
     else if (section === "clients" && state.platformClientId) data = await api(`api/platform/clients/${state.platformClientId}`);
     else if (section === "clients") data = await api(`api/platform/clients?${new URLSearchParams(location.search)}`);
-    else if (section === "organizations") data = await api(`api/platform/organizations/details?${pageParams()}`);
+    else if (section === "companies" && state.platformCompanyId) data = await api(`api/platform/companies/${state.platformCompanyId}`);
+    else if (section === "companies") data = await api(`api/platform/companies?${pageParams()}`);
     else if (section === "users") data = await api(`api/platform/users?${pageParams()}`);
     else if (section === "referrals") data = await api(`api/platform/referrals?${pageParams()}`);
     else if (section === "activity") data = await api(`api/platform/activity?${pageParams()}`);
@@ -803,20 +820,25 @@ function renderPlatform() {
   document.querySelector("#platformHeading").textContent = heading;
   document.querySelector("#platformDescription").textContent = description;
   document.querySelectorAll("[data-platform-section]").forEach(node => node.classList.toggle("active",node.dataset.platformSection===state.platformSection));
-  const key = state.platformClientId ? `client-${state.platformClientId}` : state.platformSection;
+  const key = state.platformClientId
+    ? `client-${state.platformClientId}`
+    : state.platformCompanyId
+    ? `company-${state.platformCompanyId}`
+    : state.platformSection;
   const data = state.platformData[key];
   if (!data) return;
   if (state.platformSection === "overview") {
     const m = data.metrics;
     target.innerHTML = `<div class="platform-metric-grid">${[
       ["Нові сьогодні",m.registrations_today],["Нові за 7 днів",m.registrations_7d],
-      ["Користувачі",m.users_total],["Компанії",m.organizations_total],
-      ["Активні компанії",m.active_organizations],["Workspace за місяць",m.new_workspaces_month],
+      ["Користувачі",m.users_total],["Компанії",m.companies_total],
+      ["Workspace",m.workspaces_total],["Активні компанії",m.active_companies],
+      ["Workspace за місяць",m.new_workspaces_month],
       ["AI-витрати за місяць",money(m.ai_cost_month)],["Публікації",m.publications_total],
       ["Реферальні реєстрації",m.referral_signups],
     ].map(([label,value])=>`<article class="card metric"><span>${esc(label)}</span><strong>${esc(value)}</strong></article>`).join("")}</div>
     <div class="platform-grid"><article class="card panel"><h2>Реєстрації по днях</h2>${data.registrations_by_day.length?`<div class="platform-bars">${data.registrations_by_day.map(row=>`<div title="${row.day}: ${row.count}"><span style="height:${Math.max(8,row.count*18)}px"></span><small>${row.day.slice(5)}</small></div>`).join("")}</div>`:platformEmpty("Клієнтів ще немає","Нові реєстрації з’являться в цьому розділі.")}</article>
-    <article class="card panel"><h2>Топ компаній за usage</h2>${data.top_organizations.map(row=>`<div class="usage-row"><span><strong>${esc(row.name)}</strong><small class="muted" style="display:block">${row.draft_count} чернеток · ${row.published_count} публікацій</small></span><strong>${money(row.ai_cost)}</strong></div>`).join("")||'<p class="muted">Ще немає usage.</p>'}</article></div>`;
+    <article class="card panel"><h2>Топ компаній за usage</h2>${data.top_companies.map(row=>`<div class="usage-row"><span><strong>${esc(row.name)}</strong><small class="muted" style="display:block">${row.workspace_count} workspace · ${row.user_count} корист. · ${row.published_count} публікацій</small></span><strong>${money(row.ai_cost)}</strong></div>`).join("")||'<p class="muted">Ще немає usage.</p>'}</article></div>`;
   } else if (state.platformSection === "clients" && state.platformClientId) {
     const client=data.client;
     target.innerHTML = `<button id="backToClients">← До списку клієнтів</button><div class="client-profile card panel"><div class="row between"><div><div class="eyebrow">Клієнт #${client.id}</div><h2>${esc(client.display_name||client.username)}</h2><p class="muted">${esc(client.email||client.username)}</p></div><span class="pill ${client.active?"ready":"failed"}">${client.active?"Активний":"Вимкнений"}</span></div>
@@ -828,19 +850,31 @@ function renderPlatform() {
       ["Ідеї",data.content_totals.ideas],["Чернетки",data.content_totals.drafts],
       ["Публікації",data.content_totals.published],
     ].map(([label,value])=>`<div><small>${esc(label)}</small><strong>${esc(value)}</strong></div>`).join("")}</div></div>
-    <div class="platform-grid"><article class="card panel"><h2>Компанії та ролі</h2>${data.organizations.map(row=>`<div class="usage-row"><span><strong>${esc(row.name)}</strong><small class="muted" style="display:block">${esc(row.role)} · ${row.draft_count||0} чернеток</small></span><button data-switch-workspace="${row.id}">Перейти</button></div>`).join("")||'<p class="muted">Workspace не створено.</p>'}</article>
+    <div class="platform-grid"><article class="card panel"><h2>Компанії</h2>${data.companies.map(row=>`<div class="usage-row"><span><strong>${esc(row.name)}</strong><small class="muted" style="display:block">${esc(row.role)} · ${row.workspace_count||0} workspace · ${row.user_count||0} корист.</small></span><button data-company="${row.id}">Деталі</button></div>`).join("")||'<p class="muted">Компаній не створено.</p>'}<h3>Ролі у workspace</h3>${data.workspaces.map(row=>`<div class="usage-row"><span><strong>${esc(row.name)}</strong><small class="muted" style="display:block">${esc(row.role)} · ${row.draft_count||0} чернеток</small></span></div>`).join("")||'<p class="muted">Workspace не створено.</p>'}</article>
     <article class="card panel"><h2>Timeline активності</h2>${data.activity.slice(0,20).map(row=>`<div class="timeline-row"><span></span><div><strong>${esc(row.action)}</strong><small>${platformDate(row.created_at)} · ${esc(row.organization_name||"Без workspace")}</small><p>${esc(row.details||"")}</p></div></div>`).join("")||'<p class="muted">Подій ще немає.</p>'}</article></div>`;
     document.querySelector("#backToClients").onclick=()=>openPlatformSection("clients");
+    document.querySelectorAll("[data-company]").forEach(button=>button.onclick=()=>openPlatformSection("companies",{companyId:Number(button.dataset.company)}));
   } else if (state.platformSection === "clients") {
     const query=new URLSearchParams(location.search);
     target.innerHTML = `<form class="platform-filters" id="clientFilters"><input name="search" placeholder="Email, ім’я або компанія" value="${esc(query.get("search")||"")}"><select name="source"><option value="">Усі джерела</option><option value="referral" ${query.get("source")==="referral"?"selected":""}>Referral</option><option value="direct" ${query.get("source")==="direct"?"selected":""}>Direct</option></select><select name="period"><option value="">Весь період</option><option value="7d" ${query.get("period")==="7d"?"selected":""}>7 днів</option><option value="30d" ${query.get("period")==="30d"?"selected":""}>30 днів</option></select><select name="workspace"><option value="">Будь-який workspace</option><option value="yes" ${query.get("workspace")==="yes"?"selected":""}>Є workspace</option><option value="no" ${query.get("workspace")==="no"?"selected":""}>Без workspace</option></select><button class="primary">Застосувати</button></form>
-    ${bulkBar("platform-clients",[["export","Експортувати CSV"],["deactivate","Деактивувати","danger"]])}${data.clients.length?`<div class="table-wrap card"><table class="users-table"><thead><tr><th><input type="checkbox" data-select-all="platform-clients"></th><th>Клієнт</th><th>Реєстрація</th><th>Останній вхід</th><th>Компанії</th><th>Джерело</th><th>Витрати</th><th></th></tr></thead><tbody>${data.clients.map(row=>`<tr><td>${selectionCheckbox("platform-clients",row.id)}</td><td><strong>${esc(row.display_name||row.username)}</strong><small>${esc(row.email||row.username)}</small></td><td>${platformDate(row.created_at)}</td><td>${platformDate(row.last_login_at)}</td><td>${row.organization_count}<small>${esc(row.primary_organization_name)}</small></td><td>${esc(row.registration_source)}<small>${esc(row.referral_code||"")}</small></td><td>${money(row.ai_cost)}</td><td><button data-client="${row.id}">Профіль</button></td></tr>`).join("")}</tbody></table></div>`:platformEmpty("Клієнтів ще немає","Нові реєстрації з’являться в цьому розділі.")}${pagination(data,"platform-clients",()=>loadPlatformSection(true))}`;
+    ${bulkBar("platform-clients",[["export","Експортувати CSV"],["deactivate","Деактивувати","danger"]])}${data.clients.length?`<div class="table-wrap card"><table class="users-table"><thead><tr><th><input type="checkbox" data-select-all="platform-clients"></th><th>Клієнт</th><th>Реєстрація</th><th>Останній вхід</th><th>Компанії</th><th>Workspace</th><th>Джерело</th><th>Витрати</th><th></th></tr></thead><tbody>${data.clients.map(row=>`<tr><td>${selectionCheckbox("platform-clients",row.id)}</td><td><strong>${esc(row.display_name||row.username)}</strong><small>${esc(row.email||row.username)}</small></td><td>${platformDate(row.created_at)}</td><td>${platformDate(row.last_login_at)}</td><td>${row.company_count}<small>${esc(row.primary_company_name)}</small></td><td>${row.workspace_count}</td><td>${esc(row.registration_source)}<small>${esc(row.referral_code||"")}</small></td><td>${money(row.ai_cost)}</td><td><button data-client="${row.id}">Профіль</button></td></tr>`).join("")}</tbody></table></div>`:platformEmpty("Клієнтів ще немає","Нові реєстрації з’являться в цьому розділі.")}${pagination(data,"platform-clients",()=>loadPlatformSection(true))}`;
     document.querySelector("#clientFilters").onsubmit=async event=>{event.preventDefault();const params=new URLSearchParams(new FormData(event.currentTarget));for(const [key,value] of [...params])if(!value)params.delete(key);history.pushState({view:"platform"},"",`${basePath}/platform/clients${params.size?`?${params}`:""}`);state.platformData.clients=null;await loadPlatformSection(true);};
     document.querySelectorAll("[data-client]").forEach(button=>button.onclick=()=>openPlatformSection("clients",{clientId:Number(button.dataset.client)}));
-  } else if (state.platformSection === "organizations") {
-    target.innerHTML = `${bulkBar("platform-organizations",[["export","Експортувати CSV"],["deactivate","Деактивувати","danger"]])}${data.organizations.length?`<div class="table-wrap card"><table class="users-table"><thead><tr><th><input type="checkbox" data-select-all="platform-organizations"></th><th>Компанія</th><th>Owner</th><th>Створено</th><th>Команда</th><th>Контент</th><th>AI-витрати</th><th>Onboarding</th><th></th></tr></thead><tbody>${data.organizations.map(row=>`<tr><td>${selectionCheckbox("platform-organizations",row.id)}</td><td><strong>${esc(row.name)}</strong><small>${esc(row.slug)} · ${esc(row.plan_code||"custom")}</small></td><td>${esc(row.owner_name||"—")}<small>${esc(row.owner_email||"")}</small></td><td>${platformDate(row.created_at)}</td><td>${row.user_count}/${row.max_users}</td><td>${row.draft_count} / ${row.scheduled_count} / ${row.published_count}<small>чернетки / план / публікації</small></td><td>${money(row.ai_cost)}</td><td>${esc(row.onboarding_status)}</td><td><button data-switch-workspace="${row.id}">Перейти</button></td></tr>`).join("")}</tbody></table></div>`:platformEmpty("Компаній ще немає","Створені workspace з’являться тут.")}${pagination(data,"platform-organizations",()=>loadPlatformSection(true))}`;
+  } else if (state.platformSection === "companies" && state.platformCompanyId) {
+    const company=data.company;
+    const roleLabels={owner:"Власник",admin:"Адміністратор",member:"Учасник",content_manager:"Контент-менеджер",editor:"Редактор",publisher:"Публікатор",viewer:"Переглядач"};
+    target.innerHTML=`<button id="backToCompanies">← До списку компаній</button>
+    <article class="card panel client-profile"><div class="row between"><div><div class="eyebrow">Компанія #${company.id}</div><h2>${esc(company.name)}</h2><p class="muted">${esc(company.slug)} · створено ${platformDate(company.created_at)}</p></div><span class="pill ${company.active?"ready":"failed"}">${company.active?"Активна":"Вимкнена"}</span></div>
+    <div class="platform-detail-grid">${[["Власник",company.owner_name||"—"],["Email власника",company.owner_email||"—"],["Workspace",company.workspace_count],["Користувачі",company.user_count],["Чернетки",company.draft_count],["Заплановано",company.scheduled_count],["Опубліковано",company.published_count],["AI-витрати",money(company.ai_cost)],["Остання активність",platformDate(company.last_activity_at)]].map(([label,value])=>`<div><small>${esc(label)}</small><strong>${esc(value)}</strong></div>`).join("")}</div></article>
+    <article class="card panel"><h2>Workspace компанії</h2>${data.workspaces.length?`<div class="table-wrap"><table class="users-table"><thead><tr><th>Workspace</th><th>Команда</th><th>Тариф</th><th>Контент</th><th>AI-витрати</th><th>Остання активність</th></tr></thead><tbody>${data.workspaces.map(row=>`<tr><td><strong>${esc(row.name)}</strong><small>${esc(row.slug)}</small></td><td>${row.user_count}/${row.max_users}</td><td>${esc(row.plan_code||"custom")}</td><td>${row.draft_count} / ${row.scheduled_count} / ${row.published_count}<small>чернетки / план / публікації</small></td><td>${money(row.ai_cost)}</td><td>${platformDate(row.last_activity_at)}</td></tr>`).join("")}</tbody></table></div>`:platformEmpty("Workspace ще немає","Перший workspace з’явиться після реєстрації або створення власником.")}</article>
+    <article class="card panel"><h2>Користувачі та ролі</h2>${data.users.length?`<div class="table-wrap"><table class="users-table"><thead><tr><th>ПІБ / акаунт</th><th>Company role</th><th>Ролі у workspace</th><th>Останній вхід</th><th>Входів</th><th>Статус</th></tr></thead><tbody>${data.users.map(row=>`<tr><td><strong>${esc(row.display_name||row.username)}</strong><small>${esc(row.email||row.username)}</small></td><td>${esc(roleLabels[row.company_role]||row.company_role)}</td><td>${row.workspace_roles.length?row.workspace_roles.map(item=>`<span class="role-assignment"><strong>${esc(item.workspace_name)}</strong>: ${esc(roleLabels[item.role]||item.role)}</span>`).join(""):"Немає доступу"}</td><td>${platformDate(row.last_login_at)}</td><td>${row.login_count||0}</td><td>${row.active?"Активний":"Вимкнений"}</td></tr>`).join("")}</tbody></table></div>`:platformEmpty("Користувачів ще немає","Учасники компанії з’являться тут.")}</article>
+    <article class="card panel"><h2>Остання активність компанії</h2>${data.activity.slice(0,30).map(row=>`<div class="timeline-row"><span></span><div><strong>${esc(row.action)}</strong><small>${platformDate(row.created_at)} · ${esc(row.display_name||row.username||"Система")} · ${esc(row.organization_name||"Без workspace")}</small><p>${esc(plain(row.details||""))}</p></div></div>`).join("")||'<p class="muted">Подій ще немає.</p>'}</article>`;
+    document.querySelector("#backToCompanies").onclick=()=>openPlatformSection("companies");
+  } else if (state.platformSection === "companies") {
+    target.innerHTML = `${bulkBar("platform-companies",[["export","Експортувати CSV"],["deactivate","Деактивувати","danger"]])}${data.companies.length?`<div class="table-wrap card"><table class="users-table"><thead><tr><th><input type="checkbox" data-select-all="platform-companies"></th><th>Компанія</th><th>Власник</th><th>Створено</th><th>Workspace</th><th>Люди</th><th>Ролі</th><th>Контент</th><th>AI-витрати</th><th></th></tr></thead><tbody>${data.companies.map(row=>`<tr><td>${selectionCheckbox("platform-companies",row.id)}</td><td><strong>${esc(row.name)}</strong><small>${esc(row.slug)}</small></td><td>${esc(row.owner_name||"—")}<small>${esc(row.owner_email||"")}</small></td><td>${platformDate(row.created_at)}</td><td>${row.workspace_count}/${row.max_workspaces}</td><td>${row.user_count}</td><td><small>Власники: ${row.role_counts.owner||0} · Адміни: ${row.role_counts.admin||0} · Учасники: ${row.role_counts.member||0}</small></td><td>${row.draft_count} / ${row.scheduled_count} / ${row.published_count}<small>чернетки / план / публікації</small></td><td>${money(row.ai_cost)}</td><td><button data-company-detail="${row.id}">Деталі</button></td></tr>`).join("")}</tbody></table></div>`:platformEmpty("Компаній ще немає","Зареєстровані клієнтські компанії з’являться тут.")}${pagination(data,"platform-companies",()=>loadPlatformSection(true))}`;
+    document.querySelectorAll("[data-company-detail]").forEach(button=>button.onclick=()=>openPlatformSection("companies",{companyId:Number(button.dataset.companyDetail)}));
   } else if (state.platformSection === "users") {
-    target.innerHTML = `${bulkBar("platform-users",[["export","Експортувати CSV"],["deactivate","Деактивувати","danger"]])}${data.users.length?`<div class="table-wrap card"><table class="users-table"><thead><tr><th><input type="checkbox" data-select-all="platform-users"></th><th>Користувач</th><th>Реєстрація</th><th>Останній вхід</th><th>Email verified</th><th>Workspace</th><th>Джерело</th><th>Статус</th></tr></thead><tbody>${data.users.map(row=>`<tr><td>${selectionCheckbox("platform-users",row.id)}</td><td><strong>${esc(row.display_name||row.username)}</strong><small>${esc(row.email||row.username)}</small></td><td>${platformDate(row.created_at)}</td><td>${platformDate(row.last_login_at)}</td><td>${row.email_verified?"Так":"Ні"}</td><td>${row.organization_count}</td><td>${esc(row.registration_source)}</td><td>${row.active?"Активний":"Вимкнений"}</td></tr>`).join("")}</tbody></table></div>`:platformEmpty("Користувачів ще немає","Нові акаунти з’являться тут.")}${pagination(data,"platform-users",()=>loadPlatformSection(true))}`;
+    target.innerHTML = `${bulkBar("platform-users",[["export","Експортувати CSV"],["deactivate","Деактивувати","danger"]])}${data.users.length?`<div class="table-wrap card"><table class="users-table"><thead><tr><th><input type="checkbox" data-select-all="platform-users"></th><th>Користувач</th><th>Реєстрація</th><th>Останній вхід</th><th>Email verified</th><th>Компанії</th><th>Workspace</th><th>Основна роль</th><th>Джерело</th><th>Статус</th></tr></thead><tbody>${data.users.map(row=>`<tr><td>${selectionCheckbox("platform-users",row.id)}</td><td><strong>${esc(row.display_name||row.username)}</strong><small>${esc(row.email||row.username)}</small></td><td>${platformDate(row.created_at)}</td><td>${platformDate(row.last_login_at)}</td><td>${row.email_verified?"Так":"Ні"}</td><td>${row.company_count}<small>${esc(row.primary_company_name||"")}</small></td><td>${row.workspace_count}</td><td>${esc(row.company_role||row.role||"—")}</td><td>${esc(row.registration_source)}</td><td>${row.active?"Активний":"Вимкнений"}</td></tr>`).join("")}</tbody></table></div>`:platformEmpty("Користувачів ще немає","Нові акаунти з’являться тут.")}${pagination(data,"platform-users",()=>loadPlatformSection(true))}`;
   } else if (state.platformSection === "referrals") {
     target.innerHTML = `${bulkBar("platform-referrals",[["export","Експортувати CSV"],["deactivate","Вимкнути","danger"]])}<div class="platform-grid"><article class="card panel"><h2>Реферальні посилання</h2>${data.codes.length?`<div class="table-wrap"><table class="users-table"><thead><tr><th><input type="checkbox" data-select-all="platform-referrals"></th><th>Код</th><th>Власник</th><th>Компанія</th><th>Переходи</th><th>Реєстрації</th><th>Статус</th></tr></thead><tbody>${data.codes.map(row=>`<tr><td>${selectionCheckbox("platform-referrals",row.id)}</td><td class="masked">${esc(row.code)}</td><td>${esc(row.owner_display_name||row.owner_username)}</td><td>${esc(row.owner_organization_name||"—")}</td><td>${row.clicks}</td><td>${row.signups}</td><td>${esc(row.status)}</td></tr>`).join("")}</tbody></table></div>`:platformEmpty("Поки немає реферальних посилань","Посилання з’являться після відкриття реферального блоку користувачами.")}</article>
     <article class="card panel"><h2>Реферальні реєстрації</h2>${data.signups.map(row=>`<div class="usage-row"><span><strong>${esc(row.new_email||row.new_username)}</strong><small class="muted" style="display:block">Запросив: ${esc(row.referrer_username)} · ${esc(row.utm_source||"direct")}</small></span><small>${platformDate(row.created_at)}</small></div>`).join("")||platformEmpty("Поки немає реферальних реєстрацій","Коли користувачі зареєструються за посиланням, вони з’являться тут.")}</article></div>${pagination(data,"platform-referrals",()=>loadPlatformSection(true))}`;
@@ -848,15 +882,14 @@ function renderPlatform() {
     target.innerHTML = `${bulkBar("platform-activity",[["export","Експортувати CSV"]])}<div class="platform-grid"><article class="card panel"><h2>Події платформи</h2>${data.events.map(row=>`<div class="timeline-row selectable-row">${selectionCheckbox("platform-activity",row.id)}<div><strong>${esc(row.action)}</strong><small>${platformDate(row.created_at)} · ${esc(row.display_name||row.username||"Система")} · ${esc(row.organization_name||"Без workspace")}</small><p>${esc(plain(row.details||""))}</p></div></div>`).join("")||'<p class="muted">Подій ще немає.</p>'}</article><article class="card panel"><h2>Останні входи</h2>${data.logins.map(row=>`<div class="usage-row"><span><strong>${esc(row.display_name||row.username||"Невідомий користувач")}</strong><small class="muted" style="display:block">${esc(row.organization_name||"Без workspace")} · ${platformDate(row.created_at)}</small></span><span class="${row.success?"success-text":"danger-text"}">${row.success?"Успішно":"Помилка"}</span></div>`).join("")||'<p class="muted">Входів ще немає.</p>'}</article></div>${pagination(data,"platform-activity",()=>loadPlatformSection(true))}`;
   } else {
     const report=data;
-    target.innerHTML = `<div class="filters platform-periods">${[["today","Сьогодні"],["7d","7 днів"],["month","Місяць"],["all","Весь час"]].map(([value,label])=>`<button class="${state.platformPeriod===value?"active":""}" data-platform-expense-period="${value}">${label}</button>`).join("")}</div><div class="platform-metric-grid">${[["Загальні витрати",money(report.totals.cost)],["Операції",report.totals.operations],["Тексти",report.totals.text_generations],["Зображення",report.totals.image_generations]].map(([label,value])=>`<article class="card metric"><span>${label}</span><strong>${value}</strong></article>`).join("")}</div><div class="table-wrap card"><table class="users-table"><thead><tr><th>Компанія</th><th>Операції</th><th>Тексти</th><th>Зображення</th><th>Витрати</th></tr></thead><tbody>${report.companies.map(row=>`<tr><td><strong>${esc(row.organization_name)}</strong></td><td>${row.operations}</td><td>${row.text_generations}</td><td>${row.image_generations}</td><td>${money(row.cost)}</td></tr>`).join("")}</tbody></table></div>${pagination(report,"platform-expenses",()=>loadPlatformSection(true))}`;
+    target.innerHTML = `<div class="filters platform-periods">${[["today","Сьогодні"],["7d","7 днів"],["month","Місяць"],["all","Весь час"]].map(([value,label])=>`<button class="${state.platformPeriod===value?"active":""}" data-platform-expense-period="${value}">${label}</button>`).join("")}</div><div class="platform-metric-grid">${[["Загальні витрати",money(report.totals.cost)],["Операції",report.totals.operations],["Тексти",report.totals.text_generations],["Зображення",report.totals.image_generations]].map(([label,value])=>`<article class="card metric"><span>${label}</span><strong>${value}</strong></article>`).join("")}</div><div class="table-wrap card"><table class="users-table"><thead><tr><th>Компанія</th><th>Workspace</th><th>Операції</th><th>Тексти</th><th>Зображення</th><th>Витрати</th></tr></thead><tbody>${report.companies.map(row=>`<tr><td><strong>${esc(row.company_name||row.organization_name)}</strong></td><td>${row.workspace_count||0}</td><td>${row.operations}</td><td>${row.text_generations}</td><td>${row.image_generations}</td><td>${money(row.cost)}</td></tr>`).join("")}</tbody></table></div>${pagination(report,"platform-expenses",()=>loadPlatformSection(true))}`;
     document.querySelectorAll("[data-platform-expense-period]").forEach(button=>button.onclick=async()=>{state.platformPeriod=button.dataset.platformExpensePeriod;state.platformData.expenses=null;await loadPlatformSection(true);});
   }
-  for(const key of ["platform-clients","platform-organizations","platform-users","platform-referrals","platform-activity"]){
+  for(const key of ["platform-clients","platform-companies","platform-users","platform-referrals","platform-activity"]){
     bindSelection(key,target,renderPlatform);
   }
   target.querySelectorAll("[data-bulk-action]").forEach(button=>button.onclick=()=>runPlatformBulk(button.dataset.bulkAction));
   target.querySelectorAll("[data-clear-selection]").forEach(button=>button.onclick=()=>{for(const key of Object.keys(state.selected).filter(x=>x.startsWith("platform-")))selected(key).clear();renderPlatform();});
-  document.querySelectorAll("[data-switch-workspace]").forEach(button=>button.onclick=async()=>{await api("api/workspace/select",{method:"POST",body:JSON.stringify({organization_id:Number(button.dataset.switchWorkspace)})});location.href=`${basePath}/dashboard`;});
 }
 async function runPlatformBulk(action){
   const key=`platform-${state.platformSection}`;
@@ -949,7 +982,7 @@ function showForm(title, fields, submit, options = {}) {
 function renderWorkspaceChooser(force = false) {
   const workspaces = state.me.workspaces || [];
   if (!force && workspaces.length < 2 && !state.me.is_super_admin) return;
-  document.querySelector("#workspaceGrid").innerHTML = workspaces.map(x=>`<button class="card workspace-card ${x.id===state.me.organization_id?"active":""}" data-workspace="${x.id}"><span class="workspace-logo">${initials(x.name)}</span><h3>${esc(x.name)}</h3><p class="muted">${esc(x.plan_code||"custom")} plan</p><div class="workspace-meta"><span>${esc(x.role||"workspace")}</span><span>${x.user_count||0} корист.</span></div></button>`).join("")+`<button class="card workspace-card workspace-create" id="createWorkspace"><span style="font-size:28px">＋</span><strong>${state.me.is_super_admin?"Створити компанію":"Створити workspace"}</strong><small class="muted">${state.me.is_super_admin?"Разом із власником":"14 днів trial"}</small></button>`;
+  document.querySelector("#workspaceGrid").innerHTML = workspaces.map(x=>`<button class="card workspace-card ${x.id===state.me.organization_id?"active":""}" data-workspace="${x.id}"><span class="workspace-logo">${initials(x.name)}</span><div class="eyebrow">${esc(x.company_name||"Компанія")}</div><h3>${esc(x.name)}</h3><p class="muted">${esc(x.plan_code||"custom")} plan</p><div class="workspace-meta"><span>${esc(x.role||"workspace")}</span><span>${x.user_count||0} корист.</span></div></button>`).join("")+`<button class="card workspace-card workspace-create" id="createWorkspace"><span style="font-size:28px">＋</span><strong>${state.me.is_super_admin?"Створити компанію":"Створити workspace"}</strong><small class="muted">${state.me.is_super_admin?"Компанія, перший workspace і власник":"У поточній компанії"}</small></button>`;
   document.querySelector("#workspaceOverlay").hidden = false;
   document.querySelectorAll("[data-workspace]").forEach(button=>button.onclick=async()=>{await api("api/workspace/select",{method:"POST",body:JSON.stringify({organization_id:Number(button.dataset.workspace)})});location.href=`${basePath}/`;});
   document.querySelector("#createWorkspace").onclick = () => {
@@ -959,6 +992,7 @@ function renderWorkspaceChooser(force = false) {
         `<div class="wide callout"><strong>Що відбудеться</strong><p>Буде створено порожній workspace і окремий owner-акаунт. Onboarding відкриється власнику під час першого входу, а не вам.</p></div>
         <label>Назва компанії<input name="name" required placeholder="Acme Ukraine"></label>
         <details class="wide advanced-field"><summary>Змінити URL вручну</summary><label>Slug<input name="slug" pattern="[A-Za-z0-9-]+" placeholder="acme-ukraine"><small class="field-help">Необов’язково. Якщо поле порожнє, URL буде створено автоматично.</small></label></details>
+        <label>Назва першого workspace<input name="workspace_name" placeholder="Основний workspace"><small class="field-help">Компанія може мати кілька окремих workspace.</small></label>
         <label>Ім’я власника<input name="owner_display_name" required placeholder="Олена Коваль"></label>
         <label>Email власника<input name="owner_email" type="email" placeholder="owner@company.ua"></label>
         <label>Логін власника<input name="owner_username" required pattern="[A-Za-z0-9._-]+" placeholder="acme.owner"></label>
@@ -969,6 +1003,8 @@ function renderWorkspaceChooser(force = false) {
         async form => {
           const created = await api("api/organizations", {method:"POST", body:JSON.stringify({
             name: form.get("name"), slug: form.get("slug"),
+            workspace_name: form.get("workspace_name"),
+            workspace_slug: "",
             owner_display_name: form.get("owner_display_name"),
             owner_email: form.get("owner_email") || null,
             owner_username: form.get("owner_username"),
@@ -976,6 +1012,7 @@ function renderWorkspaceChooser(force = false) {
             max_users: Number(form.get("max_users")), max_channels: 1,
             monthly_publications: Number(form.get("monthly_publications")),
             monthly_ai_budget: Number(form.get("monthly_ai_budget")),
+            max_workspaces: 10,
           })});
           state.me = await api("api/me");
           toast(`Компанію ${created.name} створено. Передайте власнику логін і тимчасовий пароль.`);
@@ -984,7 +1021,7 @@ function renderWorkspaceChooser(force = false) {
         {submitLabel:"Створити компанію"},
       );
     } else {
-      showForm("Створити workspace", `<label class="wide">Назва<input name="name" required><small class="field-help">URL буде створено автоматично з назви.</small></label><details class="wide advanced-field"><summary>Змінити URL вручну</summary><label>Slug<input name="slug" pattern="[A-Za-z0-9-]+"></label></details>`, async form => {await api("api/account/trial-workspace",{method:"POST",body:JSON.stringify({name:form.get("name"),slug:form.get("slug")||""})});location.href=`${basePath}/`;});
+      showForm("Створити workspace", `<div class="wide callout"><strong>${esc(state.company?.company?.name||"Поточна компанія")}</strong><p>Новий workspace матиме окремі контент, бренд, Telegram-канал, календар і ролі.</p></div><label class="wide">Назва workspace<input name="name" required><small class="field-help">URL буде створено автоматично з назви.</small></label><details class="wide advanced-field"><summary>Змінити URL вручну</summary><label>Slug<input name="slug" pattern="[A-Za-z0-9-]+"></label></details>`, async form => {await api("api/account/trial-workspace",{method:"POST",body:JSON.stringify({name:form.get("name"),slug:form.get("slug")||"",company_id:state.company?.company?.id||null})});location.href=`${basePath}/`;});
     }
   };
 }

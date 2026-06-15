@@ -330,6 +330,7 @@ class InvitationAcceptRequest(BaseModel):
 class TrialWorkspaceRequest(BaseModel):
     name: str = Field(min_length=2, max_length=100)
     slug: str = Field(default="", max_length=60)
+    company_id: int | None = Field(default=None, ge=1)
 
 
 class RegistrationRequest(BaseModel):
@@ -345,6 +346,8 @@ class RegistrationRequest(BaseModel):
 class OrganizationCreateRequest(BaseModel):
     name: str = Field(min_length=2, max_length=100)
     slug: str = Field(default="", max_length=60)
+    workspace_name: str = Field(default="", max_length=100)
+    workspace_slug: str = Field(default="", max_length=60)
     owner_username: str = Field(
         min_length=3,
         max_length=50,
@@ -357,6 +360,7 @@ class OrganizationCreateRequest(BaseModel):
     max_channels: int = Field(default=1, ge=1, le=1)
     monthly_publications: int = Field(default=90, ge=1, le=10000)
     monthly_ai_budget: float = Field(default=50, ge=0, le=100000)
+    max_workspaces: int = Field(default=10, ge=1, le=100)
 
 
 class TelegramConnectionRequest(BaseModel):
@@ -916,12 +920,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 status_code=409,
                 detail="Користувач із таким email уже зареєстрований",
             )
-        if len(saas.list_organizations()) >= settings.max_organizations:
-            raise HTTPException(
-                status_code=409,
-                detail="Тимчасово неможливо створити новий workspace",
-            )
         user = None
+        company = None
         try:
             user = auth.create_user(
                 payload.username,
@@ -930,26 +930,52 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 email=payload.email,
                 display_name=payload.display_name,
             )
+            company = saas.create_company(
+                name=payload.workspace_name,
+                slug=payload.workspace_slug or generate_slug(payload.workspace_name),
+                max_workspaces=3,
+            )
             organization = saas.create_trial_organization(
                 name=payload.workspace_name,
                 slug=payload.workspace_slug or generate_slug(payload.workspace_name),
+                company_id=company["id"],
             )
             saas.add_member(organization["id"], user["id"], "owner")
             repository.for_organization(organization["id"])
         except Exception as exc:
             if user is not None:
                 auth.delete_user(user["id"])
+            if company is not None:
+                saas.delete_empty_company(int(company["id"]))
             if "UNIQUE constraint failed" in str(exc):
                 raise HTTPException(
                     status_code=409,
                     detail="Такий логін або slug уже використовується",
                 ) from exc
+            if isinstance(exc, ValueError):
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
             raise
         saas.audit(
             organization["id"],
             user["id"],
             "user_registered",
             payload.email,
+            ip_address=request_ip(request),
+            user_agent=request.headers.get("user-agent", ""),
+        )
+        saas.audit(
+            organization["id"],
+            user["id"],
+            "company_created",
+            company["slug"],
+            ip_address=request_ip(request),
+            user_agent=request.headers.get("user-agent", ""),
+        )
+        saas.audit(
+            organization["id"],
+            user["id"],
+            "workspace_created",
+            organization["slug"],
             ip_address=request_ip(request),
             user_agent=request.headers.get("user-agent", ""),
         )
@@ -1011,7 +1037,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response.delete_cookie("voicerhub_referral_click")
         return {
             "user": auth.session_user(session),
+            "company": company,
             "organization": organization,
+            "workspace": organization,
             "referred": bool(referral),
         }
 
@@ -1149,9 +1177,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 profile.get("name", "").strip()
                 or profile["email"].split("@", 1)[0]
             )
+            company = saas.create_company(
+                name=workspace_name,
+                slug=f"{workspace_slug_base[:32]}-{uuid4().hex[:8]}",
+                max_workspaces=3,
+            )
             organization = saas.create_trial_organization(
                 name=f"{workspace_name} Workspace",
-                slug=f"{workspace_slug_base[:32]}-{uuid4().hex[:8]}",
+                slug=f"{workspace_slug_base[:32]}-{uuid4().hex[:8]}-workspace",
+                company_id=company["id"],
             )
             saas.add_member(organization["id"], user["id"], "owner")
             repository.for_organization(organization["id"])
@@ -1183,6 +1217,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 user_agent=request.headers.get("user-agent", ""),
             )
         if created_organization:
+            saas.audit(
+                created_organization["id"],
+                user["id"],
+                "company_created",
+                str(created_organization["company_id"]),
+                ip_address=request_ip(request),
+                user_agent=request.headers.get("user-agent", ""),
+            )
+            saas.audit(
+                created_organization["id"],
+                user["id"],
+                "workspace_created",
+                created_organization["slug"],
+                ip_address=request_ip(request),
+                user_agent=request.headers.get("user-agent", ""),
+            )
             saas.audit(
                 created_organization["id"],
                 user["id"],
@@ -1280,6 +1330,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def current_user(user: dict = Depends(authorize)) -> dict:
         return {
             **user,
+            "companies": saas.companies_for_user(
+                user["id"],
+                platform_admin=bool(user.get("is_super_admin")),
+            ),
             "workspaces": saas.organizations_for_user(
                 user["id"],
                 platform_admin=bool(user.get("is_super_admin")),
@@ -1339,9 +1393,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         user: dict = Depends(authorize_write),
     ) -> dict:
         try:
+            current_company = saas.company_for_organization(organization_id(user))
+            company_id = payload.company_id or int(current_company["id"])
+            company_role = saas.company_role_for_user(company_id, user["id"])
+            if not user.get("is_super_admin") and company_role not in {
+                "owner",
+                "admin",
+            }:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Лише власник або адміністратор компанії може створювати workspace",
+                )
             organization = saas.create_trial_organization(
                 name=payload.name,
                 slug=payload.slug or generate_slug(payload.name),
+                company_id=company_id,
             )
             saas.add_member(organization["id"], user["id"], "owner")
             repository.for_organization(organization["id"])
@@ -1352,16 +1418,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             saas.audit(
                 organization["id"],
                 user["id"],
+                "workspace_created",
+                organization["slug"],
+            )
+            saas.audit(
+                organization["id"],
+                user["id"],
                 "organization_created",
                 organization["slug"],
             )
-        except (ValueError, Exception) as exc:
+        except HTTPException:
+            raise
+        except Exception as exc:
             if "UNIQUE constraint" in str(exc):
                 raise HTTPException(
                     status_code=409,
                     detail="Workspace з таким slug вже існує",
                 ) from exc
-            if isinstance(exc, ValueError):
+            if isinstance(exc, (ValueError, KeyError)):
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             raise
         return organization
@@ -1712,6 +1786,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def organizations(_: dict = Depends(authorize_super_admin)) -> list[dict]:
         return saas.list_organizations()
 
+    @app.get("/api/companies")
+    def companies(_: dict = Depends(authorize_super_admin)) -> list[dict]:
+        return saas.list_companies()
+
     @app.get("/api/platform/referrals")
     def platform_referrals(
         page: int = 1,
@@ -1750,7 +1828,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=422, detail="Невідомий період звіту")
 
         users_by_id = {user["id"]: user for user in auth.list_users()}
-        companies = []
+        workspace_rows = []
+        company_totals: dict[int, dict] = {}
         user_rows = []
         model_rows = []
         totals = {
@@ -1762,26 +1841,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "cost": 0.0,
         }
         since_value = since.strftime("%Y-%m-%d %H:%M:%S") if since else None
-        for company in saas.list_organizations():
-            report = repository.for_organization(company["id"]).usage_summary(
+        for workspace in saas.list_organizations():
+            report = repository.for_organization(workspace["id"]).usage_summary(
                 since=since_value
             )
-            company_totals = report["totals"]
-            companies.append(
+            workspace_totals = report["totals"]
+            workspace_rows.append(
                 {
-                    "organization_id": company["id"],
-                    "organization_name": company["name"],
-                    **company_totals,
+                    "organization_id": workspace["id"],
+                    "organization_name": workspace["name"],
+                    "workspace_name": workspace["name"],
+                    "company_id": workspace["company_id"],
+                    "company_name": workspace["company_name"],
+                    **workspace_totals,
                 }
             )
+            aggregate = company_totals.setdefault(
+                int(workspace["company_id"]),
+                {
+                    "company_id": workspace["company_id"],
+                    "company_name": workspace["company_name"],
+                    "organization_name": workspace["company_name"],
+                    "workspace_count": 0,
+                    **{key: 0 for key in totals},
+                },
+            )
+            aggregate["workspace_count"] += 1
             for key in totals:
-                totals[key] += company_totals[key]
+                totals[key] += workspace_totals[key]
+                aggregate[key] += workspace_totals[key]
             for row in report["users"]:
                 report_user = users_by_id.get(row["user_id"])
                 user_rows.append(
                     {
-                        "organization_id": company["id"],
-                        "organization_name": company["name"],
+                        "organization_id": workspace["id"],
+                        "organization_name": workspace["name"],
+                        "workspace_name": workspace["name"],
+                        "company_id": workspace["company_id"],
+                        "company_name": workspace["company_name"],
                         "user_id": row["user_id"],
                         "username": (
                             report_user["username"]
@@ -1798,19 +1895,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for row in report["models"]:
                 model_rows.append(
                     {
-                        "organization_id": company["id"],
-                        "organization_name": company["name"],
+                        "organization_id": workspace["id"],
+                        "organization_name": workspace["name"],
+                        "workspace_name": workspace["name"],
+                        "company_id": workspace["company_id"],
+                        "company_name": workspace["company_name"],
                         **row,
                     }
                 )
         totals["cost"] = round(float(totals["cost"]), 6)
+        for aggregate in company_totals.values():
+            aggregate["cost"] = round(float(aggregate["cost"]), 6)
         return {
             "period": period,
             "since": since.isoformat() if since else None,
             "totals": totals,
             "companies": sorted(
-                companies,
-                key=lambda row: (-float(row["cost"]), row["organization_name"]),
+                company_totals.values(),
+                key=lambda row: (-float(row["cost"]), row["company_name"]),
+            ),
+            "workspaces": sorted(
+                workspace_rows,
+                key=lambda row: (-float(row["cost"]), row["workspace_name"]),
             ),
             "users": sorted(
                 user_rows,
@@ -1872,12 +1978,92 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         return rows
 
+    def platform_company_rows() -> list[dict]:
+        workspace_rows = platform_organization_rows()
+        workspaces_by_company: dict[int, list[dict]] = {}
+        for workspace in workspace_rows:
+            workspaces_by_company.setdefault(
+                int(workspace["company_id"]),
+                [],
+            ).append(workspace)
+        company_memberships = saas.all_company_memberships()
+        users_by_id = {user["id"]: user for user in auth.list_users()}
+        memberships_by_company: dict[int, list[dict]] = {}
+        for membership in company_memberships:
+            memberships_by_company.setdefault(
+                int(membership["company_id"]),
+                [],
+            ).append(membership)
+        rows = []
+        for company in saas.list_companies():
+            company_id = int(company["id"])
+            workspaces = workspaces_by_company.get(company_id, [])
+            members = memberships_by_company.get(company_id, [])
+            owner_membership = next(
+                (item for item in members if item["role"] == "owner"),
+                members[0] if members else None,
+            )
+            owner = (
+                users_by_id.get(int(owner_membership["user_id"]))
+                if owner_membership
+                else None
+            )
+            role_counts: dict[str, int] = {}
+            for member in members:
+                role = str(member["role"])
+                role_counts[role] = role_counts.get(role, 0) + 1
+            last_activity = max(
+                (
+                    str(item["last_activity_at"])
+                    for item in workspaces
+                    if item.get("last_activity_at")
+                ),
+                default=None,
+            )
+            rows.append(
+                {
+                    **company,
+                    "workspace_count": len(workspaces),
+                    "active_workspace_count": sum(
+                        bool(item["active"]) for item in workspaces
+                    ),
+                    "user_count": len({int(item["user_id"]) for item in members}),
+                    "owner_id": owner["id"] if owner else None,
+                    "owner_name": (
+                        (owner["display_name"] or owner["username"])
+                        if owner else ""
+                    ),
+                    "owner_email": owner["email"] if owner else "",
+                    "role_counts": role_counts,
+                    "idea_count": sum(int(item["idea_count"]) for item in workspaces),
+                    "draft_count": sum(int(item["draft_count"]) for item in workspaces),
+                    "scheduled_count": sum(
+                        int(item["scheduled_count"]) for item in workspaces
+                    ),
+                    "published_count": sum(
+                        int(item["published_count"]) for item in workspaces
+                    ),
+                    "ai_cost": round(
+                        sum(float(item["ai_cost"]) for item in workspaces),
+                        6,
+                    ),
+                    "last_activity_at": last_activity,
+                }
+            )
+        return rows
+
     def platform_client_rows() -> list[dict]:
         users = auth.list_users()
         memberships = saas.all_memberships()
+        company_memberships = saas.all_company_memberships()
         memberships_by_user: dict[int, list[dict]] = {}
         for membership in memberships:
             memberships_by_user.setdefault(int(membership["user_id"]), []).append(
+                membership
+            )
+        companies_by_user: dict[int, list[dict]] = {}
+        for membership in company_memberships:
+            companies_by_user.setdefault(int(membership["user_id"]), []).append(
                 membership
             )
         referral_report = referrals.platform_summary()
@@ -1897,13 +2083,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         rows = []
         for user in users:
             user_memberships = memberships_by_user.get(user["id"], [])
+            user_companies = companies_by_user.get(user["id"], [])
             primary = user_memberships[0] if user_memberships else None
+            primary_company = user_companies[0] if user_companies else None
             signup = signup_by_user.get(user["id"])
             usage = usage_by_user.get(user["id"], {"operations": 0, "cost": 0.0})
             rows.append(
                 {
                     **user,
                     "organization_count": len(user_memberships),
+                    "workspace_count": len(user_memberships),
+                    "company_count": len(user_companies),
+                    "primary_company_id": (
+                        primary_company["company_id"] if primary_company else None
+                    ),
+                    "primary_company_name": (
+                        primary_company["company_name"] if primary_company else ""
+                    ),
+                    "company_role": (
+                        primary_company["role"] if primary_company else ""
+                    ),
                     "primary_organization_id": (
                         primary["organization_id"] if primary else None
                     ),
@@ -1932,7 +2131,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def platform_overview(_: dict = Depends(authorize_super_admin)) -> dict:
         now = datetime.now(timezone.utc)
         users = platform_client_rows()
-        organizations = platform_organization_rows()
+        workspaces = platform_organization_rows()
+        companies = platform_company_rows()
         referrals_report = referrals.platform_summary()
         usage = platform_usage_data("month")
         today = now.date().isoformat()
@@ -1951,17 +2151,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     str(user["created_at"])[:10] >= week_start for user in users
                 ),
                 "users_total": len(users),
-                "organizations_total": len(organizations),
+                "organizations_total": len(companies),
+                "companies_total": len(companies),
+                "workspaces_total": len(workspaces),
                 "active_organizations": sum(
-                    bool(item["active"]) for item in organizations
+                    bool(item["active"]) for item in companies
                 ),
+                "active_companies": sum(bool(item["active"]) for item in companies),
                 "new_workspaces_month": sum(
                     str(item["created_at"])[:10] >= month_start
-                    for item in organizations
+                    for item in workspaces
                 ),
                 "ai_cost_month": usage["totals"]["cost"],
                 "publications_total": sum(
-                    item["published_count"] for item in organizations
+                    item["published_count"] for item in companies
                 ),
                 "referral_signups": len(referrals_report["signups"]),
             },
@@ -1970,7 +2173,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 for day, count in sorted(registrations_by_day.items())[-30:]
             ],
             "top_organizations": sorted(
-                organizations,
+                companies,
+                key=lambda item: -float(item["ai_cost"]),
+            )[:10],
+            "top_companies": sorted(
+                companies,
                 key=lambda item: -float(item["ai_cost"]),
             )[:10],
         }
@@ -2035,11 +2242,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if client is None:
             raise HTTPException(status_code=404, detail="Клієнта не знайдено")
         memberships = saas.memberships_for_user(user_id)
+        company_memberships = saas.company_memberships_for_user(user_id)
         organization_rows = {
             item["id"]: item for item in platform_organization_rows()
         }
+        company_rows = {
+            item["id"]: item for item in platform_company_rows()
+        }
         return {
             "client": client,
+            "companies": [
+                {
+                    **company_rows.get(item["company_id"], {}),
+                    "role": item["role"],
+                }
+                for item in company_memberships
+            ],
+            "workspaces": [
+                {
+                    **organization_rows.get(item["organization_id"], {}),
+                    "role": item["role"],
+                }
+                for item in memberships
+            ],
             "organizations": [
                 {
                     **organization_rows.get(item["organization_id"], {}),
@@ -2083,6 +2308,68 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ]
         page_data = paginate_rows(rows, page=page, per_page=per_page)
         return {**page_data, "organizations": page_data["items"]}
+
+    @app.get("/api/platform/companies")
+    def platform_companies(
+        page: int = 1,
+        per_page: int = 25,
+        search: str = "",
+        _: dict = Depends(authorize_super_admin),
+    ) -> dict:
+        rows = platform_company_rows()
+        if search.strip():
+            needle = search.strip().lower()
+            rows = [
+                row
+                for row in rows
+                if needle
+                in (
+                    f"{row['name']} {row['slug']} "
+                    f"{row.get('owner_name', '')} {row.get('owner_email', '')}"
+                ).lower()
+            ]
+        page_data = paginate_rows(rows, page=page, per_page=per_page)
+        return {**page_data, "companies": page_data["items"]}
+
+    @app.get("/api/platform/companies/{company_id}")
+    def platform_company_detail(
+        company_id: int,
+        _: dict = Depends(authorize_super_admin),
+    ) -> dict:
+        company = next(
+            (
+                item
+                for item in platform_company_rows()
+                if int(item["id"]) == company_id
+            ),
+            None,
+        )
+        if company is None:
+            raise HTTPException(status_code=404, detail="Компанію не знайдено")
+        workspaces = [
+            item
+            for item in platform_organization_rows()
+            if int(item["company_id"]) == company_id
+        ]
+        users = saas.company_users(company_id)
+        activity = sorted(
+            (
+                event
+                for workspace in workspaces
+                for event in saas.list_audit_events(
+                    limit=100,
+                    organization_id=int(workspace["id"]),
+                )
+            ),
+            key=lambda item: str(item["created_at"]),
+            reverse=True,
+        )[:200]
+        return {
+            "company": company,
+            "workspaces": workspaces,
+            "users": users,
+            "activity": activity,
+        }
 
     @app.get("/api/platform/organizations/{target_organization_id}")
     def platform_organization_detail(
@@ -2185,6 +2472,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         active = payload.action == "activate"
         if entity in {"clients", "users"}:
             changed = auth.set_users_active(ids, active)
+        elif entity == "companies":
+            changed = saas.set_companies_active(ids, active)
         elif entity == "organizations":
             changed = saas.set_organizations_active(ids, active)
         elif entity == "referrals":
@@ -2196,24 +2485,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Список не знайдено")
         return {"changed": changed}
 
+    @app.post("/api/companies")
     @app.post("/api/organizations")
     def create_organization(
         payload: OrganizationCreateRequest,
         current: dict = Depends(authorize_super_admin),
     ) -> dict:
-        if len(saas.list_organizations()) >= settings.max_organizations:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Досягнуто ліміт у {settings.max_organizations} компанії",
-            )
+        company = None
+        owner = None
         try:
-            organization = saas.create_organization(
+            company = saas.create_company(
                 name=payload.name,
                 slug=payload.slug or generate_slug(payload.name),
+                max_workspaces=payload.max_workspaces,
+            )
+            workspace_name = payload.workspace_name.strip() or payload.name
+            organization = saas.create_organization(
+                name=workspace_name,
+                slug=(
+                    payload.workspace_slug
+                    or generate_slug(workspace_name)
+                ),
                 max_users=payload.max_users,
                 max_channels=payload.max_channels,
                 monthly_publications=payload.monthly_publications,
                 monthly_ai_budget=payload.monthly_ai_budget,
+                company_id=company["id"],
             )
             owner = auth.create_user(
                 payload.owner_username,
@@ -2224,14 +2521,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 email=payload.owner_email,
                 display_name=payload.owner_display_name,
             )
+            repository.for_organization(organization["id"])
         except Exception as exc:
+            if owner is not None:
+                auth.delete_user(owner["id"])
+            if company is not None:
+                saas.delete_empty_company(int(company["id"]))
             if "UNIQUE constraint failed" in str(exc):
                 raise HTTPException(
                     status_code=409,
                     detail="Компанія або логін уже існує",
                 ) from exc
+            if isinstance(exc, ValueError):
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
             raise
-        repository.for_organization(organization["id"])
+        saas.audit(
+            organization["id"],
+            current["id"],
+            "company_created",
+            company["slug"],
+        )
+        saas.audit(
+            organization["id"],
+            current["id"],
+            "workspace_created",
+            organization["slug"],
+        )
         saas.audit(
             organization["id"],
             current["id"],
@@ -2244,12 +2559,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "user_registered",
             payload.owner_email or payload.owner_username,
         )
-        return {**organization, "owner": owner}
+        return {
+            **company,
+            "company": company,
+            "workspace": organization,
+            "organization": organization,
+            "owner": owner,
+        }
 
     @app.get("/api/company")
     def current_company(user: dict = Depends(authorize)) -> dict:
         current_organization_id = organization_id(user)
-        company = saas.get_organization(current_organization_id)
+        workspace = saas.get_organization(current_organization_id)
+        company = saas.company_for_organization(current_organization_id)
         try:
             telegram_connection = saas.telegram_connection(
                 current_organization_id,
@@ -2269,7 +2591,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "legacy": True,
             }
         return {
-            **company,
+            **workspace,
+            "company": {
+                **company,
+                "role": saas.company_role_for_user(company["id"], user["id"])
+                or ("platform_admin" if user.get("is_super_admin") else "member"),
+                "workspace_count": len(
+                    saas.workspaces_for_company(int(company["id"]))
+                ),
+                "user_count": len(saas.company_users(int(company["id"]))),
+            },
             "settings": saas.organization_settings(current_organization_id),
             "telegram": telegram_connection,
             "user_count": len(saas.member_ids(current_organization_id)),

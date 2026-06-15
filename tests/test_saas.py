@@ -29,6 +29,58 @@ def test_legacy_company_migration_preserves_users(tmp_path) -> None:
     assert auth.authenticate("owner", "owner-password")["organization_id"] == 1
 
 
+def test_company_workspace_migration_is_idempotent(tmp_path) -> None:
+    database = tmp_path / "company-workspace.sqlite3"
+    auth = AuthRepository(database)
+    owner = auth.create_user("owner", "owner-password", is_admin=True)
+    first = SaasRepository(database, Fernet.generate_key().decode())
+    first.ensure_legacy_organization()
+
+    second = SaasRepository(database, Fernet.generate_key().decode())
+    company = second.company_for_organization(1)
+    companies = second.list_companies()
+    members = second.company_users(company["id"])
+
+    assert len(companies) == 1
+    assert companies[0]["workspace_count"] == 1
+    assert members[0]["id"] == owner["id"]
+    assert members[0]["company_role"] == "owner"
+    assert members[0]["workspace_roles"][0]["workspace_id"] == 1
+
+
+def test_registration_ignores_legacy_global_workspace_limit(tmp_path) -> None:
+    settings = Settings(
+        telegram_bot_token="telegram",
+        openai_api_key="openai",
+        admin_username="platform.owner",
+        admin_password="initial-password",
+        database_path=tmp_path / "registration.sqlite3",
+        generated_dir=tmp_path / "generated",
+        reference_dir=tmp_path / "references",
+        organizations_dir=tmp_path / "organizations",
+        app_encryption_key=Fernet.generate_key().decode(),
+        max_organizations=1,
+    )
+    client = TestClient(create_app(settings))
+
+    response = client.post(
+        "/api/register",
+        json={
+            "username": "new.owner",
+            "password": "new-owner-password",
+            "email": "new-owner@example.com",
+            "display_name": "Новий Власник",
+            "workspace_name": "Нова Компанія",
+            "workspace_slug": "nova-kompaniia",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["company"]["name"] == "Нова Компанія"
+    assert payload["workspace"]["company_id"] == payload["company"]["id"]
+
+
 def test_organization_onboarding_settings_survive_reinitialization(tmp_path) -> None:
     database = tmp_path / "settings.sqlite3"
     key = Fernet.generate_key().decode()

@@ -47,8 +47,10 @@ class AuthRepository:
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path)
+        connection = sqlite3.connect(self.database_path, timeout=30)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout=30000")
+        connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA journal_mode=WAL")
         return connection
 
@@ -247,6 +249,28 @@ class AuthRepository:
                         role or ("admin" if is_admin else "editor"),
                     ),
                 )
+                if self._table_exists(connection, "company_members"):
+                    organization = connection.execute(
+                        "SELECT company_id FROM organizations WHERE id = ?",
+                        (organization_id,),
+                    ).fetchone()
+                    if organization and organization["company_id"] is not None:
+                        workspace_role = role or ("admin" if is_admin else "editor")
+                        company_role = (
+                            "owner"
+                            if workspace_role == "owner"
+                            else "admin"
+                            if workspace_role == "admin"
+                            else "member"
+                        )
+                        connection.execute(
+                            """
+                            INSERT INTO company_members (company_id, user_id, role)
+                            VALUES (?, ?, ?)
+                            ON CONFLICT(company_id, user_id) DO NOTHING
+                            """,
+                            (organization["company_id"], user_id, company_role),
+                        )
         return self.get_user(user_id)
 
     def get_user(self, user_id: int) -> dict:
@@ -718,9 +742,11 @@ class AuthRepository:
                     membership = connection.execute(
                         """
                         SELECT m.organization_id, m.role,
-                            o.name organization_name, o.slug organization_slug
+                            o.name organization_name, o.slug organization_slug,
+                            o.company_id, c.name company_name, c.slug company_slug
                         FROM organization_members m
                         JOIN organizations o ON o.id = m.organization_id
+                        LEFT JOIN companies c ON c.id = o.company_id
                         WHERE m.user_id = ? AND o.active = 1
                         ORDER BY m.organization_id
                         LIMIT 1
@@ -732,8 +758,10 @@ class AuthRepository:
                         """
                         SELECT o.id organization_id,
                             COALESCE(m.role, 'platform_admin') role,
-                            o.name organization_name, o.slug organization_slug
+                            o.name organization_name, o.slug organization_slug,
+                            o.company_id, c.name company_name, c.slug company_slug
                         FROM organizations o
+                        LEFT JOIN companies c ON c.id = o.company_id
                         LEFT JOIN organization_members m
                           ON m.organization_id = o.id AND m.user_id = ?
                         WHERE o.id = ? AND o.active = 1

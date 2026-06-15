@@ -17,8 +17,8 @@
     <section class="auth-panel register-panel">
       <div class="auth-brand"><span class="brand-mark"></span>Content Studio</div>
       <div class="eyebrow">14 днів trial</div>
-      <h1>Створіть свій workspace</h1>
-      <p class="muted">Зареєструйте власника та почніть налаштування компанії.</p>
+      <h1>Створіть компанію</h1>
+      <p class="muted">Після реєстрації ми створимо перший workspace. Додаткові workspace можна буде додати в кабінеті компанії.</p>
       <div class="callout referral-welcome" id="referralWelcome" hidden>
         <strong>Вас запросили до Content Studio</strong>
         <p>Реферальне джерело буде збережено після реєстрації.</p>
@@ -29,11 +29,11 @@
           <label>Email<input id="email" type="email" autocomplete="email" required></label>
           <label>Логін<input id="username" autocomplete="username" pattern="[A-Za-z0-9._-]+" required></label>
           <label>Пароль<input id="password" type="password" minlength="10" autocomplete="new-password" required></label>
-          <label class="wide">Назва компанії<input id="workspaceName" required><small class="field-help">URL workspace система створить автоматично. За потреби його можна змінити пізніше.</small></label>
-          <details class="wide advanced-field"><summary>Змінити URL вручну</summary><label>Slug workspace<input id="workspaceSlug" pattern="[A-Za-z0-9-]+"><small class="field-help">Необов’язково. Латиниця, цифри та дефіс.</small></label></details>
+          <label class="wide">Назва компанії<input id="workspaceName" required><small class="field-help">Компанія об’єднує користувачів, ролі та всі ваші workspace.</small></label>
+          <details class="wide advanced-field"><summary>Змінити URL компанії вручну</summary><label>Slug компанії<input id="workspaceSlug" pattern="[A-Za-z0-9-]+"><small class="field-help">Необов’язково. Латиниця, цифри та дефіс.</small></label></details>
         </div>
         <input id="referralCode" type="hidden" value="__REFERRAL_CODE__">
-        <button class="primary" type="submit">Створити workspace</button>
+        <button class="primary" type="submit">Створити компанію та workspace</button>
         <div class="form-error" id="error" role="alert"></div>
       </form>
       <div id="oauthBlock">

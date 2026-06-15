@@ -47,8 +47,9 @@ class SaasRepository:
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path)
+        connection = sqlite3.connect(self.database_path, timeout=30)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout=30000")
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA journal_mode=WAL")
         return connection
@@ -57,8 +58,27 @@ class SaasRepository:
         with self._connect() as connection:
             connection.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS companies (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    slug TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    max_workspaces INTEGER NOT NULL DEFAULT 3,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS company_members (
+                    company_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'member',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (company_id, user_id),
+                    FOREIGN KEY (company_id) REFERENCES companies(id),
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
                 CREATE TABLE IF NOT EXISTS organizations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    company_id INTEGER,
                     name TEXT NOT NULL,
                     slug TEXT NOT NULL UNIQUE COLLATE NOCASE,
                     active INTEGER NOT NULL DEFAULT 1,
@@ -142,6 +162,7 @@ class SaasRepository:
             )
             self._ensure_column(connection, "organizations", "plan_code", "TEXT NOT NULL DEFAULT 'custom'")
             self._ensure_column(connection, "organizations", "plan_expires_at", "TEXT")
+            self._ensure_column(connection, "organizations", "company_id", "INTEGER")
             self._ensure_column(
                 connection,
                 "organizations",
@@ -178,6 +199,19 @@ class SaasRepository:
                 ON audit_events(created_at, action)
                 """
             )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_organizations_company
+                ON organizations(company_id, active)
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_company_members_user
+                ON company_members(user_id, company_id)
+                """
+            )
+            self._backfill_companies(connection)
 
     @staticmethod
     def _ensure_column(
@@ -193,6 +227,81 @@ class SaasRepository:
         if column not in columns:
             connection.execute(
                 f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+            )
+
+    @staticmethod
+    def _backfill_companies(connection: sqlite3.Connection) -> None:
+        organizations = connection.execute(
+            """
+            SELECT id, name, slug, active, created_at
+            FROM organizations
+            WHERE company_id IS NULL
+            ORDER BY id
+            """
+        ).fetchall()
+        for organization in organizations:
+            company = connection.execute(
+                "SELECT id FROM companies WHERE slug = ? COLLATE NOCASE",
+                (organization["slug"],),
+            ).fetchone()
+            if company is None:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO companies (
+                        name, slug, active, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        organization["name"],
+                        organization["slug"],
+                        organization["active"],
+                        organization["created_at"],
+                        organization["created_at"],
+                    ),
+                )
+                company_id = int(cursor.lastrowid)
+            else:
+                company_id = int(company["id"])
+            connection.execute(
+                "UPDATE organizations SET company_id = ? WHERE id = ?",
+                (company_id, organization["id"]),
+            )
+        memberships = connection.execute(
+            """
+            SELECT o.company_id, m.user_id,
+                CASE
+                    WHEN MAX(CASE WHEN m.role = 'owner' THEN 3
+                                      WHEN m.role = 'admin' THEN 2
+                                      ELSE 1 END) = 3 THEN 'owner'
+                    WHEN MAX(CASE WHEN m.role = 'owner' THEN 3
+                                      WHEN m.role = 'admin' THEN 2
+                                      ELSE 1 END) = 2 THEN 'admin'
+                    ELSE 'member'
+                END company_role
+            FROM organization_members m
+            JOIN organizations o ON o.id = m.organization_id
+            WHERE o.company_id IS NOT NULL
+            GROUP BY o.company_id, m.user_id
+            """
+        ).fetchall()
+        for membership in memberships:
+            connection.execute(
+                """
+                INSERT INTO company_members (company_id, user_id, role)
+                VALUES (?, ?, ?)
+                ON CONFLICT(company_id, user_id) DO UPDATE SET
+                    role = CASE
+                        WHEN company_members.role = 'owner' THEN 'owner'
+                        WHEN excluded.role = 'owner' THEN 'owner'
+                        WHEN company_members.role = 'admin' THEN 'admin'
+                        ELSE excluded.role
+                    END
+                """,
+                (
+                    membership["company_id"],
+                    membership["user_id"],
+                    membership["company_role"],
+                ),
             )
 
     def ensure_legacy_organization(
@@ -243,7 +352,27 @@ class SaasRepository:
                     """,
                     (user["id"], "owner" if user["is_admin"] else "editor"),
                 )
+            self._backfill_companies(connection)
         return self.get_organization(1)
+
+    def create_company(
+        self,
+        *,
+        name: str,
+        slug: str,
+        max_workspaces: int = 3,
+    ) -> dict:
+        normalized = self.unique_company_slug(slug or name)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO companies (name, slug, max_workspaces)
+                VALUES (?, ?, ?)
+                """,
+                (name.strip(), normalized, max(1, max_workspaces)),
+            )
+            company_id = int(cursor.lastrowid)
+        return self.get_company(company_id)
 
     def create_organization(
         self,
@@ -254,17 +383,28 @@ class SaasRepository:
         max_channels: int,
         monthly_publications: int,
         monthly_ai_budget: float,
+        company_id: int | None = None,
     ) -> dict:
+        if company_id is None:
+            company = self.create_company(name=name, slug=slug or name)
+            company_id = int(company["id"])
+        else:
+            company = self.get_company(company_id)
+            if len(self.workspaces_for_company(company_id)) >= int(
+                company["max_workspaces"]
+            ):
+                raise ValueError("Досягнуто ліміт workspace для компанії")
         normalized = self.unique_slug(slug or name)
         with self._connect() as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO organizations (
-                    name, slug, max_users, max_channels,
+                    company_id, name, slug, max_users, max_channels,
                     monthly_publications, monthly_ai_budget
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    company_id,
                     name.strip(),
                     normalized,
                     max_users,
@@ -283,7 +423,13 @@ class SaasRepository:
             )
         return self.get_organization(organization_id)
 
-    def create_trial_organization(self, *, name: str, slug: str) -> dict:
+    def create_trial_organization(
+        self,
+        *,
+        name: str,
+        slug: str,
+        company_id: int | None = None,
+    ) -> dict:
         organization = self.create_organization(
             name=name,
             slug=slug,
@@ -291,6 +437,7 @@ class SaasRepository:
             max_channels=1,
             monthly_publications=30,
             monthly_ai_budget=8,
+            company_id=company_id,
         )
         expires_at = datetime.now(timezone.utc) + timedelta(days=14)
         with self._connect() as connection:
@@ -303,6 +450,135 @@ class SaasRepository:
                 (expires_at.isoformat(), organization["id"]),
             )
         return self.get_organization(organization["id"])
+
+    def get_company(self, company_id: int) -> dict:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM companies WHERE id = ?",
+                (company_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"Company {company_id} not found")
+        return dict(row)
+
+    def delete_empty_company(self, company_id: int) -> bool:
+        with self._connect() as connection:
+            member_count = connection.execute(
+                "SELECT COUNT(*) FROM company_members WHERE company_id = ?",
+                (company_id,),
+            ).fetchone()[0]
+            workspace_member_count = connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM organization_members m
+                JOIN organizations o ON o.id = m.organization_id
+                WHERE o.company_id = ?
+                """,
+                (company_id,),
+            ).fetchone()[0]
+            if member_count or workspace_member_count:
+                return False
+            workspace_ids = [
+                int(row["id"])
+                for row in connection.execute(
+                    "SELECT id FROM organizations WHERE company_id = ?",
+                    (company_id,),
+                ).fetchall()
+            ]
+            for workspace_id in workspace_ids:
+                connection.execute(
+                    "DELETE FROM organization_settings WHERE organization_id = ?",
+                    (workspace_id,),
+                )
+                connection.execute(
+                    "DELETE FROM telegram_connections WHERE organization_id = ?",
+                    (workspace_id,),
+                )
+            connection.execute(
+                "DELETE FROM organizations WHERE company_id = ?",
+                (company_id,),
+            )
+            cursor = connection.execute(
+                "DELETE FROM companies WHERE id = ?",
+                (company_id,),
+            )
+        return bool(cursor.rowcount)
+
+    def company_for_organization(self, organization_id: int) -> dict:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT c.*
+                FROM companies c
+                JOIN organizations o ON o.company_id = c.id
+                WHERE o.id = ?
+                """,
+                (organization_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError("Company not found")
+        return dict(row)
+
+    def workspaces_for_company(self, company_id: int) -> list[dict]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT o.*,
+                    COUNT(DISTINCT m.user_id) user_count,
+                    COUNT(DISTINCT CASE WHEN tc.active = 1 THEN tc.organization_id END)
+                        channel_count
+                FROM organizations o
+                LEFT JOIN organization_members m ON m.organization_id = o.id
+                LEFT JOIN telegram_connections tc ON tc.organization_id = o.id
+                WHERE o.company_id = ?
+                GROUP BY o.id
+                ORDER BY o.id
+                """,
+                (company_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_companies(self) -> list[dict]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT c.*,
+                    COUNT(DISTINCT o.id) workspace_count,
+                    COUNT(DISTINCT cm.user_id) user_count
+                FROM companies c
+                LEFT JOIN organizations o
+                  ON o.company_id = c.id
+                LEFT JOIN company_members cm
+                  ON cm.company_id = c.id
+                GROUP BY c.id
+                ORDER BY c.id
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def unique_company_slug(
+        self,
+        value: str,
+        *,
+        exclude_id: int | None = None,
+    ) -> str:
+        base = generate_slug(value) or "company"
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id, slug FROM companies WHERE slug LIKE ? COLLATE NOCASE",
+                (f"{base}%",),
+            ).fetchall()
+        occupied = {
+            str(row["slug"]).lower()
+            for row in rows
+            if exclude_id is None or int(row["id"]) != exclude_id
+        }
+        if base not in occupied:
+            return base
+        suffix = 2
+        while f"{base}-{suffix}" in occupied:
+            suffix += 1
+        return f"{base}-{suffix}"
 
     def get_organization(self, organization_id: int) -> dict:
         with self._connect() as connection:
@@ -349,6 +625,31 @@ class SaasRepository:
                 WHERE id IN ({placeholders})
                 """,
                 (int(active), *organization_ids),
+            )
+        return int(cursor.rowcount)
+
+    def set_companies_active(
+        self,
+        company_ids: list[int],
+        active: bool,
+    ) -> int:
+        if not company_ids:
+            return 0
+        placeholders = ",".join("?" for _ in company_ids)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE companies SET active = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id IN ({placeholders})
+                """,
+                (int(active), *company_ids),
+            )
+            connection.execute(
+                f"""
+                UPDATE organizations SET active = ?
+                WHERE company_id IN ({placeholders})
+                """,
+                (int(active), *company_ids),
             )
         return int(cursor.rowcount)
 
@@ -445,10 +746,12 @@ class SaasRepository:
             rows = connection.execute(
                 """
                 SELECT o.*,
+                    c.name company_name, c.slug company_slug,
                     COUNT(DISTINCT m.user_id) user_count,
                     COUNT(DISTINCT CASE WHEN tc.active = 1 THEN tc.organization_id END)
                         channel_count
                 FROM organizations o
+                JOIN companies c ON c.id = o.company_id
                 LEFT JOIN organization_members m ON m.organization_id = o.id
                 LEFT JOIN telegram_connections tc ON tc.organization_id = o.id
                 GROUP BY o.id
@@ -475,12 +778,169 @@ class SaasRepository:
                 """,
                 (organization_id, user_id, role),
             )
+        company = self.company_for_organization(organization_id)
+        self.add_company_member(
+            int(company["id"]),
+            user_id,
+            "owner" if role == "owner" else "admin" if role == "admin" else "member",
+        )
+
+    def add_company_member(
+        self,
+        company_id: int,
+        user_id: int,
+        role: str = "member",
+    ) -> None:
+        if role not in {"owner", "admin", "member"}:
+            raise ValueError("Unsupported company role")
+        self.get_company(company_id)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO company_members (company_id, user_id, role)
+                VALUES (?, ?, ?)
+                ON CONFLICT(company_id, user_id) DO UPDATE SET
+                    role = CASE
+                        WHEN company_members.role = 'owner' THEN 'owner'
+                        WHEN excluded.role = 'owner' THEN 'owner'
+                        WHEN company_members.role = 'admin' THEN 'admin'
+                        ELSE excluded.role
+                    END
+                """,
+                (company_id, user_id, role),
+            )
+
+    def company_role_for_user(self, company_id: int, user_id: int) -> str | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT role FROM company_members
+                WHERE company_id = ? AND user_id = ?
+                """,
+                (company_id, user_id),
+            ).fetchone()
+        return str(row["role"]) if row else None
+
+    def company_memberships_for_user(self, user_id: int) -> list[dict]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT cm.company_id, cm.role, cm.created_at,
+                    c.name company_name, c.slug company_slug,
+                    c.active company_active
+                FROM company_members cm
+                JOIN companies c ON c.id = cm.company_id
+                WHERE cm.user_id = ? AND c.active = 1
+                ORDER BY cm.company_id
+                """,
+                (user_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def all_company_memberships(self) -> list[dict]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT cm.company_id, cm.user_id, cm.role, cm.created_at,
+                    c.name company_name, c.slug company_slug,
+                    c.active company_active
+                FROM company_members cm
+                JOIN companies c ON c.id = cm.company_id
+                ORDER BY cm.company_id, cm.user_id
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def company_users(self, company_id: int) -> list[dict]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT u.id, u.username, u.email, u.display_name, u.active,
+                    u.created_at, u.last_login_at, u.last_seen_at, u.login_count,
+                    cm.role company_role
+                FROM company_members cm
+                JOIN users u ON u.id = cm.user_id
+                WHERE cm.company_id = ?
+                ORDER BY
+                    CASE cm.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
+                    u.display_name COLLATE NOCASE,
+                    u.username COLLATE NOCASE
+                """,
+                (company_id,),
+            ).fetchall()
+            workspace_rows = connection.execute(
+                """
+                SELECT om.user_id, o.id workspace_id, o.name workspace_name,
+                    om.role
+                FROM organizations o
+                JOIN organization_members om ON om.organization_id = o.id
+                WHERE o.company_id = ?
+                ORDER BY o.id
+                """,
+                (company_id,),
+            ).fetchall()
+        roles_by_user: dict[int, list[dict]] = {}
+        for workspace in workspace_rows:
+            roles_by_user.setdefault(int(workspace["user_id"]), []).append(
+                {
+                    "workspace_id": int(workspace["workspace_id"]),
+                    "workspace_name": workspace["workspace_name"],
+                    "role": workspace["role"],
+                }
+            )
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["workspace_roles"] = roles_by_user.get(int(item["id"]), [])
+            result.append(item)
+        return result
+
+    def companies_for_user(
+        self,
+        user_id: int,
+        *,
+        platform_admin: bool = False,
+    ) -> list[dict]:
+        companies = self.list_companies()
+        if platform_admin:
+            allowed_ids = {int(item["id"]) for item in companies}
+        else:
+            allowed_ids = {
+                int(item["company_id"])
+                for item in self.company_memberships_for_user(user_id)
+            }
+        result = []
+        roles = {
+            int(item["company_id"]): item["role"]
+            for item in self.company_memberships_for_user(user_id)
+        }
+        for company in companies:
+            if int(company["id"]) not in allowed_ids:
+                continue
+            result.append(
+                {
+                    **company,
+                    "role": (
+                        "platform_admin"
+                        if platform_admin
+                        else roles.get(int(company["id"]), "member")
+                    ),
+                    "workspaces": self.workspaces_for_company(int(company["id"])),
+                }
+            )
+        return result
 
     def upsert_member(self, organization_id: int, user_id: int, role: str) -> None:
         if role not in ROLES:
             raise ValueError("Unsupported organization role")
         existing = self.role_for_user(organization_id, user_id)
         if existing:
+            company = self.company_for_organization(organization_id)
+            self.add_company_member(
+                int(company["id"]),
+                user_id,
+                "owner" if role == "owner" else "admin" if role == "admin" else "member",
+            )
             return
         self.add_member(organization_id, user_id, role)
 

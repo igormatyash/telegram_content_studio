@@ -370,6 +370,8 @@ textarea { min-height: 112px; resize: vertical; }
 .permission-chip strong, .permission-chip small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .permission-chip strong { font-size: 11px; }
 .permission-chip small { margin-top: 2px; color: #6366f1; font: 9px ui-monospace,SFMono-Regular,monospace; }
+.role-assignment { display: block; margin: 3px 0; color: #475569; white-space: nowrap; }
+.role-assignment strong { color: #172033; }
 .permission-chip::after { content: attr(data-tooltip); position: absolute; left: 8px; bottom: calc(100% + 8px); z-index: 30; width: min(280px,70vw); padding: 9px 11px; border-radius: 8px; color: white; background: #0f172a; box-shadow: var(--shadow); font: 11px/1.45 var(--font); opacity: 0; visibility: hidden; transform: translateY(4px); transition: .14s ease; pointer-events: none; }
 .permission-chip:hover::after, .permission-chip:focus-visible::after { opacity: 1; visibility: visible; transform: none; }
 .selectable-row { grid-template-columns: auto 10px minmax(0,1fr); }
