@@ -27,6 +27,21 @@ TENANT_TABLES = (
     "content_series",
 )
 
+GENERATION_PROGRESS = {
+    "queued_text": (12, "Готуємо запит до AI"),
+    "text_batch": (35, "AI генерує текст"),
+    "queued_image": (68, "Текст готовий. Готуємо візуал"),
+    "image_batch": (86, "AI генерує зображення"),
+    "ready": (100, "Матеріал готовий"),
+    "failed": (100, "Генерація зупинилася"),
+    "cancelled": (100, "Генерацію скасовано"),
+}
+
+
+def generation_progress(status: str) -> dict:
+    percent, label = GENERATION_PROGRESS.get(status, (0, "Очікуємо на генерацію"))
+    return {"progress": percent, "progress_label": label}
+
 
 class DraftRepository:
     def __init__(self, database_path: Path, organization_id: int = 1) -> None:
@@ -38,7 +53,11 @@ class DraftRepository:
         connection = sqlite3.connect(self.database_path, timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout=30000")
-        connection.execute("PRAGMA journal_mode=WAL")
+        try:
+            connection.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError as exc:
+            if "database is locked" not in str(exc).lower():
+                raise
         return connection
 
     def _initialize(self) -> None:
@@ -356,9 +375,10 @@ class DraftRepository:
                     f"CREATE INDEX IF NOT EXISTS idx_{table}_organization_id "
                     f"ON {table}(organization_id)"
                 )
+                connection.execute(f"DROP TRIGGER IF EXISTS trg_{table}_organization_id")
                 connection.execute(
                     f"""
-                    CREATE TRIGGER IF NOT EXISTS trg_{table}_organization_id
+                    CREATE TRIGGER trg_{table}_organization_id
                     AFTER INSERT ON {table}
                     WHEN NEW.organization_id = 0
                     BEGIN
@@ -368,6 +388,15 @@ class DraftRepository:
                     END
                     """
                 )
+                if (
+                    self.organization_id != 1
+                    and self.database_path.parent.name == str(self.organization_id)
+                ):
+                    connection.execute(
+                        f"UPDATE {table} SET organization_id = ? "
+                        "WHERE organization_id != ?",
+                        (self.organization_id, self.organization_id),
+                    )
             connection.execute(
                 """
                 UPDATE content_ideas SET status = 'idea'
@@ -464,8 +493,8 @@ class DraftRepository:
                 """
                 INSERT INTO drafts (
                     topic, product, title, visual_title, caption_html, image_prompt, image_path,
-                    link_url, title_options, cta_options, tone
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    link_url, title_options, cta_options, tone, organization_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     topic,
@@ -479,6 +508,7 @@ class DraftRepository:
                     json.dumps(title_options or [], ensure_ascii=False),
                     json.dumps(cta_options or [], ensure_ascii=False),
                     tone,
+                    self.organization_id,
                 ),
             )
             draft_id = int(cursor.lastrowid)
@@ -818,8 +848,8 @@ class DraftRepository:
                 """
                 INSERT INTO content_rubrics (
                     slug, name, description, instructions, default_link,
-                    fixed_cover_path
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    fixed_cover_path, organization_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(slug) DO UPDATE SET
                     name = excluded.name,
                     description = excluded.description,
@@ -832,7 +862,7 @@ class DraftRepository:
                         ELSE content_rubrics.fixed_cover_path
                     END
                 """,
-                defaults,
+                [(*item, self.organization_id) for item in defaults],
             )
 
     def add_rubric(
@@ -853,8 +883,8 @@ class DraftRepository:
                 """
                 INSERT INTO content_rubrics (
                     slug, name, description, instructions, default_link,
-                    goal, tone, example_topic, active
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    goal, tone, example_topic, active, organization_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     slug,
@@ -866,6 +896,7 @@ class DraftRepository:
                     tone,
                     example_topic,
                     int(active),
+                    self.organization_id,
                 ),
             )
             rubric_id = int(cursor.lastrowid)
@@ -1017,8 +1048,8 @@ class DraftRepository:
                 INSERT INTO social_variants (
                     draft_id, platform, title, visual_title, text_content, hashtags,
                     image_prompt, image_path, text_model, image_model,
-                    created_by_user_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_by_user_id, organization_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(draft_id, platform) DO UPDATE SET
                     title = excluded.title,
                     visual_title = excluded.visual_title,
@@ -1043,6 +1074,7 @@ class DraftRepository:
                     text_model,
                     image_model,
                     created_by_user_id,
+                    self.organization_id,
                 ),
             )
         return self.get_social_variant(draft_id, platform)
@@ -1103,8 +1135,9 @@ class DraftRepository:
                 INSERT INTO generation_jobs (
                     topic, product, chat_id, text_model, image_model, reference_ids,
                     template_id, logo_reference_id, company_logo_reference_id,
-                    link_url, idea_id, tone, created_by_user_id, generation_mode
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    link_url, idea_id, tone, created_by_user_id, generation_mode,
+                    organization_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     topic,
@@ -1121,6 +1154,7 @@ class DraftRepository:
                     tone,
                     created_by_user_id,
                     generation_mode,
+                    self.organization_id,
                 ),
             )
             job_id = int(cursor.lastrowid)
@@ -1154,8 +1188,8 @@ class DraftRepository:
                     topic, product, chat_id, status, draft_id,
                     text_model, image_model, reference_ids, template_id,
                     logo_reference_id, company_logo_reference_id, link_url,
-                    created_by_user_id, generation_mode
-                ) VALUES (?, ?, 0, 'queued_image', ?, '', ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_by_user_id, generation_mode, organization_id
+                ) VALUES (?, ?, 0, 'queued_image', ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     draft.topic,
@@ -1169,6 +1203,7 @@ class DraftRepository:
                     draft.link_url,
                     created_by_user_id,
                     generation_mode,
+                    self.organization_id,
                 ),
             )
             job_id = int(cursor.lastrowid)
@@ -1183,8 +1218,8 @@ class DraftRepository:
                     INSERT INTO content_ideas (
                         product, title, angle, status, planned_for, tone, series_id,
                         series_title, series_part, source_url, duplicate_score,
-                        duplicate_of, plan_id
-                    ) VALUES (?, ?, ?, 'idea', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        duplicate_of, plan_id, organization_id
+                    ) VALUES (?, ?, ?, 'idea', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         idea["product"],
@@ -1199,6 +1234,7 @@ class DraftRepository:
                         idea.get("duplicate_score", 0),
                         idea.get("duplicate_of"),
                         idea.get("plan_id"),
+                        self.organization_id,
                     ),
                 )
                 ids.append(int(cursor.lastrowid))
@@ -1222,8 +1258,8 @@ class DraftRepository:
                 """
                 INSERT INTO content_plans (
                     id, period, start_date, posts, objective, create_as,
-                    rubric_slugs, channel_ids, created_by_user_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    rubric_slugs, channel_ids, created_by_user_id, organization_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     plan_id,
@@ -1235,6 +1271,7 @@ class DraftRepository:
                     json.dumps(rubric_slugs, ensure_ascii=False),
                     json.dumps(channel_ids, ensure_ascii=False),
                     created_by_user_id,
+                    self.organization_id,
                 ),
             )
         return self.get_content_plan(plan_id)
@@ -1268,8 +1305,8 @@ class DraftRepository:
             connection.execute(
                 """
                 INSERT INTO content_series (
-                    id, title, parts, rubric_slug, created_by_user_id
-                ) VALUES (?, ?, ?, ?, ?)
+                    id, title, parts, rubric_slug, created_by_user_id, organization_id
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     series_id,
@@ -1277,6 +1314,7 @@ class DraftRepository:
                     parts,
                     rubric_slug,
                     created_by_user_id,
+                    self.organization_id,
                 ),
             )
             row = self._ensure_owned(connection, "content_series", series_id)
@@ -1447,8 +1485,8 @@ class DraftRepository:
                 """
                 INSERT INTO custom_visual_templates (
                     id, name, description, prompt, layout, accent, mood,
-                    use_rules, avoid_rules, prompt_examples, active
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    use_rules, avoid_rules, prompt_examples, active, organization_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     template_id,
@@ -1462,6 +1500,7 @@ class DraftRepository:
                     avoid_rules,
                     prompt_examples,
                     int(active),
+                    self.organization_id,
                 ),
             )
         return self.get_custom_template(template_id)
@@ -1578,8 +1617,8 @@ class DraftRepository:
                 INSERT INTO reference_assets (
                     name, filename, path, media_type, material_type,
                     description, source_url, active, created_by_user_id,
-                    updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    updated_at, organization_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
                 """,
                 (
                     name,
@@ -1591,6 +1630,7 @@ class DraftRepository:
                     source_url,
                     int(active),
                     created_by_user_id,
+                    self.organization_id,
                 ),
             )
             reference_id = int(cursor.lastrowid)
@@ -1788,8 +1828,8 @@ class DraftRepository:
                 """
                 INSERT INTO batch_runs (
                     id, kind, status, total, completed, failed,
-                    input_tokens, output_tokens, estimated_cost
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    input_tokens, output_tokens, estimated_cost, organization_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     status = excluded.status,
                     total = excluded.total,
@@ -1810,6 +1850,7 @@ class DraftRepository:
                     batch.input_tokens,
                     batch.output_tokens,
                     batch.estimated_cost,
+                    self.organization_id,
                 ),
             )
 
@@ -1837,8 +1878,8 @@ class DraftRepository:
                 """
                 INSERT INTO usage_events (
                     job_id, kind, model, input_tokens, output_tokens, units, cost,
-                    user_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    user_id, organization_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -1849,6 +1890,7 @@ class DraftRepository:
                     units,
                     cost,
                     user_id,
+                    self.organization_id,
                 ),
             )
 
@@ -2058,12 +2100,19 @@ class DraftRepository:
         return {
             "job_counts": {row["status"]: row["count"] for row in job_counts},
             "batches": [dict(row) for row in batches],
-            "jobs": [dict(row) for row in jobs],
+            "jobs": [
+                {
+                    **dict(row),
+                    **generation_progress(row["status"]),
+                }
+                for row in jobs
+            ],
             "drafts": [dict(row) for row in drafts],
             "ideas": [
                 {
                     **dict(row),
                     "status": row["effective_status"],
+                    **generation_progress(row["effective_status"]),
                 }
                 for row in ideas
             ],

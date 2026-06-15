@@ -24,6 +24,8 @@ const state = {
   selected: {},
   roles: null,
 };
+let generationPollTimer = null;
+let generationSignature = "";
 const viewRoutes = {
   home: "dashboard",
   ideas: "ideas",
@@ -66,6 +68,18 @@ const statusActions = {
 const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
 const money = value => `$${Number(value || 0).toFixed(2)}`;
 const formatDate = value => value ? new Date(value).toLocaleDateString("uk-UA", {day:"2-digit",month:"short"}) : "Без дати";
+const localDateKey = value => {
+  const date = value instanceof Date ? value : new Date(value);
+  const pad = number => String(number).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+};
+const localDateTimeValue = value => {
+  if (!value) return "";
+  const date = value instanceof Date ? value : new Date(value);
+  const pad = number => String(number).padStart(2, "0");
+  return `${localDateKey(date)}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};
+const activeGenerationStatuses = new Set(["queued_text","text_batch","queued_image","image_batch"]);
 const blockedPreviewTags = new Set(["SCRIPT","STYLE","IFRAME","OBJECT","EMBED","FORM","INPUT","BUTTON","SVG"]);
 const plain = value => {
   const documentValue = new DOMParser().parseFromString(String(value || ""), "text/html");
@@ -217,6 +231,17 @@ async function loading(button, task, label = "Зачекайте…") {
   try { return await task(); }
   catch (error) { toast(error.message, true); throw error; }
   finally { button.disabled = false; button.innerHTML = old; }
+}
+async function withAiProgress(task, {
+  title = "Ваші ідеї генеруються",
+  text = "Аналізуємо бренд, рубрики та формуємо нові теми.",
+} = {}) {
+  const overlay = document.querySelector("#aiProgressOverlay");
+  document.querySelector("#aiProgressTitle").textContent = title;
+  document.querySelector("#aiProgressText").textContent = text;
+  overlay.hidden = false;
+  try { return await task(); }
+  finally { overlay.hidden = true; }
 }
 function initials(name) {
   return String(name || "CS").split(/\s+/).slice(0,2).map(x => x[0]).join("").toUpperCase();
@@ -531,8 +556,12 @@ function renderIdeas() {
     target.innerHTML = '<span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span>';
     return;
   }
-  const items = data.items || [];
-  target.innerHTML = `${bulkBar("ideas",[["create_drafts","Створити чернетки"],["assign_rubric","Призначити рубрику"],["delete","Видалити","danger"]])}<div class="idea-grid">${items.length ? items.map(item => `<article class="card idea-card selectable-card">${selectionCheckbox("ideas",item.id)}<div class="row between"><span class="pill idea">${esc((state.data.rubrics||[]).find(x=>x.slug===item.product)?.name||item.product)}</span><small class="muted">${formatDate(item.planned_for)}</small></div><h3>${esc(item.title_plain||plain(item.title))}</h3><div class="formatted-preview">${safeHtml(item.angle_preview||item.angle||"Перспективна тема для майбутньої публікації.")}</div><footer>${can("ideas.delete")?`<button class="ghost danger" data-delete-idea="${item.id}">Видалити</button>`:""}${can("content.create")?`<button class="dark-button" data-generate-idea="${item.id}">Створити чернетку</button>`:""}</footer></article>`).join("") : empty("У вас ще немає ідей","Згенеруйте перші теми на основі бренду та рубрик.",can("ideas.create")?'<button class="primary" id="emptyGenerateIdeas">✦ Згенерувати ідеї</button>':"")}</div>${pagination(data,"ideas",renderIdeas)}`;
+  const liveIdeas = new Map((state.data.ideas || []).map(item => [Number(item.id), item]));
+  const items = (data.items || []).map(item => ({...item,...(liveIdeas.get(Number(item.id)) || {})}));
+  target.innerHTML = `${bulkBar("ideas",[["create_drafts","Створити чернетки"],["assign_rubric","Призначити рубрику"],["delete","Видалити","danger"]])}<div class="idea-grid">${items.length ? items.map(item => {
+    const generating = activeGenerationStatuses.has(item.status);
+    return `<article class="card idea-card selectable-card">${selectionCheckbox("ideas",item.id)}<div class="row between"><span class="pill idea">${esc((state.data.rubrics||[]).find(x=>x.slug===item.product)?.name||item.product)}</span><small class="muted">${formatDate(item.planned_for)}</small></div><h3>${esc(item.title_plain||plain(item.title))}</h3><div class="formatted-preview">${safeHtml(item.angle_preview||item.angle||"Перспективна тема для майбутньої публікації.")}</div>${generating?`<div class="generation-progress"><span style="width:${Number(item.progress||12)}%"></span></div><div class="generation-status"><span>${esc(item.progress_label||statusLabels[item.status])}</span><strong>${Number(item.progress||12)}%</strong></div>`:""}<footer>${can("ideas.delete")?`<button class="ghost danger" data-delete-idea="${item.id}" ${generating?"disabled":""}>Видалити</button>`:""}${can("content.create")?`<button class="dark-button" data-generate-idea="${item.id}" ${generating||item.draft_id?"disabled":""}>${generating?"Генерується…":item.draft_id?"Чернетку створено":"Створити чернетку"}</button>`:""}</footer></article>`;
+  }).join("") : empty("У вас ще немає ідей","Згенеруйте перші теми на основі бренду та рубрик.",can("ideas.create")?'<button class="primary" id="emptyGenerateIdeas">✦ Згенерувати ідеї</button>':"")}</div>${pagination(data,"ideas",renderIdeas)}`;
   bindSelection("ideas",target,renderIdeas);
   target.querySelector("[data-clear-selection]")?.addEventListener("click",()=>{selected("ideas").clear();renderIdeas();});
   target.querySelectorAll("[data-bulk-action]").forEach(button=>button.onclick=()=>runIdeaBulk(button.dataset.bulkAction));
@@ -560,8 +589,9 @@ async function runIdeaBulk(action) {
 async function generateIdea(button) {
   await loading(button, async () => {
     await api(`api/ideas/${button.dataset.generateIdea}/generate`, {method:"POST",body:JSON.stringify(generationPayload())});
-    toast("Чернетку поставлено в чергу");
-    await refresh();
+    toast("Генерацію розпочато. Прогрес з’явиться у чернетках.");
+    await refresh(true);
+    delete state.lists.drafts;
     setView("drafts");
   }, "Створюємо…");
 }
@@ -572,7 +602,7 @@ function generationPayload() {
 function renderPlan() {
   const select = document.querySelector("#planProduct");
   select.innerHTML = `<option value="all">Усі рубрики</option>${(state.data.rubrics||[]).filter(x=>x.active!==0).map(x=>`<option value="${esc(x.slug)}">${esc(x.name)}</option>`).join("")}`;
-  if (!document.querySelector("#planStart").value) document.querySelector("#planStart").value = new Date().toISOString().slice(0,10);
+  if (!document.querySelector("#planStart").value) document.querySelector("#planStart").value = localDateKey(new Date());
   const data = pagedData("plan","api/content-plan/items",{},renderPlan);
   const target=document.querySelector("#planList");
   if(!data){target.innerHTML='<span class="skeleton"></span><span class="skeleton"></span>';return;}
@@ -589,6 +619,21 @@ function renderPlan() {
   target.querySelectorAll("[data-delete-job]").forEach(button=>button.onclick=async()=>{if(!confirm("Видалити помилкове завдання?"))return;await api(`api/jobs/${button.dataset.deleteJob}`,{method:"DELETE"});delete state.lists.plan;toast("Запис видалено");renderPlan();});
 }
 
+function generationCard(job, draft = null) {
+  const progress = Number(job.progress || 12);
+  const title = draft?.title_plain || draft?.title || job.topic || "Нова чернетка";
+  return `<article class="card generation-card">
+    <div class="generation-visual"><div class="ai-orbit"><span class="ai-logo">AI</span><i></i><i></i><i></i></div></div>
+    <div class="generation-body">
+      ${pill(job.status)}
+      <h3>${esc(plain(title))}</h3>
+      <p class="muted">${esc(job.progress_label || statusLabels[job.status] || "Генеруємо матеріал")}</p>
+      <div class="generation-progress"><span style="width:${progress}%"></span></div>
+      <div class="generation-status"><span>${job.status === "queued_image" || job.status === "image_batch" ? "Текст уже готовий, створюємо зображення" : "Створюємо текст і структуру поста"}</span><strong>${progress}%</strong></div>
+    </div>
+  </article>`;
+}
+
 function renderDrafts() {
   const kanban = state.company.settings?.workspace_mode === "kanban";
   renderFilters(document.querySelector("#draftFilters"), [["all","Усі"],["draft","Чернетки"],["review","На перевірці"],["ready","Готові"],["scheduled","Заплановані"],["published","Опубліковані"]], state.draftFilter, value => {
@@ -598,11 +643,17 @@ function renderDrafts() {
   const target = document.querySelector("#draftsContent");
   if(!data){target.innerHTML='<div class="draft-grid"><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span></div>';return;}
   const drafts=data.items||[];
+  const activeJobs=(state.data.jobs||[]).filter(job=>activeGenerationStatuses.has(job.status));
+  const activeDraftIds=new Set(activeJobs.filter(job=>job.draft_id).map(job=>Number(job.draft_id)));
+  const visibleDrafts=drafts.filter(draft=>!activeDraftIds.has(Number(draft.id)));
+  const draftById=new Map([...(state.data.drafts||[]),...drafts].map(draft=>[Number(draft.id),draft]));
+  const generationCards=activeJobs.map(job=>generationCard(job,draftById.get(Number(job.draft_id)))).join("");
+  const generationStrip=generationCards?`<div class="generation-strip">${generationCards}</div>`:"";
   const bar=bulkBar("drafts",[["status","Змінити статус"],["assign_rubric","Призначити рубрику"],["delete","Видалити","danger"]]);
   if (kanban) {
-    target.innerHTML = `${bar}<div class="kanban-board">${statusOrder.map(status => {const rows = status==="idea" ? [] : drafts.filter(x=>x.status===status);return `<section class="kanban-column"><div class="kanban-head"><span>${statusLabels[status]}</span><span>${rows.length}</span></div>${rows.map(item=>`<article class="kanban-card selectable-card">${selectionCheckbox("drafts",item.id)}<button class="kanban-open" data-open-draft="${item.id}">${pill(item.status)}<h4>${esc(item.title_plain||plain(item.title))}</h4><small class="muted">${formatDate(item.scheduled_at||item.created_at)}</small></button><div class="kanban-actions">${can("content.edit")?(statusActions[item.status]||[]).map(([next,label])=>`<button data-transition-draft="${item.id}" data-transition-status="${next}">${label}</button>`).join(""):""}</div></article>`).join("")}</section>`;}).join("")}</div>${pagination(data,"drafts",renderDrafts)}`;
+    target.innerHTML = `${bar}${generationStrip}<div class="kanban-board">${statusOrder.map(status => {const rows = status==="idea" ? [] : visibleDrafts.filter(x=>x.status===status);return `<section class="kanban-column"><div class="kanban-head"><span>${statusLabels[status]}</span><span>${rows.length}</span></div>${rows.map(item=>`<article class="kanban-card selectable-card">${selectionCheckbox("drafts",item.id)}<button class="kanban-open" data-open-draft="${item.id}">${pill(item.status)}<h4>${esc(item.title_plain||plain(item.title))}</h4><small class="muted">${formatDate(item.scheduled_at||item.created_at)}</small></button><div class="kanban-actions">${can("content.edit")?(statusActions[item.status]||[]).map(([next,label])=>`<button data-transition-draft="${item.id}" data-transition-status="${next}">${label}</button>`).join(""):""}</div></article>`).join("")}</section>`;}).join("")}</div>${pagination(data,"drafts",renderDrafts)}`;
   } else {
-    target.innerHTML = `${bar}${drafts.length ? `<div class="draft-grid">${drafts.map(item => `<article class="card draft-card selectable-card">${selectionCheckbox("drafts",item.id)}<div class="draft-cover">${item.image_path?`<img src="${apiUrl(`api/drafts/${item.id}/image`)}" alt="">`:`<strong>${esc(plain(item.visual_title||item.title))}</strong>`}</div><div class="draft-body">${pill(item.status)}<h3>${esc(item.title_plain||plain(item.title))}</h3><p class="muted">${esc((item.caption_plain||plain(item.caption_html)).slice(0,130))}</p><footer><small class="muted">${formatDate(item.scheduled_at||item.created_at)}</small><button data-open-draft="${item.id}">Відкрити</button></footer></div></article>`).join("")}</div>` : empty("Чернеток ще немає","Створіть чернетку з ідеї або додайте матеріал вручну.")}${pagination(data,"drafts",renderDrafts)}`;
+    target.innerHTML = `${bar}${generationStrip}${visibleDrafts.length ? `<div class="draft-grid">${visibleDrafts.map(item => `<article class="card draft-card selectable-card">${selectionCheckbox("drafts",item.id)}<div class="draft-cover">${item.image_path?`<img src="${apiUrl(`api/drafts/${item.id}/image`)}" alt="">`:`<strong>${esc(plain(item.visual_title||item.title))}</strong>`}</div><div class="draft-body">${pill(item.status)}<h3>${esc(item.title_plain||plain(item.title))}</h3><p class="muted">${esc((item.caption_plain||plain(item.caption_html)).slice(0,130))}</p><footer><small class="muted">${formatDate(item.scheduled_at||item.created_at)}</small><button data-open-draft="${item.id}">Відкрити</button></footer></div></article>`).join("")}</div>` : generationCards?"":empty("Чернеток ще немає","Створіть чернетку з ідеї або додайте матеріал вручну.")}${pagination(data,"drafts",renderDrafts)}`;
   }
   bindSelection("drafts",target,renderDrafts);
   target.querySelector("[data-clear-selection]")?.addEventListener("click",()=>{selected("drafts").clear();renderDrafts();});
@@ -636,9 +687,9 @@ function renderCalendar() {
   const cells = [];
   for (let i=0;i<42;i++) {
     const day = new Date(start); day.setDate(start.getDate()+i);
-    const key = day.toISOString().slice(0,10);
-    const events = drafts.filter(x => x.scheduled_at && new Date(x.scheduled_at).toISOString().slice(0,10)===key);
-    cells.push(`<div class="calendar-day ${day.getMonth()!==month?"outside":""} ${key===new Date().toISOString().slice(0,10)?"today":""}"><strong>${day.getDate()}</strong>${events.map(x=>`<button class="calendar-event" data-open-draft="${x.id}">${new Date(x.scheduled_at).toLocaleTimeString("uk-UA",{hour:"2-digit",minute:"2-digit"})} · ${esc(plain(x.title))}</button>`).join("")}</div>`);
+    const key = localDateKey(day);
+    const events = drafts.filter(x => x.scheduled_at && localDateKey(x.scheduled_at)===key);
+    cells.push(`<div class="calendar-day ${day.getMonth()!==month?"outside":""} ${key===localDateKey(new Date())?"today":""}"><strong>${day.getDate()}</strong>${events.map(x=>`<button class="calendar-event" data-open-draft="${x.id}">${new Date(x.scheduled_at).toLocaleTimeString("uk-UA",{hour:"2-digit",minute:"2-digit"})} · ${esc(plain(x.title))}</button>`).join("")}</div>`);
   }
   document.querySelector("#calendarGrid").innerHTML = ["Пн","Вт","Ср","Чт","Пт","Сб","Нд"].map(x=>`<div class="calendar-weekday">${x}</div>`).join("")+cells.join("");
   document.querySelectorAll("[data-open-draft]").forEach(node => node.onclick = () => openEditor(Number(node.dataset.openDraft)));
@@ -659,7 +710,7 @@ function openScheduleForm(selectedId = null) {
     "Запланувати публікацію",
     `<div class="wide callout"><strong>Чернетка буде затверджена</strong><p>Після вибору дати матеріал отримає статус «Заплановано». Перед публікацією його ще можна відкрити, відредагувати або повернути в готові.</p></div>
     <label class="wide">Матеріал<select name="draft_id">${eligible.map(x=>`<option value="${x.id}" ${x.id===selectedId?"selected":""}>${esc(plain(x.title))} — ${esc(statusLabels[x.status]||x.status)}</option>`).join("")}</select></label>
-    <label class="wide">Дата і час<input name="scheduled_at" type="datetime-local" min="${new Date(Date.now()+60000).toISOString().slice(0,16)}" required></label>`,
+    <label class="wide">Дата і час<input name="scheduled_at" type="datetime-local" min="${localDateTimeValue(new Date(Date.now()+60000))}" required></label>`,
     async form => {
       await api(`api/drafts/${form.get("draft_id")}/schedule`,{method:"POST",body:JSON.stringify({scheduled_at:new Date(form.get("scheduled_at")).toISOString()})});
       toast("Публікацію додано до календаря");
@@ -945,7 +996,7 @@ async function openEditor(id, push = true) {
       );
     }
     const target = document.querySelector("#editorContent");
-    target.innerHTML = `<header class="editor-header"><div class="row editor-title-row"><button id="closeEditor">←</button><div>${pill(draft.status)} <strong style="margin-left:8px">${esc(plain(draft.title))}</strong></div></div><div class="row editor-actions"><button id="regenText">Перегенерувати текст</button><button id="saveDraft">Зберегти</button><button class="primary" id="publishDraft" ${["ready","scheduled"].includes(draft.status)?"":"disabled title=\"Спочатку погодьте матеріал\""}>Опублікувати</button></div></header><div class="editor-grid"><form class="editor-form" id="editorForm"><div class="status-actions">${(statusActions[draft.status]||[]).map(([next,label])=>`<button type="button" data-editor-status="${next}">${label}</button>`).join("")}</div><div class="form-grid"><label>Рубрика<input value="${esc(draft.product)}" disabled></label><label>Дата і час<input id="scheduleAt" type="datetime-local" value="${draft.scheduled_at?new Date(draft.scheduled_at).toISOString().slice(0,16):""}"></label></div><label>Заголовок для поста<input id="editorTitle" value="${esc(draft.title)}"></label><label>Заголовок на візуалі<input id="editorVisualTitle" value="${esc(draft.visual_title||draft.title)}"><small class="muted">Без emoji та зайвих символів.</small></label><label>Текст публікації<textarea id="editorCaption" style="min-height:330px">${esc(draft.caption_html)}</textarea></label><label>Посилання<input id="editorLink" value="${esc(draft.link_url||"")}"></label><div class="row editor-secondary-actions"><button type="button" id="scheduleDraft" ${draft.image_path?"":"disabled title=\"Спочатку потрібен візуал\""}>Запланувати</button><button type="button" id="cancelSchedule" ${draft.status==="scheduled"?"":"hidden"}>Повернути в готові</button><button type="button" id="proofreadDraft">Перевірити текст</button></div></form><aside class="editor-preview"><div class="editor-preview-card"><div class="row"><span class="workspace-logo" style="width:30px;height:30px">${initials(state.company.name)}</span><div><strong>${esc(state.company.name)}</strong><small style="display:block;color:#94a3b8">Telegram</small></div></div><img src="${apiUrl(`api/drafts/${id}/image`)}" alt="" onerror="this.style.display='none'"><h2 id="previewTitle">${esc(plain(draft.visual_title||draft.title))}</h2><div id="previewText" class="telegram-preview-text">${safeHtml(draft.caption_html)}</div></div></aside></div>`;
+    target.innerHTML = `<header class="editor-header"><div class="row editor-title-row"><button id="closeEditor">←</button><div>${pill(draft.status)} <strong style="margin-left:8px">${esc(plain(draft.title))}</strong></div></div><div class="row editor-actions"><button id="regenText">Перегенерувати текст</button><button id="saveDraft">Зберегти</button><button class="primary" id="publishDraft" ${["ready","scheduled"].includes(draft.status)?"":"disabled title=\"Спочатку погодьте матеріал\""}>Опублікувати</button></div></header><div class="editor-grid"><form class="editor-form" id="editorForm"><div class="status-actions">${(statusActions[draft.status]||[]).map(([next,label])=>`<button type="button" data-editor-status="${next}">${label}</button>`).join("")}</div><div class="form-grid"><label>Рубрика<input value="${esc(draft.product)}" disabled></label><label>Дата і час<input id="scheduleAt" type="datetime-local" value="${localDateTimeValue(draft.scheduled_at)}"></label></div><label>Заголовок для поста<input id="editorTitle" value="${esc(draft.title)}"></label><label>Заголовок на візуалі<input id="editorVisualTitle" value="${esc(draft.visual_title||draft.title)}"><small class="muted">Без emoji та зайвих символів.</small></label><label>Текст публікації<textarea id="editorCaption" style="min-height:330px">${esc(draft.caption_html)}</textarea></label><label>Посилання<input id="editorLink" value="${esc(draft.link_url||"")}"></label><div class="row editor-secondary-actions"><button type="button" id="scheduleDraft" ${draft.image_path?"":"disabled title=\"Спочатку потрібен візуал\""}>Запланувати</button><button type="button" id="cancelSchedule" ${draft.status==="scheduled"?"":"hidden"}>Повернути в готові</button><button type="button" id="proofreadDraft">Перевірити текст</button></div></form><aside class="editor-preview"><div class="editor-preview-card"><div class="row"><span class="workspace-logo" style="width:30px;height:30px">${initials(state.company.name)}</span><div><strong>${esc(state.company.name)}</strong><small style="display:block;color:#94a3b8">Telegram</small></div></div><img src="${apiUrl(`api/drafts/${id}/image`)}" alt="" onerror="this.style.display='none'"><h2 id="previewTitle">${esc(plain(draft.visual_title||draft.title))}</h2><div id="previewText" class="telegram-preview-text">${safeHtml(draft.caption_html)}</div></div></aside></div>`;
     document.querySelector("#editorOverlay").hidden = false;
     bindEditorActions();
   } catch (error) { toast(error.message,true); }
@@ -975,8 +1026,17 @@ function showForm(title, fields, submit, options = {}) {
   form.onsubmit = async event => {
     event.preventDefault();
     if (!submit) return;
-    try { await submit(new FormData(form)); document.querySelector("#formOverlay").hidden=true; }
+    cancelButton.disabled = true;
+    try {
+      await loading(
+        submitButton,
+        () => submit(new FormData(form)),
+        options.loadingLabel || "Зберігаємо…",
+      );
+      document.querySelector("#formOverlay").hidden=true;
+    }
     catch (error) { document.querySelector("#dynamicError").textContent=error.message; }
+    finally { cancelButton.disabled = false; }
   };
 }
 function renderWorkspaceChooser(force = false) {
@@ -1073,7 +1133,7 @@ async function saveOnboarding() {
     await api("api/onboarding/rubrics",{method:"POST",body:JSON.stringify({rubrics})});
   }
   if (step === 5) {
-    await api("api/content-plan/generate",{method:"POST",body:JSON.stringify({product:"all",period:document.querySelector("#obPeriod").value,posts:Number(document.querySelector("#obPosts").value),start_date:new Date().toISOString().slice(0,10),focus:document.querySelector("#obFocus").value,text_model:"gpt-5.4-mini",create_as:"ideas",rubric_slugs:[],channel_ids:[]})});
+    await api("api/content-plan/generate",{method:"POST",body:JSON.stringify({product:"all",period:document.querySelector("#obPeriod").value,posts:Number(document.querySelector("#obPosts").value),start_date:localDateKey(new Date()),focus:document.querySelector("#obFocus").value,text_model:"gpt-5.4-mini",create_as:"ideas",rubric_slugs:[],channel_ids:[]})});
     await api("api/onboarding/complete",{method:"POST"});
     document.querySelector("#onboardingOverlay").hidden=true;
     await refresh();
@@ -1221,12 +1281,12 @@ function bindEditorActions() {
     await refresh(true);
     await openEditor(draft.id, false);
   });
-  document.querySelector("#saveDraft").onclick=async()=>{await api(`api/drafts/${state.currentDraft.id}`,{method:"PUT",body:JSON.stringify({title:document.querySelector("#editorTitle").value,visual_title:document.querySelector("#editorVisualTitle").value,caption_html:document.querySelector("#editorCaption").value,link_url:document.querySelector("#editorLink").value})});toast("Зміни збережено");await refresh();};
-  document.querySelector("#regenText").onclick=async()=>{await api(`api/drafts/${state.currentDraft.id}/regenerate-text`,{method:"POST",body:JSON.stringify(generationPayload())});toast("Нову версію поставлено в чергу");closeEditor();await refresh();};
-  document.querySelector("#proofreadDraft").onclick=async()=>{const draft=await api(`api/drafts/${state.currentDraft.id}/proofread`,{method:"POST",body:JSON.stringify({text_model:"gpt-5.4-mini"})});document.querySelector("#editorCaption").value=draft.caption_html;toast("Текст перевірено");};
-  document.querySelector("#scheduleDraft").onclick=async()=>{const value=document.querySelector("#scheduleAt").value;if(!value)return toast("Оберіть дату і час",true);await api(`api/drafts/${state.currentDraft.id}/schedule`,{method:"POST",body:JSON.stringify({scheduled_at:new Date(value).toISOString()})});toast("Публікацію заплановано");closeEditor();await refresh();};
-  document.querySelector("#cancelSchedule").onclick=async()=>{await api(`api/drafts/${state.currentDraft.id}/cancel-schedule`,{method:"POST"});toast("Публікацію повернуто в готові");closeEditor();await refresh();};
-  document.querySelector("#publishDraft").onclick=async()=>{if(!confirm("Опублікувати пост зараз?"))return;await api(`api/drafts/${state.currentDraft.id}/publish`,{method:"POST"});toast("Пост опубліковано");closeEditor();await refresh();};
+  document.querySelector("#saveDraft").onclick=async event=>loading(event.currentTarget,async()=>{await api(`api/drafts/${state.currentDraft.id}`,{method:"PUT",body:JSON.stringify({title:document.querySelector("#editorTitle").value,visual_title:document.querySelector("#editorVisualTitle").value,caption_html:document.querySelector("#editorCaption").value,link_url:document.querySelector("#editorLink").value})});toast("Зміни збережено");await refresh(true);},"Зберігаємо…");
+  document.querySelector("#regenText").onclick=async event=>loading(event.currentTarget,async()=>{await api(`api/drafts/${state.currentDraft.id}/regenerate-text`,{method:"POST",body:JSON.stringify(generationPayload())});toast("Нову версію поставлено в чергу");closeEditor();await refresh(true);delete state.lists.drafts;setView("drafts");},"Запускаємо…");
+  document.querySelector("#proofreadDraft").onclick=async event=>loading(event.currentTarget,async()=>{const draft=await api(`api/drafts/${state.currentDraft.id}/proofread`,{method:"POST",body:JSON.stringify({text_model:"gpt-5.4-mini"})});document.querySelector("#editorCaption").value=draft.caption_html;toast("Текст перевірено");},"Перевіряємо…");
+  document.querySelector("#scheduleDraft").onclick=async event=>{const value=document.querySelector("#scheduleAt").value;if(!value)return toast("Оберіть дату і час",true);await loading(event.currentTarget,async()=>{await api(`api/drafts/${state.currentDraft.id}/schedule`,{method:"POST",body:JSON.stringify({scheduled_at:new Date(value).toISOString()})});toast("Публікацію заплановано");closeEditor();await refresh();},"Плануємо…");};
+  document.querySelector("#cancelSchedule").onclick=async event=>loading(event.currentTarget,async()=>{await api(`api/drafts/${state.currentDraft.id}/cancel-schedule`,{method:"POST"});toast("Публікацію повернуто в готові");closeEditor();await refresh();},"Скасовуємо…");
+  document.querySelector("#publishDraft").onclick=async event=>{if(!confirm("Опублікувати пост зараз?"))return;await loading(event.currentTarget,async()=>{await api(`api/drafts/${state.currentDraft.id}/publish`,{method:"POST"});toast("Пост опубліковано");closeEditor();await refresh();},"Публікуємо…");};
 }
 
 async function refresh(background = false) {
@@ -1236,10 +1296,45 @@ async function refresh(background = false) {
     if (me.is_super_admin) state.platformUsage = await api(`api/platform/usage?period=${state.platformPeriod}`);
     if (me.is_admin) state.users=await api("api/users");
     applyIdentity();
+    updateGenerationPolling();
     if (!background) await applyLocationRoute();
     else renderCurrent();
     if (!background && company.settings && !["completed","skipped"].includes(company.settings.onboarding_status) && ["owner","admin"].includes(me.role)) showOnboarding(Math.max(1,Number(company.settings.onboarding_step||0)+1));
   } catch (error) { if (!background) toast(error.message,true); }
+}
+
+function activeGenerationSignature(data = state.data) {
+  return (data?.jobs || [])
+    .filter(job => activeGenerationStatuses.has(job.status))
+    .map(job => `${job.id}:${job.status}:${job.draft_id || 0}`)
+    .sort()
+    .join("|");
+}
+function updateGenerationPolling() {
+  clearTimeout(generationPollTimer);
+  generationPollTimer = null;
+  generationSignature = activeGenerationSignature();
+  if (!generationSignature) return;
+  generationPollTimer = setTimeout(async () => {
+    try {
+      const data = await api("api/dashboard");
+      const nextSignature = activeGenerationSignature(data);
+      const changed = nextSignature !== generationSignature;
+      state.data = data;
+      generationSignature = nextSignature;
+      if (changed) {
+        delete state.lists.drafts;
+        delete state.lists.ideas;
+        delete state.lists.plan;
+        applyIdentity();
+        renderCurrent();
+      }
+    } catch (error) {
+      console.warn("Generation polling failed", error);
+    } finally {
+      updateGenerationPolling();
+    }
+  }, 2500);
 }
 
 document.querySelectorAll(".nav-item[data-view]").forEach(node=>node.onclick=()=>{document.body.classList.remove("menu-open");setView(node.dataset.view);});
@@ -1284,7 +1379,20 @@ window.visualViewport?.addEventListener("resize", syncVisualViewport);
 window.visualViewport?.addEventListener("scroll", syncVisualViewport);
 window.addEventListener("resize", syncVisualViewport);
 syncVisualViewport();
-document.querySelector("#generateIdeas").onclick=event=>showForm("Згенерувати ідеї",`<label>Рубрика<select name="product"><option value="all">Усі рубрики</option>${(state.data?.rubrics||[]).map(x=>`<option value="${esc(x.slug)}">${esc(x.name)}</option>`).join("")}</select></label><label>Кількість<input name="count" type="number" min="1" max="12" value="8"></label><label class="wide">Фокус<textarea name="focus"></textarea></label>`,async form=>{await api("api/ideas/generate",{method:"POST",body:JSON.stringify({product:form.get("product"),count:Number(form.get("count")),focus:form.get("focus"),text_model:"gpt-5.4-mini",tone:"expert"})});toast("Ідеї створено");await refresh();});
+document.querySelector("#generateIdeas").onclick=event=>showForm(
+  "Згенерувати ідеї",
+  `<label>Рубрика<select name="product"><option value="all">Усі рубрики</option>${(state.data?.rubrics||[]).map(x=>`<option value="${esc(x.slug)}">${esc(x.name)}</option>`).join("")}</select></label><label>Кількість<input name="count" type="number" min="1" max="12" value="8"></label><label class="wide">Фокус<textarea name="focus"></textarea></label>`,
+  async form=>{
+    await withAiProgress(
+      () => api("api/ideas/generate",{method:"POST",body:JSON.stringify({product:form.get("product"),count:Number(form.get("count")),focus:form.get("focus"),text_model:"gpt-5.4-mini",tone:"expert"})}),
+    );
+    delete state.lists.ideas;
+    toast("Ідеї готові та збережені");
+    await refresh(true);
+    renderIdeas();
+  },
+  {submitLabel:"Згенерувати",loadingLabel:"Генеруємо…"},
+);
 document.querySelector("#manualIdea").onclick=()=>showForm("Створити ідею",`<label class="wide">Назва<input name="title" required></label><label>Рубрика<select name="product">${(state.data.rubrics||[]).map(x=>`<option value="${esc(x.slug)}">${esc(x.name)}</option>`).join("")}</select></label><label>Орієнтовна дата<input name="planned_for" type="date"></label><label class="wide">Кут подачі<textarea name="angle"></textarea></label>`,async form=>{await api("api/ideas",{method:"POST",body:JSON.stringify({title:form.get("title"),product:form.get("product"),planned_for:form.get("planned_for")||null,angle:form.get("angle")})});toast("Ідею додано");await refresh();});
 document.querySelector("#manualDraft").onclick=()=>showForm("Створити чернетку",`<label class="wide">Заголовок<input name="title" required></label><label>Рубрика<select name="product">${(state.data.rubrics||[]).map(x=>`<option value="${esc(x.slug)}">${esc(x.name)}</option>`).join("")}</select></label><label>Заголовок на візуалі<input name="visual_title"></label><label class="wide">Текст<textarea name="caption_html" minlength="20" required></textarea></label><label class="wide">Посилання<input name="link_url" type="url"></label>`,async form=>{const draft=await api("api/drafts",{method:"POST",body:JSON.stringify({title:form.get("title"),visual_title:form.get("visual_title"),product:form.get("product"),caption_html:form.get("caption_html"),link_url:form.get("link_url")})});toast("Чернетку створено");await refresh();openEditor(draft.id);});
 document.querySelector("#calendarSchedule").onclick=()=>openScheduleForm();

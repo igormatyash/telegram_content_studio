@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
   <title>Content Studio</title>
-  <link rel="stylesheet" href="__BASE_PATH__/static/styles.css?v=10">
+  <link rel="stylesheet" href="__BASE_PATH__/static/styles.css?v=11">
 </head>
 <body data-base-path="__BASE_PATH__">
 <div class="app-shell">
@@ -146,9 +146,19 @@
 <div class="overlay" id="workspaceOverlay" role="dialog" aria-modal="true" aria-label="Вибір workspace" hidden><div class="modal"><div class="modal-head"><div><div class="eyebrow">Вітаємо</div><h2 style="margin:3px 0">Оберіть workspace</h2></div><button class="icon-button" data-close-overlay aria-label="Закрити">×</button></div><div class="modal-body"><div class="workspace-grid" id="workspaceGrid"></div></div></div></div>
 <div class="overlay" id="onboardingOverlay" role="dialog" aria-modal="true" aria-labelledby="onboardingTitle" hidden><div class="modal" style="width:min(820px,100%)"><div class="onboarding-layout"><aside class="onboarding-steps" id="onboardingSteps"></aside><section><div class="modal-head"><div><div class="eyebrow">Налаштування workspace</div><h2 id="onboardingTitle" style="margin:3px 0"></h2></div><button class="ghost" id="skipOnboarding">Пропустити</button></div><div class="modal-body" id="onboardingBody"></div><div class="modal-foot"><button id="onboardingBack">← Назад</button><button class="primary" id="onboardingNext">Далі →</button></div></section></div></div></div>
 <div class="overlay" id="formOverlay" role="dialog" aria-modal="true" aria-labelledby="formTitle" hidden><div class="modal"><div class="modal-head"><h2 id="formTitle" style="margin:0"></h2><button class="icon-button" data-close-overlay aria-label="Закрити">×</button></div><form id="dynamicForm"><div class="modal-body" id="formBody"></div><div class="modal-foot"><button type="button" data-close-overlay>Скасувати</button><button class="primary" type="submit">Зберегти</button></div></form></div></div>
+<div class="overlay ai-progress-overlay" id="aiProgressOverlay" role="status" aria-live="polite" hidden>
+  <div class="ai-progress-card">
+    <div class="ai-orbit"><span class="ai-logo">AI</span><i></i><i></i><i></i></div>
+    <div class="eyebrow">Content Studio AI</div>
+    <h2 id="aiProgressTitle">Ваші ідеї генеруються</h2>
+    <p id="aiProgressText">Аналізуємо бренд, рубрики та формуємо нові теми.</p>
+    <div class="ai-progress-line"><span></span></div>
+    <small>Не закривайте сторінку. Зазвичай це займає до хвилини.</small>
+  </div>
+</div>
 <div class="overlay" id="editorOverlay" role="dialog" aria-modal="true" aria-label="Редактор публікації" hidden><div class="editor-page" id="editorContent"></div></div>
 <div class="toast" id="toast" hidden></div>
 <div hidden>CONTENT STUDIO · Налаштування workspace · Voicer Wave</div>
-  <script src="__BASE_PATH__/static/app.js?v=10" defer></script>
+  <script src="__BASE_PATH__/static/app.js?v=11" defer></script>
 </body>
 </html>

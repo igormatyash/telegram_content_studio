@@ -220,11 +220,11 @@ def test_ui_contains_pagination_roles_and_appearance(tmp_path) -> None:
     assert page.status_code == 200
     assert 'data-brand-tab="appearance"' in page.text
     assert 'data-settings="roles"' in page.text
-    assert "static/app.js?v=10" in page.text
+    assert "static/app.js?v=11" in page.text
     assert 'class="ideas-content" id="ideasGrid"' in page.text
     assert 'class="sidebar-scroll"' in page.text
     assert "interactive-widget=resizes-content" in page.text
-    assert "static/styles.css?v=10" in page.text
+    assert "static/styles.css?v=11" in page.text
     script = client.get("/static/app.js?v=9")
     assert script.status_code == 200
     assert "function pagination(" in script.text
@@ -238,6 +238,23 @@ def test_ui_contains_pagination_roles_and_appearance(tmp_path) -> None:
     assert ".sidebar-scroll" in styles.text
     assert "height: var(--visual-viewport-height)" in styles.text
     assert ".idea-grid { min-width: 0;" in styles.text
+
+
+def test_ui_contains_generation_progress_and_local_calendar_helpers(tmp_path) -> None:
+    client = TestClient(make_app(tmp_path))
+    assert login(client).status_code == 200
+    page = client.get("/ideas")
+    script = client.get("/static/app.js")
+
+    assert page.status_code == 200
+    assert 'id="aiProgressOverlay"' in page.text
+    assert "Ваші ідеї генеруються" in page.text
+    assert script.status_code == 200
+    assert "activeGenerationStatuses" in script.text
+    assert "updateGenerationPolling" in script.text
+    assert "Текст уже готовий, створюємо зображення" in script.text
+    assert "localDateKey(x.scheduled_at)" in script.text
+    assert "localDateTimeValue(draft.scheduled_at)" in script.text
 
 
 def test_roles_api_exposes_translated_permission_help(tmp_path) -> None:

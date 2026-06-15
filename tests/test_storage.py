@@ -332,6 +332,62 @@ def test_custom_rubrics_and_social_variants_are_stored_per_tenant(tmp_path: Path
     assert repository.draft_record(draft.id)["image_path"] == "/tmp/telegram.png"
 
 
+def test_isolated_workspace_database_repairs_stale_tenant_ids(tmp_path: Path) -> None:
+    database = tmp_path / "7" / "content.sqlite3"
+    database.parent.mkdir()
+    legacy = DraftRepository(database, organization_id=1)
+    legacy.add_ideas(
+        [
+            {
+                "product": "general",
+                "title": "Стара ідея",
+                "angle": "Запис із неправильним tenant ID.",
+            }
+        ]
+    )
+
+    repository = DraftRepository(database, organization_id=7)
+    current = repository.add_ideas(
+        [
+            {
+                "product": "general",
+                "title": "Нова ідея",
+                "angle": "Запис поточного workspace.",
+            }
+        ]
+    )[0]
+
+    with sqlite3.connect(database) as connection:
+        organization_ids = {
+            row[0] for row in connection.execute(
+                "SELECT DISTINCT organization_id FROM content_ideas"
+            )
+        }
+    assert organization_ids == {7}
+    assert current["organization_id"] == 7
+    assert {item["title"] for item in repository.list_ideas()} == {
+        "Стара ідея",
+        "Нова ідея",
+    }
+
+
+def test_dashboard_exposes_honest_generation_progress(tmp_path: Path) -> None:
+    repository = DraftRepository(tmp_path / "progress.sqlite3")
+    idea = repository.add_ideas(
+        [{"product": "general", "title": "Тема", "angle": "Кут подачі"}]
+    )[0]
+    job = repository.create_job("Тема. Кут подачі", "general", 0, idea_id=idea["id"])
+
+    queued = repository.dashboard()
+    assert queued["jobs"][0]["progress"] == 12
+    assert queued["ideas"][0]["progress_label"] == "Готуємо запит до AI"
+
+    repository.update_job(job.id, status="queued_image", draft_id=None)
+    image = repository.dashboard()
+    assert image["jobs"][0]["progress"] == 68
+    assert image["jobs"][0]["progress_label"] == "Текст готовий. Готуємо візуал"
+
+
 def test_social_image_is_cropped_to_exact_platform_size(tmp_path: Path) -> None:
     source = tmp_path / "social.png"
     Image.new("RGB", (1024, 1536), "navy").save(source)
