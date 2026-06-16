@@ -220,11 +220,11 @@ def test_ui_contains_pagination_roles_and_appearance(tmp_path) -> None:
     assert page.status_code == 200
     assert 'data-brand-tab="appearance"' in page.text
     assert 'data-settings="roles"' in page.text
-    assert "static/app.js?v=12" in page.text
+    assert "static/app.js?v=13" in page.text
     assert 'class="ideas-content" id="ideasGrid"' in page.text
     assert 'class="sidebar-scroll"' in page.text
     assert "interactive-widget=resizes-content" in page.text
-    assert "static/styles.css?v=12" in page.text
+    assert "static/styles.css?v=13" in page.text
     script = client.get("/static/app.js?v=9")
     assert script.status_code == 200
     assert "function pagination(" in script.text

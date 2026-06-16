@@ -217,6 +217,8 @@ textarea { min-height: 112px; resize: vertical; }
 .topbar h1 { margin: 0; font-size: 23px; line-height: 1.2; letter-spacing: -.02em; }
 .topbar p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
 .top-actions { display: flex; gap: 9px; align-items: center; }
+.guide-header-button { gap: 8px; color: var(--primary); background: #eef2ff; border-color: #c7d2fe; }
+.guide-header-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .notification-button { position: relative; }
 .notification-button.has-events { color: #b45309; border-color: #fde68a; background: #fffbeb; }
 .notification-button #notificationCount { position: absolute; top: -5px; right: -5px; min-width: 17px; height: 17px; padding: 0 4px; display: grid; place-items: center; border: 2px solid white; border-radius: 99px; color: white; background: var(--danger); font-size: 8px; font-weight: 800; }
@@ -233,7 +235,7 @@ textarea { min-height: 112px; resize: vertical; }
 .dashboard-grid { margin-top: 18px; display: grid; grid-template-columns: 1fr 1.25fr 1fr; gap: 16px; }
 .panel { padding: 20px; }
 .panel h2 { margin: 4px 0 16px; font-size: 17px; }
-.quick-action { min-height: 64px; padding: 13px; display: flex; align-items: center; gap: 11px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-soft); cursor: pointer; }
+.quick-action { width: 100%; min-width: 0; min-height: 64px; padding: 13px; display: flex; align-items: center; gap: 11px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-soft); cursor: pointer; }
 .quick-action > div { min-width: 0; }
 .action-icon { width: 26px; height: 26px; flex: 0 0 auto; display: grid; place-items: center; color: var(--primary); }
 .featured .action-icon { color: #c7d2fe; }
@@ -334,7 +336,13 @@ textarea { min-height: 112px; resize: vertical; }
 .kanban-open { width: 100%; min-height: 0; padding: 0; border: 0; border-radius: 0; background: transparent; text-align: left; box-shadow: none; transform: none; }
 .kanban-actions { display: grid; gap: 5px; margin-top: 9px; }
 .kanban-actions button { min-height: 29px; padding: 0 8px; color: var(--primary); background: #eef2ff; font-size: 9px; }
-.calendar-layout { display: grid; grid-template-columns: 250px minmax(0,1fr); gap: 16px; }
+.calendar-layout { display: grid; grid-template-columns: minmax(250px,280px) minmax(0,1fr); gap: 16px; }
+.calendar-layout > aside { min-width: 0; overflow: hidden; }
+.calendar-layout > aside .stack { min-width: 0; }
+.calendar-layout > aside .quick-action { align-items: flex-start; overflow: hidden; }
+.calendar-layout > aside .quick-action .pill { flex: 0 0 auto; }
+.calendar-layout > aside .quick-action strong,
+.calendar-layout > aside .quick-action small { overflow-wrap: anywhere; word-break: break-word; }
 .calendar-toolbar { margin-bottom: 12px; }
 .calendar-grid { display: grid; grid-template-columns: repeat(7,minmax(100px,1fr)); gap: 6px; }
 .calendar-weekday { padding: 7px; color: var(--muted); font-size: 10px; font-weight: 700; text-align: center; }
@@ -344,6 +352,11 @@ textarea { min-height: 112px; resize: vertical; }
 .calendar-event { display: block; width: 100%; min-height: 0; margin-top: 5px; padding: 5px 6px; border: 0; border-radius: 5px; color: #5b21b6; background: #ede9fe; font-size: 9px; text-align: left; box-shadow: none; transform: none; }
 .schedule-row { padding: 10px; display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 9px; border: 1px solid var(--line); border-radius: 9px; }
 .schedule-row small { color: var(--danger); }
+.schedule-preview-card { display: grid; grid-template-columns: 160px minmax(0,1fr); gap: 14px; padding: 12px; border: 1px solid #c7d2fe; border-radius: 12px; background: linear-gradient(135deg,#ffffff,#f8f7ff); }
+.schedule-preview-card.no-image { grid-template-columns: 1fr; }
+.schedule-preview-card img { width: 100%; aspect-ratio: 16/10; object-fit: cover; border-radius: 10px; background: #eef2ff; }
+.schedule-preview-card h3 { margin: 9px 0 6px; font-size: 16px; line-height: 1.25; }
+.schedule-preview-card p { max-height: 118px; margin: 0 0 10px; overflow: auto; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .tabs-row { padding: 0 0 13px; margin-bottom: 16px; border-bottom: 1px solid var(--line); }
 .brand-layout { display: grid; grid-template-columns: minmax(0,2fr) minmax(260px,1fr); gap: 16px; }
 .brand-summary { padding: 22px; }
@@ -461,6 +474,9 @@ textarea { min-height: 112px; resize: vertical; }
 .guide-stage { width: 100%; display: grid; grid-template-columns: minmax(260px,1fr) minmax(280px,1fr); align-items: center; gap: 36px; }
 .guide-copy h3 { margin: 10px 0; font-size: 28px; }
 .guide-copy p { color: var(--muted); font-size: 14px; line-height: 1.7; }
+.guide-points { margin: 18px 0 0; padding: 0; display: grid; gap: 10px; list-style: none; }
+.guide-points li { position: relative; padding: 12px 13px 12px 36px; border: 1px solid #e0e7ff; border-radius: 12px; background: rgba(255,255,255,.72); color: var(--text-2); line-height: 1.5; }
+.guide-points li::before { content: "✓"; position: absolute; left: 13px; top: 12px; width: 16px; height: 16px; display: grid; place-items: center; border-radius: 50%; color: white; background: var(--primary); font-size: 10px; font-weight: 850; }
 .guide-illustration { position: relative; aspect-ratio: 1; display: grid; place-items: center; border: 1px solid #c7d2fe; border-radius: 32%; background: linear-gradient(145deg,#eef2ff,#faf5ff); transform: rotate(-4deg); box-shadow: 0 24px 60px rgba(79,70,229,.16); }
 .guide-core { position: relative; z-index: 3; width: 92px; height: 92px; display: grid; place-items: center; border-radius: 28px; color: white; background: linear-gradient(135deg,#4f46e5,#a855f7); font-size: 34px; font-weight: 850; box-shadow: 0 15px 40px rgba(79,70,229,.38); animation: guideFloat 3s ease-in-out infinite; }
 .guide-illustration i { position: absolute; width: 54px; height: 18px; border-radius: 99px; background: rgba(99,102,241,.18); animation: guideFloat 3.4s ease-in-out infinite; }
@@ -603,6 +619,8 @@ textarea { min-height: 112px; resize: vertical; }
   .topbar p, .search-button { display: none; }
   .top-actions { gap: 6px; }
   .top-actions .notification-button { display: inline-grid; flex: 0 0 auto; }
+  .guide-header-button { width: 44px; padding: 0; overflow: hidden; font-size: 0; }
+  .guide-header-button svg { margin: auto; }
   #createButton { width: 44px; padding: 0; overflow: hidden; font-size: 0; }
   #createButton::before { content: "+"; font-size: 23px; line-height: 1; }
   .content { padding: 16px 14px 36px; }
@@ -639,7 +657,7 @@ textarea { min-height: 112px; resize: vertical; }
   .plan-row-detailed { grid-template-columns: auto 72px minmax(0,1fr); }
   .plan-row-detailed > .pill, .plan-row-detailed > .plan-actions { grid-column: 2 / -1; }
   .permission-grid { grid-template-columns: 1fr; }
-  .color-controls, .appearance-assets, .guide-stage { grid-template-columns: 1fr; }
+  .color-controls, .appearance-assets, .guide-stage, .schedule-preview-card { grid-template-columns: 1fr; }
   .guide-content { padding: 20px; }
   .guide-illustration { max-width: 230px; margin: auto; }
   .guide-copy h3 { font-size: 22px; }

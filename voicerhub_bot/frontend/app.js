@@ -767,7 +767,8 @@ function openScheduleForm(selectedId = null) {
   showForm(
     "Запланувати публікацію",
     `<div class="wide callout"><strong>Чернетка буде затверджена</strong><p>Після вибору дати матеріал отримає статус «Заплановано». Перед публікацією його ще можна відкрити, відредагувати або повернути в готові.</p></div>
-    <label class="wide">Матеріал<select name="draft_id">${eligible.map(x=>`<option value="${x.id}" ${x.id===selectedId?"selected":""}>${esc(plain(x.title))} — ${esc(statusLabels[x.status]||x.status)}</option>`).join("")}</select></label>
+    <label class="wide">Матеріал<select name="draft_id" id="scheduleDraftSelect">${eligible.map(x=>`<option value="${x.id}" ${x.id===selectedId?"selected":""}>${esc(plain(x.title))} — ${esc(statusLabels[x.status]||x.status)}</option>`).join("")}</select></label>
+    <div class="wide schedule-preview" id="scheduleDraftPreview"></div>
     <label class="wide">Дата і час<input name="scheduled_at" type="datetime-local" min="${localDateTimeValue(new Date(Date.now()+60000))}" required></label>`,
     async form => {
       await api(`api/drafts/${form.get("draft_id")}/schedule`,{method:"POST",body:JSON.stringify({scheduled_at:new Date(form.get("scheduled_at")).toISOString()})});
@@ -777,6 +778,27 @@ function openScheduleForm(selectedId = null) {
     },
     {submitLabel:"Запланувати"},
   );
+  const preview = document.querySelector("#scheduleDraftPreview");
+  const select = document.querySelector("#scheduleDraftSelect");
+  const renderPreview = () => {
+    const draft = eligible.find(item => String(item.id) === String(select.value)) || eligible[0];
+    if (!draft) return;
+    preview.innerHTML = `<article class="schedule-preview-card">
+      <img src="${apiUrl(`api/drafts/${draft.id}/image`)}" alt="" onerror="this.closest('.schedule-preview-card').classList.add('no-image');this.remove()">
+      <div>
+        <div class="row">${pill(draft.status)}<span class="muted">${esc((state.data.rubrics||[]).find(r=>r.slug===draft.product)?.name||draft.product)}</span></div>
+        <h3>${esc(plain(draft.title))}</h3>
+        <p>${esc(plain(draft.caption_html||draft.topic||"").slice(0,360))}</p>
+        <button type="button" class="ghost" data-preview-open-draft="${draft.id}">Відкрити чернетку</button>
+      </div>
+    </article>`;
+    preview.querySelector("[data-preview-open-draft]").onclick = () => {
+      document.querySelector("#formOverlay").hidden = true;
+      openEditor(draft.id);
+    };
+  };
+  select.addEventListener("change", renderPreview);
+  renderPreview();
 }
 
 function renderBrand() {
@@ -1287,7 +1309,16 @@ async function runBrandBulk(kind,action){
   await api(endpoint,{method:"POST",body:JSON.stringify({ids,action,value:""})});selected(kind).clear();delete state.lists[kind];toast("Матеріали оновлено");await refresh(true);renderBrand();
 }
 function visualStyleFields(item={}) {
-  return `<label>Назва стилю<input name="name" required value="${esc(item.name||"")}"></label><label>Колір<input name="accent" type="color" value="${esc(item.accent||"#6366f1")}"></label><label class="wide">Опис стилю<textarea name="description" minlength="5" required>${esc(item.description||"")}</textarea></label><label class="wide">Настрій / vibe<input name="mood" value="${esc(item.mood||"")}"></label><label class="wide">Що використовувати<textarea name="use_rules">${esc(item.use_rules||"")}</textarea></label><label class="wide">Що не використовувати<textarea name="avoid_rules">${esc(item.avoid_rules||"")}</textarea></label><label class="wide">Промпт для AI<textarea name="prompt" minlength="30" required>${esc(item.prompt||"Створюй чисті професійні візуали для бренду з чіткою композицією та без зайвого тексту.")}</textarea></label><label class="wide">Приклади промптів<textarea name="prompt_examples">${esc(item.prompt_examples||"")}</textarea></label><label class="check-label wide"><input name="active" type="checkbox" ${item.active===0?"":"checked"}> Активний стиль</label>`;
+  return `<div class="wide callout"><strong>Як заповнювати стиль</strong><p>Пишіть не «красиво і сучасно», а конкретні правила: фон, композиція, кольори, настрій, що можна й що заборонено. AI буде використовувати ці поля як інструкцію для генерації зображень.</p></div>
+  <label>Назва стилю<input name="name" required placeholder="Наприклад: Premium B2B SaaS" value="${esc(item.name||"")}"><small class="field-help">Коротка назва, за якою команда швидко зрозуміє, коли використовувати цей стиль.</small></label>
+  <label>Акцентний колір<input name="accent" type="color" value="${esc(item.accent||"#6366f1")}"><small class="field-help">Основний колір, який можна використовувати у градієнтах, акцентах і декоративних елементах.</small></label>
+  <label class="wide">Опис стилю<textarea name="description" minlength="5" required placeholder="Світлі фони, чисті картки, абстрактні AI-елементи, акуратні градієнти, без людей і зайвого тексту.">${esc(item.description||"")}</textarea><small class="field-help">Опишіть загальну картинку: тип фону, рівень преміальності, деталізацію, чи потрібні люди, інтерфейси, 3D, фото або ілюстрація.</small></label>
+  <label class="wide">Настрій / vibe<input name="mood" placeholder="Спокійний, преміальний, технологічний, експертний" value="${esc(item.mood||"")}"><small class="field-help">2–5 прикметників, які задають емоцію. Це допомагає уникати випадкового «шумного» дизайну.</small></label>
+  <label class="wide">Що використовувати<textarea name="use_rules" placeholder="Світлий фон, картки, м’які тіні, синьо-фіолетовий градієнт, мінімалістичні AI-лінії, максимум 2–3 об’єкти у кадрі.">${esc(item.use_rules||"")}</textarea><small class="field-help">Перелічіть дозволені елементи: кольори, об’єкти, композицію, матеріали, шрифтовий настрій, бажані референси.</small></label>
+  <label class="wide">Що не використовувати<textarea name="avoid_rules" placeholder="Без дрібного тексту, логотипів інших брендів, реалістичних людей, хаотичних колажів, кислотних кольорів, темного фону.">${esc(item.avoid_rules||"")}</textarea><small class="field-help">Це поле дуже важливе: воно прибирає небажані візуальні помилки й робить результати стабільнішими.</small></label>
+  <label class="wide">Промпт для AI<textarea name="prompt" minlength="30" required placeholder="Створюй професійний B2B-візуал для Telegram-поста: чиста композиція, світлий фон, одна головна метафора, без зайвого тексту.">${esc(item.prompt||"Створюй чисті професійні візуали для бренду з чіткою композицією та без зайвого тексту.")}</textarea><small class="field-help">Напишіть основну інструкцію, яку AI має застосовувати до кожного візуалу цього стилю.</small></label>
+  <label class="wide">Приклади промптів<textarea name="prompt_examples" placeholder="1. Абстрактна схема AI-аналізу дзвінків на світлому фоні...\n2. Чиста картка з метафорою автоматизації підтримки...">${esc(item.prompt_examples||"")}</textarea><small class="field-help">Додайте 2–4 приклади. Вони не обов’язкові, але сильно допомагають команді й AI тримати один напрям.</small></label>
+  <label class="check-label wide"><input name="active" type="checkbox" ${item.active===0?"":"checked"}> Активний стиль</label>`;
 }
 function openVisualStyleForm(item=null) {
   showForm(item?"Редагувати візуальний стиль":"Створити візуальний стиль",visualStyleFields(item||{}),async form=>{
@@ -1561,34 +1592,30 @@ document.querySelector("#formBody").addEventListener("click", event => {
 });
 
 const guideSteps = [
-  {title:"Створіть робочий простір",text:"Workspace ізолює бренд, контент, команду, Telegram-канал і витрати. Для різних брендів або напрямів створюйте окремі workspace.",view:"settings",visual:"workspace",action:"Відкрити налаштування"},
-  {title:"Заповніть бренд-профіль",text:"Додайте опис компанії, tone of voice, послуги, кольори, логотип і матеріали. Це постійний контекст для кожної AI-генерації.",view:"brand",visual:"brand",action:"Налаштувати бренд"},
-  {title:"Створіть рубрики",text:"Рубрики задають різні напрями контенту: експертні пости, кейси, FAQ, новини й продажні матеріали. Так AI не повторює один формат.",view:"brand",tab:"rubrics",visual:"rubrics",action:"Перейти до рубрик"},
-  {title:"Згенеруйте та відберіть ідеї",text:"Задайте фокус, відфільтруйте результат, оберіть потрібні рядки й масово створіть чернетки. Статус генерації буде видно одразу.",view:"ideas",visual:"ideas",action:"Відкрити ідеї"},
-  {title:"Підготуйте чернетки",text:"Редагуйте заголовок, текст і візуал, передавайте матеріал на перевірку. Таблиця, фільтри й bulk-дії допомагають працювати з великим обсягом.",view:"drafts",visual:"drafts",action:"Відкрити чернетки"},
-  {title:"Заплануйте або опублікуйте",text:"Готовий матеріал призначте на локальну дату й час. Календар покаже графік, а публікатор зможе відправити пост у Telegram.",view:"calendar",visual:"calendar",action:"Відкрити календар"},
-  {title:"Керуйте командою та результатом",text:"Запрошуйте людей із потрібними ролями, контролюйте permissions, AI-витрати та статуси. До цього гайда можна повернутися з меню будь-коли.",view:"settings",tab:"roles",visual:"team",action:"Переглянути ролі"},
+  {title:"Створіть робочий простір",visual:"workspace",text:"Workspace — це окремий простір для одного бренду, напряму або клієнта. У нього свої рубрики, чернетки, календар, Telegram-канал, команда, ролі, витрати й оформлення.",points:["Якщо у вас кілька брендів або клієнтів, створюйте для них різні workspace.","Не змішуйте матеріали різних компаній: так AI отримує чистіший контекст.","Owner workspace керує командою, ролями, брендом і небезпечними діями."]},
+  {title:"Заповніть бренд-профіль",visual:"brand",text:"Бренд-профіль — це пам’ять сервісу про вашу компанію. Чим конкретніше описані продукт, аудиторія, tone of voice, кольори й матеріали, тим стабільнішими будуть тексти та візуали.",points:["В описі компанії пишіть факти: хто ви, для кого працюєте, яку проблему вирішуєте.","У tone of voice додайте правила мови, довжини, звертання та приклади фраз.","В оформленні завантажте аватар, логотип і виберіть основні кольори workspace."]},
+  {title:"Створіть рубрики",visual:"rubrics",text:"Рубрики допомагають планувати контент системно: експертні пости, кейси, FAQ, новини, продажні матеріали, поради. AI використовує рубрики, щоб не повторювати один і той самий формат.",points:["Для кожної рубрики додайте назву, ціль, тон і приклад теми.","Активні рубрики доступні в генерації ідей і контент-плану.","Краще мати 5–8 зрозумілих рубрик, ніж один загальний список тем."]},
+  {title:"Згенеруйте та відберіть ідеї",visual:"ideas",text:"Ідеї — це бібліотека тем, з яких потім створюються чернетки. Генеруйте кілька варіантів, фільтруйте за рубриками, вибирайте найсильніші та перетворюйте їх на пости.",points:["Після запуску генерації дочекайтесь індикатора готовності, не оновлюючи сторінку.","Використовуйте таблицю, пошук, фільтри й bulk-дії для великих списків.","Ідеї не публікуються напряму: спочатку з них створюється чернетка."]},
+  {title:"Підготуйте чернетки",visual:"drafts",text:"Чернетка — це майбутній пост із заголовком, текстом, візуалом, статусом і соціальними варіантами. Її можна редагувати, погоджувати, повертати на правки й готувати до публікації.",points:["У редакторі окремо перевіряйте заголовок для поста й заголовок на візуалі.","Якщо текст уже готовий, а картинка ще генерується, дочекайтесь статусу в таблиці.","Перед плануванням переконайтесь, що у чернетки є готовий візуал."]},
+  {title:"Заплануйте або опублікуйте",visual:"calendar",text:"Календар показує, коли вийде кожен матеріал. Готові чернетки можна призначити на локальну дату й час, перенести, повернути в готові або опублікувати.",points:["У модалці планування перегляньте повний текст і картинку, щоб не помилитися з постом.","Матеріали без дати зібрані ліворуч, а заплановані пости видно в календарній сітці.","Публікувати може лише користувач із відповідними permissions."]},
+  {title:"Керуйте командою та результатом",visual:"team",text:"Після налаштування контенту додайте людей, призначте ролі й контролюйте витрати. Так сервіс стає не просто генератором, а робочим SaaS-процесом для команди.",points:["Viewer може тільки переглядати, Editor редагує, Publisher планує й публікує, Owner керує всім workspace.","У витратах видно AI-usage по днях, моделях і рубриках.","До цього гайда можна повернутися з кнопки «Гайд» у верхньому хедері."]},
 ];
 function guideStorageKey(){return `content-studio:guide:${state.me?.id||"guest"}:${state.me?.organization_id||"none"}`;}
+function guideDismissedKey(){return `${guideStorageKey()}:dismissed`;}
 function renderGuide(){
   const step=guideSteps[state.guideStep];
   document.querySelector("#guideTitle").textContent=step.title;
-  document.querySelector("#guideContent").innerHTML=`<div class="guide-stage"><div class="guide-illustration ${step.visual}"><span class="guide-orbit"></span><span class="guide-core">${state.guideStep+1}</span><i></i><i></i><i></i></div><div class="guide-copy"><div class="eyebrow">Крок ${state.guideStep+1} з ${guideSteps.length}</div><h3>${esc(step.title)}</h3><p>${esc(step.text)}</p><button class="guide-route" data-guide-route>${esc(step.action)} →</button></div></div>`;
+  document.querySelector("#guideContent").innerHTML=`<div class="guide-stage"><div class="guide-copy"><div class="eyebrow">Крок ${state.guideStep+1} з ${guideSteps.length}</div><h3>${esc(step.title)}</h3><p>${esc(step.text)}</p><ul class="guide-points">${(step.points||[]).map(point=>`<li>${esc(point)}</li>`).join("")}</ul></div><div class="guide-illustration ${step.visual}"><span class="guide-orbit"></span><span class="guide-core">${state.guideStep+1}</span><i></i><i></i><i></i></div></div>`;
   document.querySelector("#guideDots").innerHTML=guideSteps.map((_,index)=>`<button class="${index===state.guideStep?"active":""}" data-guide-step="${index}" aria-label="Крок ${index+1}"></button>`).join("");
   document.querySelector("#guideBack").disabled=state.guideStep===0;
   document.querySelector("#guideNext").textContent=state.guideStep===guideSteps.length-1?"Завершити":"Далі →";
   document.querySelectorAll("[data-guide-step]").forEach(button=>button.onclick=()=>{state.guideStep=Number(button.dataset.guideStep);renderGuide();});
-  document.querySelector("[data-guide-route]").onclick=()=>{
-    document.querySelector("#guideOverlay").hidden=true;
-    if(step.tab&&step.view==="brand"){state.brandTab=step.tab;}
-    if(step.tab&&step.view==="settings"){state.settingsTab=step.tab;}
-    setView(step.view);
-  };
 }
 function openGuide(step=0){state.guideStep=Math.max(0,Math.min(guideSteps.length-1,step));renderGuide();document.querySelector("#guideOverlay").hidden=false;}
 document.querySelector("#openGuide").onclick=()=>openGuide();
 document.querySelector("#guideBack").onclick=()=>{if(state.guideStep>0){state.guideStep--;renderGuide();}};
-document.querySelector("#guideNext").onclick=()=>{if(state.guideStep<guideSteps.length-1){state.guideStep++;renderGuide();return;}localStorage.setItem(guideStorageKey(),"done");document.querySelector("#guideOverlay").hidden=true;toast("Гайд завершено. Він завжди доступний у меню.");};
+document.querySelector("#guideDismiss").onclick=()=>{localStorage.setItem(guideDismissedKey(),"1");localStorage.setItem(guideStorageKey(),"done");document.querySelector("#guideOverlay").hidden=true;toast("Гайд більше не буде відкриватися автоматично. Він доступний у хедері.");};
+document.querySelector("#guideNext").onclick=()=>{if(state.guideStep<guideSteps.length-1){state.guideStep++;renderGuide();return;}localStorage.setItem(guideStorageKey(),"done");document.querySelector("#guideOverlay").hidden=true;toast("Гайд завершено. Він завжди доступний у хедері.");};
 function openNotifications() {
   const items = notificationItems({includeRead:true});
   const unreadCount = items.filter(item => !item.read).length;
@@ -1630,7 +1657,7 @@ history.replaceState(
   initialRoute.draftId ? location.href : urlForView(initialRoute.view),
 );
 refresh().then(()=>{
-  if(!localStorage.getItem(guideStorageKey())&&["completed","skipped"].includes(state.company?.settings?.onboarding_status)){
+  if(!localStorage.getItem(guideStorageKey())&&!localStorage.getItem(guideDismissedKey())&&["completed","skipped"].includes(state.company?.settings?.onboarding_status)){
     setTimeout(()=>openGuide(),500);
   }
 });
