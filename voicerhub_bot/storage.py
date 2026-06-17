@@ -969,6 +969,21 @@ class DraftRepository:
             raise KeyError(f"Rubric {slug} not found")
         return dict(row)
 
+    def fallback_rubric_slug(self) -> str:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT slug FROM content_rubrics
+                WHERE active = 1 AND organization_id = ?
+                ORDER BY name COLLATE NOCASE, id
+                LIMIT 1
+                """,
+                (self.organization_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError("No active rubric found")
+        return str(row["slug"])
+
     def list_rubrics(self, *, include_inactive: bool = False) -> list[dict]:
         query = "SELECT * FROM content_rubrics WHERE organization_id = ?"
         if not include_inactive:
@@ -1422,6 +1437,20 @@ class DraftRepository:
         generation_mode: str = "batch",
     ) -> GenerationJob:
         idea = self.get_idea(idea_id)
+        product = str(idea["product"] or "")
+        try:
+            self.get_rubric(product)
+        except KeyError:
+            product = self.fallback_rubric_slug()
+            with self._connect() as connection:
+                connection.execute(
+                    """
+                    UPDATE content_ideas
+                    SET product = ?
+                    WHERE id = ? AND organization_id = ?
+                    """,
+                    (product, idea_id, self.organization_id),
+                )
         with self._connect() as connection:
             connection.execute(
                 """
@@ -1433,7 +1462,7 @@ class DraftRepository:
         topic = f"{idea['title']}. {idea['angle']}"
         return self.create_job(
             topic,
-            idea["product"],
+            product,
             0,
             text_model=text_model,
             image_model=image_model,

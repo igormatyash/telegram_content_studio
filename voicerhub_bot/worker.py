@@ -130,11 +130,16 @@ class GenerationWorker:
         job,
         post: GeneratedPost,
     ) -> None:
-        rubric = self.repository.get_rubric(job.product)
+        product = job.product
+        try:
+            rubric = self.repository.get_rubric(product)
+        except KeyError:
+            product = self.repository.fallback_rubric_slug()
+            rubric = self.repository.get_rubric(product)
         fixed_cover_path = Path(rubric.get("fixed_cover_path") or "")
         draft = self.repository.create(
             topic=job.topic,
-            product=job.product,
+            product=product,
             title=post.title,
             visual_title=post.visual_title,
             caption_html=render_caption(post, job.link_url),

@@ -214,10 +214,6 @@ class FavoriteRequest(BaseModel):
     favorite: bool
 
 
-class ProofreadRequest(BaseModel):
-    text_model: str = "gpt-5.4-mini"
-
-
 class CustomTemplateRequest(BaseModel):
     name: str = Field(min_length=3, max_length=80)
     description: str = Field(min_length=5, max_length=180)
@@ -1744,6 +1740,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         per_page: int = 25,
         search: str = "",
         role: str = "",
+        sort: str = "display_name",
+        direction: str = "asc",
         user: dict = Depends(require_permission("users.view")),
     ) -> list[dict] | dict:
         rows = auth.list_users(int(user.get("organization_id") or 1))
@@ -1757,6 +1755,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ]
         if role:
             rows = [row for row in rows if row.get("role") == role]
+        sort_key = {
+            "display_name": lambda row: (row.get("display_name") or row.get("username") or "").lower(),
+            "role": lambda row: row.get("role") or "",
+            "created_at": lambda row: row.get("created_at") or "",
+            "status": lambda row: row.get("active", 0),
+        }.get(sort, lambda row: (row.get("display_name") or row.get("username") or "").lower())
+        rows.sort(key=sort_key, reverse=direction.lower() == "desc")
         if page is None:
             return rows
         return paginate_rows(rows, page=page, per_page=per_page)
@@ -1954,6 +1959,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         page: int = 1,
         per_page: int = 25,
         search: str = "",
+        sort: str = "created_at",
+        direction: str = "desc",
         _: dict = Depends(authorize_super_admin),
     ) -> dict:
         report = referrals.platform_summary()
@@ -1966,6 +1973,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if needle
                 in f"{row['code']} {row.get('owner_username', '')} {row.get('owner_organization_name', '')}".lower()
             ]
+        sort_key = {
+            "code": lambda row: row.get("code") or "",
+            "owner_username": lambda row: row.get("owner_username") or "",
+            "clicks": lambda row: int(row.get("clicks") or 0),
+            "signups": lambda row: int(row.get("signups") or 0),
+            "status": lambda row: row.get("status") or "",
+        }.get(sort, lambda row: int(row.get("signups") or 0))
+        codes.sort(key=sort_key, reverse=direction.lower() != "asc")
         page_data = paginate_rows(codes, page=page, per_page=per_page)
         return {
             **report,
@@ -2350,6 +2365,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         search: str = "",
         page: int = 1,
         per_page: int = 25,
+        sort: str = "created_at",
+        direction: str = "desc",
         _: dict = Depends(authorize_super_admin),
     ) -> dict:
         rows = platform_client_rows()
@@ -2386,6 +2403,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     ]
                 ).lower()
             ]
+        sort_key = {
+            "display_name": lambda row: (
+                row.get("display_name") or row.get("username") or ""
+            ).lower(),
+            "created_at": lambda row: row.get("created_at") or "",
+            "last_login_at": lambda row: row.get("last_login_at") or "",
+            "company_count": lambda row: int(row.get("company_count") or 0),
+            "workspace_count": lambda row: int(row.get("workspace_count") or 0),
+            "ai_cost": lambda row: float(row.get("ai_cost") or 0),
+        }.get(sort, lambda row: row.get("created_at") or "")
+        rows.sort(key=sort_key, reverse=direction.lower() != "asc")
         page_data = paginate_rows(rows, page=page, per_page=per_page)
         return {**page_data, "clients": page_data["items"]}
 
@@ -2454,6 +2482,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         page: int = 1,
         per_page: int = 25,
         search: str = "",
+        sort: str = "created_at",
+        direction: str = "desc",
         _: dict = Depends(authorize_super_admin),
     ) -> dict:
         rows = platform_organization_rows()
@@ -2473,6 +2503,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         page: int = 1,
         per_page: int = 25,
         search: str = "",
+        sort: str = "created_at",
+        direction: str = "desc",
         _: dict = Depends(authorize_super_admin),
     ) -> dict:
         rows = platform_company_rows()
@@ -2487,6 +2519,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     f"{row.get('owner_name', '')} {row.get('owner_email', '')}"
                 ).lower()
             ]
+        sort_key = {
+            "name": lambda row: row.get("name", "").lower(),
+            "created_at": lambda row: row.get("created_at") or "",
+            "workspace_count": lambda row: int(row.get("workspace_count") or 0),
+            "user_count": lambda row: int(row.get("user_count") or 0),
+            "ai_cost": lambda row: float(row.get("ai_cost") or 0),
+        }.get(sort, lambda row: row.get("created_at") or "")
+        rows.sort(key=sort_key, reverse=direction.lower() != "asc")
         page_data = paginate_rows(rows, page=page, per_page=per_page)
         return {**page_data, "companies": page_data["items"]}
 
@@ -2570,6 +2610,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if needle
                 in f"{row['username']} {row.get('display_name', '')} {row.get('email') or ''}".lower()
             ]
+        sort_key = {
+            "display_name": lambda row: (
+                row.get("display_name") or row.get("username") or ""
+            ).lower(),
+            "created_at": lambda row: row.get("created_at") or "",
+            "last_login_at": lambda row: row.get("last_login_at") or "",
+            "company_count": lambda row: int(row.get("company_count") or 0),
+            "workspace_count": lambda row: int(row.get("workspace_count") or 0),
+        }.get(sort, lambda row: row.get("created_at") or "")
+        rows.sort(key=sort_key, reverse=direction.lower() != "asc")
         page_data = paginate_rows(rows, page=page, per_page=per_page)
         return {**page_data, "users": page_data["items"]}
 
@@ -2590,6 +2640,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if needle
                 in f"{row.get('action', '')} {row.get('details', '')} {row.get('username', '')} {row.get('organization_name', '')}".lower()
             ]
+        sort_key = {
+            "created_at": lambda row: row.get("created_at") or "",
+            "action": lambda row: row.get("action") or "",
+            "organization_name": lambda row: row.get("organization_name") or "",
+        }.get(sort, lambda row: row.get("created_at") or "")
+        events.sort(key=sort_key, reverse=direction.lower() != "asc")
         page_data = paginate_rows(events, page=page, per_page=per_page)
         return {
             **page_data,
@@ -2602,9 +2658,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         period: str = "month",
         page: int = 1,
         per_page: int = 25,
+        sort: str = "cost",
+        direction: str = "desc",
         _: dict = Depends(authorize_super_admin),
     ) -> dict:
         report = platform_usage_data(period)
+        sort_key = {
+            "company_name": lambda row: (
+                row.get("company_name") or row.get("organization_name") or ""
+            ).lower(),
+            "workspace_count": lambda row: int(row.get("workspace_count") or 0),
+            "operations": lambda row: int(row.get("operations") or 0),
+            "text_generations": lambda row: int(row.get("text_generations") or 0),
+            "image_generations": lambda row: int(row.get("image_generations") or 0),
+            "cost": lambda row: float(row.get("cost") or 0),
+        }.get(sort, lambda row: float(row.get("cost") or 0))
+        report["companies"].sort(key=sort_key, reverse=direction.lower() != "asc")
         page_data = paginate_rows(
             report["companies"],
             page=page,
@@ -3604,19 +3673,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict:
         ensure_ai_budget()
         _validate_generation(payload, repository)
-        job = repository.select_idea(
-            idea_id,
-            text_model=payload.text_model,
-            image_model=payload.image_model,
-            reference_ids=payload.reference_ids,
-            template_id=payload.template_id,
-            logo_reference_id=payload.logo_reference_id,
-            company_logo_reference_id=payload.company_logo_reference_id,
-            link_url=payload.link_url.strip(),
-            tone=payload.tone,
-            created_by_user_id=user["id"],
-            generation_mode=payload.generation_mode,
-        )
+        try:
+            job = repository.select_idea(
+                idea_id,
+                text_model=payload.text_model,
+                image_model=payload.image_model,
+                reference_ids=payload.reference_ids,
+                template_id=payload.template_id,
+                logo_reference_id=payload.logo_reference_id,
+                company_logo_reference_id=payload.company_logo_reference_id,
+                link_url=payload.link_url.strip(),
+                tone=payload.tone,
+                created_by_user_id=user["id"],
+                generation_mode=payload.generation_mode,
+            )
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="Створіть хоча б одну активну рубрику перед генерацією.",
+            ) from exc
         return {"job_id": job.id}
 
     @app.post("/api/jobs/{job_id}/retry-fast")
@@ -3764,14 +3839,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 platform_admin=bool(user.get("is_super_admin")),
             ):
                 raise HTTPException(status_code=403, detail="Недостатньо прав")
-            jobs = [
-                repository.select_idea(
-                    idea_id,
-                    created_by_user_id=user["id"],
-                    generation_mode="fast",
-                ).id
-                for idea_id in ids
-            ]
+            try:
+                jobs = [
+                    repository.select_idea(
+                        idea_id,
+                        created_by_user_id=user["id"],
+                        generation_mode="fast",
+                    ).id
+                    for idea_id in ids
+                ]
+            except KeyError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Створіть хоча б одну активну рубрику перед генерацією.",
+                ) from exc
             return {"changed": len(jobs), "job_ids": jobs}
         raise HTTPException(status_code=422, detail="Невідома масова дія")
 
@@ -4170,32 +4251,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     continue
             return {"changed": changed}
         raise HTTPException(status_code=422, detail="Невідома масова дія")
-
-    @app.post("/api/drafts/{draft_id}/proofread")
-    async def proofread_draft(
-        draft_id: int,
-        payload: ProofreadRequest,
-        user: dict = Depends(require_permission("content.edit")),
-    ) -> dict:
-        ensure_ai_budget()
-        _validate_models(payload.text_model)
-        try:
-            draft = repository.draft_record(draft_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Чернетку не знайдено") from exc
-        caption, input_tokens, output_tokens = await editorial_tools.proofread(
-            draft["caption_html"],
-            payload.text_model,
-        )
-        repository.update_draft(
-            draft_id,
-            title=draft["title"],
-            visual_title=draft["visual_title"],
-            caption_html=caption,
-            link_url=draft["link_url"],
-        )
-        record_text_usage(payload.text_model, input_tokens, output_tokens, user["id"])
-        return repository.draft_record(draft_id)
 
     @app.get("/api/drafts/{draft_id}/image")
     def draft_image(draft_id: int, _: str = Depends(authorize)) -> FileResponse:
@@ -4916,7 +4971,6 @@ ADMIN_HTML = r"""
       <div class="editor-actions">
         <button class="primary" id="saveDraft">Зберегти</button>
         <button id="regenText">↻ Інший текст</button>
-        <button id="proofreadDraft">✓ Перевірити українську</button>
         <button id="favoriteDraft">☆ До прикладів</button>
         <button class="success" id="publishNow">Опублікувати зараз</button>
       </div>
@@ -4955,7 +5009,7 @@ function setViewMeta(view){const meta=viewMeta[view]||[view,""];document.querySe
 document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{document.querySelectorAll(".tab,.view").forEach(x=>x.classList.remove("active"));b.classList.add("active");document.querySelector(`#${b.dataset.view}`).classList.add("active");setViewMeta(b.dataset.view);renderActive(true)});
 document.querySelectorAll("[data-home-view]").forEach(b=>b.onclick=()=>document.querySelector(`[data-view="${b.dataset.homeView}"]`).click());
 function applyWorkspaceMode(){const mode=state.company?.settings?.workspace_mode||"pipeline";document.querySelector("#workspaceMode").value=mode;document.querySelectorAll(".tab[data-view]").forEach(tab=>{const hidden=mode==="kanban"&&tab.dataset.kanbanHidden==="true";tab.hidden=hidden||tab.id==="platformTab"&&!state.me?.is_super_admin;if(mode==="kanban"&&tab.dataset.kanbanLabel)tab.textContent=tab.dataset.kanbanLabel;if(mode==="pipeline"&&tab.dataset.pipelineLabel)tab.textContent=tab.dataset.pipelineLabel});if(document.querySelector(".tab.active")?.hidden)document.querySelector('[data-view="draftsView"]').click()}
-function applyRoleAccess(){if(state.me?.role!=="viewer")return;for(const id of ["generateIdeas","generateSelected","generatePlan","generateSeries","importMaterial","showCustomTemplate","referenceUpload","saveWorkspaceMode","restartOnboarding","saveTelegram","showRubricForm","createUser","saveDraft","regenImage","regenText","proofreadDraft","favoriteDraft","publishNow","scheduleDraft","cancelSchedule"])document.querySelector(`#${id}`)?.setAttribute("hidden","");document.querySelectorAll("[data-social-generate]").forEach(button=>button.hidden=true)}
+function applyRoleAccess(){if(state.me?.role!=="viewer")return;for(const id of ["generateIdeas","generateSelected","generatePlan","generateSeries","importMaterial","showCustomTemplate","referenceUpload","saveWorkspaceMode","restartOnboarding","saveTelegram","showRubricForm","createUser","saveDraft","regenImage","regenText","favoriteDraft","publishNow","scheduleDraft","cancelSchedule"])document.querySelector(`#${id}`)?.setAttribute("hidden","");document.querySelectorAll("[data-social-generate]").forEach(button=>button.hidden=true)}
 const paginate=(items,page,size)=>items.slice((page-1)*size,page*size);
 function pagination(id,total,page,setter){const pages=Math.max(1,Math.ceil(total/state.pageSize));page=Math.min(page,pages);document.querySelector(`#${id}`).innerHTML=total>state.pageSize?`<button data-page-prev ${page<=1?"disabled":""}>←</button><span>Сторінка ${page} з ${pages}</span><button data-page-next ${page>=pages?"disabled":""}>→</button>`:"";document.querySelector(`#${id} [data-page-prev]`)?.addEventListener("click",()=>setter(page-1));document.querySelector(`#${id} [data-page-next]`)?.addEventListener("click",()=>setter(page+1))}
 function renderIdeas(ideas){const page=paginate(ideas,state.ideaPage,state.pageSize);const writable=state.me?.role!=="viewer";document.querySelector("#ideas").innerHTML=page.length?page.map(i=>{const busy=busyStatuses.has(i.status);const available=["idea","suggested"].includes(i.status);const done=["ready","draft","review","needs_changes","scheduled","published"].includes(i.status);const duplicate=Number(i.duplicate_score||0)>=.62;return `<div class="idea"><input class="ideaCheck" type="checkbox" value="${i.id}" ${!available||!writable?"disabled":""}><span class="badge">${esc(rubricLabel(i.product))}</span><div><strong>${esc(i.series_part?`${i.series_part}/${i.series_title} · ${i.title}`:i.title)}</strong><p>${esc(i.angle)}</p><div class="idea-meta"><span class="meta-chip">${esc(toneLabel(i.tone))}</span>${i.planned_for?`<span class="meta-chip">${esc(new Date(`${i.planned_for}T12:00:00`).toLocaleDateString("uk-UA"))}</span>`:""}${i.source_url?`<span class="meta-chip">Матеріал із сайту</span>`:""}${duplicate?`<span class="meta-chip warn">Схожість ${Math.round(i.duplicate_score*100)}%</span>`:""}</div><span class="status ${esc(i.status)} ${busy?"busy":""}">${esc(statusLabels[i.status]||i.status)}</span></div><div class="editor-actions">${done&&i.draft_id?`<button data-open-idea="${i.draft_id}">Відкрити пост</button>`:writable?`<button data-idea="${i.id}" ${available?"":"disabled"}>${available?"Створити чернетку":esc(statusLabels[i.status]||i.status)}</button>`:""}${writable?`<button class="danger" data-delete-idea="${i.id}" title="Видалити тему">✕</button>`:""}</div></div>`}).join(""):`<div class="empty">Тут поки порожньо. Створіть перші ідеї або контент-план.</div>`;pagination("ideasPagination",ideas.length,state.ideaPage,p=>{state.ideaPage=p;renderIdeas(ideas)});document.querySelectorAll("[data-idea]").forEach(b=>b.onclick=()=>generateIdea(Number(b.dataset.idea)));document.querySelectorAll("[data-open-idea]").forEach(b=>b.onclick=()=>openDraft(b.dataset.openIdea));document.querySelectorAll("[data-delete-idea]").forEach(b=>b.onclick=async()=>{if(!confirm("Видалити цю тему зі списку?"))return;try{await api(`api/ideas/${b.dataset.deleteIdea}`,{method:"DELETE"});await refresh()}catch(e){toast(e.message,true)}})}
@@ -5015,7 +5069,6 @@ document.querySelector("#syncVisualTitle").onclick=()=>document.querySelector("#
 document.querySelector("#saveDraft").onclick=async()=>{const b=document.querySelector("#saveDraft");await loading(b,async()=>{await api(`api/drafts/${state.draftId}`,{method:"PUT",body:JSON.stringify({title:document.querySelector("#editorTitle").value,visual_title:document.querySelector("#editorVisualTitle").value,caption_html:document.querySelector("#editorCaption").value,link_url:document.querySelector("#editorLink").value})});toast("Зміни збережено");await refresh(true)},"Збереження")};
 document.querySelector("#regenImage").onclick=async()=>{const b=document.querySelector("#regenImage");await loading(b,async()=>{await api(`api/drafts/${state.draftId}/regenerate-image`,{method:"POST",body:JSON.stringify(generationPayload())});document.querySelector("#editor").close();toast("Нова картинка поставлена в чергу");await refresh(true)},"Додається")};
 document.querySelector("#regenText").onclick=async()=>{const b=document.querySelector("#regenText");await loading(b,async()=>{await api(`api/drafts/${state.draftId}/regenerate-text`,{method:"POST",body:JSON.stringify(generationPayload())});document.querySelector("#editor").close();toast("Нова версія тексту поставлена в чергу");await refresh(true)},"Додається")};
-document.querySelector("#proofreadDraft").onclick=async()=>{const b=document.querySelector("#proofreadDraft");await loading(b,async()=>{const d=await api(`api/drafts/${state.draftId}/proofread`,{method:"POST",body:JSON.stringify({text_model:document.querySelector("#textModel").value})});document.querySelector("#editorCaption").value=d.caption_html;toast("Українську та термінологію перевірено")},"Перевіряється")};
 document.querySelector("#favoriteDraft").onclick=async()=>{const b=document.querySelector("#favoriteDraft");const next=!state.currentDraft?.is_favorite;await loading(b,async()=>{const d=await api(`api/drafts/${state.draftId}/favorite`,{method:"PUT",body:JSON.stringify({favorite:next})});state.currentDraft=d;b.textContent=d.is_favorite?"★ У прикладах":"☆ До прикладів";b.classList.toggle("favorite",!!d.is_favorite);toast(d.is_favorite?"Пост додано до прикладів":"Пост прибрано з прикладів");await refresh(true)},"Зберігається")};
 document.querySelector("#publishNow").onclick=async()=>{const channel=state.company?.telegram?.channel_id||"підключений канал";if(!confirm(`Опублікувати цей пост у ${channel} зараз?`))return;const b=document.querySelector("#publishNow");await loading(b,async()=>{await api(`api/drafts/${state.draftId}/publish`,{method:"POST"});document.querySelector("#editor").close();toast("Пост опубліковано");await refresh()},"Публікується")};
 document.querySelector("#scheduleDraft").onclick=async()=>{const value=document.querySelector("#scheduleAt").value;if(!value)return toast("Оберіть дату і час");const b=document.querySelector("#scheduleDraft");await loading(b,async()=>{await api(`api/drafts/${state.draftId}/schedule`,{method:"POST",body:JSON.stringify({scheduled_at:new Date(value).toISOString()})});document.querySelector("#editor").close();toast("Публікацію заплановано");await refresh()},"Планується")};

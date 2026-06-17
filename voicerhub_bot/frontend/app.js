@@ -23,6 +23,10 @@ const state = {
   serviceUpdates: {items: [], latest_id: 0},
   lists: {},
   selected: {},
+  recentJobIds: new Set(),
+  recentDraftIds: new Set(),
+  completedJobs: [],
+  plans: null,
   roles: null,
   guideStep: 0,
 };
@@ -74,28 +78,56 @@ const roleLabel = role => ({
   content_manager:"Контент-менеджер",editor:"Редактор",
   publisher:"Публікатор",viewer:"Переглядач",member:"Учасник",
 }[role] || role || "Учасник");
-const formatDate = value => value ? new Date(value).toLocaleDateString("uk-UA", {day:"2-digit",month:"short"}) : "Без дати";
+function decodeHtmlMarkup(value) {
+  let result = String(value || "");
+  const textarea = document.createElement("textarea");
+  for (let index = 0; index < 3; index += 1) {
+    textarea.innerHTML = result;
+    const decoded = textarea.value;
+    if (decoded === result) break;
+    result = decoded;
+  }
+  return result;
+}
+function parseDateValue(value) {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  const text = String(value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return new Date(`${text}T12:00:00`);
+  return new Date(text.replace(" ", "T"));
+}
+const formatDate = (value, fallback = "Ще не заплановано") => {
+  if (!value) return fallback;
+  const date = parseDateValue(value);
+  return Number.isNaN(date.getTime())
+    ? fallback
+    : date.toLocaleDateString("uk-UA", {day:"2-digit",month:"short"});
+};
 const localDateKey = value => {
-  const date = value instanceof Date ? value : new Date(value);
+  const date = parseDateValue(value);
+  if (!date) return "";
+  if (Number.isNaN(date.getTime())) return "";
   const pad = number => String(number).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 };
 const localDateTimeValue = value => {
   if (!value) return "";
-  const date = value instanceof Date ? value : new Date(value);
+  const date = parseDateValue(value);
+  if (!date) return "";
+  if (Number.isNaN(date.getTime())) return "";
   const pad = number => String(number).padStart(2, "0");
   return `${localDateKey(date)}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 };
 const activeGenerationStatuses = new Set(["queued_text","text_batch","queued_image","image_batch"]);
 const blockedPreviewTags = new Set(["SCRIPT","STYLE","IFRAME","OBJECT","EMBED","FORM","INPUT","BUTTON","SVG"]);
 const plain = value => {
-  const documentValue = new DOMParser().parseFromString(String(value || ""), "text/html");
+  const documentValue = new DOMParser().parseFromString(decodeHtmlMarkup(value), "text/html");
   documentValue.body.querySelectorAll([...blockedPreviewTags].join(",")).forEach(node=>node.remove());
   return (documentValue.body.textContent || "").replace(/\s+/g, " ").trim();
 };
 const allowedPreviewTags = new Set(["B","STRONG","I","EM","U","S","BR","CODE","PRE","A","BLOCKQUOTE"]);
 function safeHtml(value) {
-  const source = new DOMParser().parseFromString(String(value || ""), "text/html");
+  const source = new DOMParser().parseFromString(decodeHtmlMarkup(value), "text/html");
   const clean = document.implementation.createHTMLDocument("");
   const copy = node => {
     if (node.nodeType === Node.TEXT_NODE) return clean.createTextNode(node.textContent || "");
@@ -123,6 +155,24 @@ function safeHtml(value) {
   return output.innerHTML;
 }
 const can = permission => Boolean(state.me?.is_super_admin || state.me?.permissions?.includes(permission));
+function sortHeader(key, label, listKey, rerender) {
+  const query = new URLSearchParams(location.search);
+  const current = query.get("sort") || "";
+  const ascendingDefaults = new Set(["display_name", "name"]);
+  const direction = query.get("direction") || (ascendingDefaults.has(key) ? "asc" : "desc");
+  const active = current === key || (!current && (key === "created_at" || key === "name" || key === "display_name"));
+  const nextDirection = active && direction !== "asc" ? "asc" : "desc";
+  queueMicrotask(() => {
+    document.querySelectorAll(`[data-sort-list="${listKey}"][data-sort-key="${key}"]`).forEach(button => {
+      button.onclick = () => updateListQuery(
+        {page:"1",sort:key === "created_at" ? null : key,direction:nextDirection === "desc" ? null : nextDirection},
+        rerender,
+        listKey,
+      );
+    });
+  });
+  return `<button type="button" class="sort-header ${active ? "active" : ""}" data-sort-list="${esc(listKey)}" data-sort-key="${esc(key)}">${esc(label)}<span>${active ? (direction === "asc" ? "↑" : "↓") : "↕"}</span></button>`;
+}
 const pageParams = extra => {
   const current = new URLSearchParams(location.search);
   const query = new URLSearchParams({
@@ -280,9 +330,17 @@ function notificationItems({includeRead = false} = {}) {
     type: "error",
     jobId: job.id,
     title: "Не вдалося згенерувати матеріал",
-    text: job.topic || job.error || `Завдання #${job.id}`,
-    action: "Перейдіть у чернетки, перевірте дані та повторіть генерацію.",
+    text: job.error || job.error_message || "Генерація зупинилася без детального опису.",
+    action: `${job.topic ? `Тема: ${plain(job.topic).slice(0, 140)}. ` : ""}Можна повторити генерацію або змінити рубрику/дані чернетки.`,
   }));
+  items.push(...(state.completedJobs || []).map(job => ({
+    key: `ready-job:${job.id}`,
+    type: "success",
+    jobId: null,
+    title: "Чернетку створено",
+    text: job.title || job.topic || `Завдання #${job.id}`,
+    action: job.draft_id ? "Натисніть у чернетках на позначку «Щойно створено», щоб швидко знайти матеріал." : "Матеріал готовий.",
+  })));
   const expiry = state.company?.plan_expires_at
     ? Math.ceil((new Date(state.company.plan_expires_at) - new Date()) / 86400000)
     : null;
@@ -620,14 +678,15 @@ function renderIdeas() {
   }
   const liveIdeas = new Map((state.data.ideas || []).map(item => [Number(item.id), item]));
   const items = (data.items || []).map(item => ({...item,...(liveIdeas.get(Number(item.id)) || {})}));
-  target.innerHTML = `${bulkBar("ideas",[["create_drafts","Створити чернетки"],["assign_rubric","Призначити рубрику"],["delete","Видалити","danger"]])}${items.length ? `<div class="table-wrap"><table class="users-table content-table"><thead><tr><th><input type="checkbox" data-select-all="ideas" aria-label="Обрати всі ідеї на сторінці"></th><th>Ідея</th><th>Рубрика</th><th>Планова дата</th><th>Статус</th><th>Дії</th></tr></thead><tbody>${items.map(item => {
+  target.innerHTML = `${bulkBar("ideas",[["create_drafts","Створити чернетки"],["assign_rubric","Призначити рубрику"],["delete","Видалити","danger"]])}${items.length ? `<div class="table-wrap"><table class="users-table content-table"><thead><tr><th><input type="checkbox" data-select-all="ideas" aria-label="Обрати всі ідеї на сторінці"></th><th>${sortHeader("title","Ідея","ideas",renderIdeas)}</th><th>Рубрика</th><th>${sortHeader("planned_for","Планова дата","ideas",renderIdeas)}</th><th>${sortHeader("status","Статус","ideas",renderIdeas)}</th><th>Дії</th></tr></thead><tbody>${items.map(item => {
     const generating = activeGenerationStatuses.has(item.status);
-    return `<tr><td>${selectionCheckbox("ideas",item.id)}</td><td class="content-main"><strong>${esc(item.title_plain||plain(item.title))}</strong><small>${esc(plain(item.angle||"Перспективна тема для майбутньої публікації.").slice(0,150))}</small>${generating?`<div class="generation-progress"><span style="width:${Number(item.progress||12)}%"></span></div>`:""}</td><td><span class="pill idea">${esc((state.data.rubrics||[]).find(x=>x.slug===item.product)?.name||item.product)}</span></td><td>${item.planned_for?formatDate(item.planned_for):"Без дати"}</td><td>${generating?`<span class="progress-label"><span class="spinner"></span>${esc(item.progress_label||statusLabels[item.status])} · ${Number(item.progress||12)}%</span>`:pill(item.status)}</td><td><div class="table-actions">${can("content.create")?`<button class="dark-button" data-generate-idea="${item.id}" ${generating||item.draft_id?"disabled":""}>${generating?"Генерується…":item.draft_id?"Створено":"Чернетка"}</button>`:""}${can("ideas.delete")?`<button class="ghost danger" data-delete-idea="${item.id}" ${generating?"disabled":""}>Видалити</button>`:""}</div></td></tr>`;
+    return `<tr class="${state.recentDraftIds.has(Number(item.draft_id)) ? "recent-row" : ""}"><td>${selectionCheckbox("ideas",item.id)}</td><td class="content-main"><strong>${esc(item.title_plain||plain(item.title))}</strong><small>${esc(plain(item.angle||"Перспективна тема для майбутньої публікації.").slice(0,150))}</small>${generating?`<div class="generation-progress"><span style="width:${Number(item.progress||12)}%"></span></div>`:""}</td><td><span class="pill idea">${esc((state.data.rubrics||[]).find(x=>x.slug===item.product)?.name||item.product)}</span></td><td>${item.planned_for?formatDate(item.planned_for):"Ще не заплановано"}</td><td>${generating?`<span class="progress-label"><span class="spinner"></span>${esc(item.progress_label||statusLabels[item.status])} · ${Number(item.progress||12)}%</span>`:pill(item.status)}</td><td><div class="table-actions">${can("content.create")?`<button class="dark-button" data-generate-idea="${item.id}" ${generating||item.draft_id?"disabled":""}>${generating?"Генерується…":item.draft_id?"Створено":"Чернетка"}</button>`:""}${item.draft_id?`<button data-open-draft="${item.draft_id}">Відкрити</button>`:""}${can("ideas.delete")?`<button class="ghost danger" data-delete-idea="${item.id}" ${generating?"disabled":""}>Видалити</button>`:""}</div></td></tr>`;
   }).join("")}</tbody></table></div>` : empty("У вас ще немає ідей","Згенеруйте перші теми на основі бренду та рубрик.",can("ideas.create")?'<button class="primary" id="emptyGenerateIdeas">✦ Згенерувати ідеї</button>':"")}${pagination(data,"ideas",renderIdeas)}`;
   bindSelection("ideas",target,renderIdeas);
   target.querySelector("[data-clear-selection]")?.addEventListener("click",()=>{selected("ideas").clear();renderIdeas();});
   target.querySelectorAll("[data-bulk-action]").forEach(button=>button.onclick=()=>runIdeaBulk(button.dataset.bulkAction));
   document.querySelectorAll("[data-generate-idea]").forEach(button => button.onclick = () => generateIdea(button));
+  document.querySelectorAll("[data-open-draft]").forEach(button => button.onclick = () => openEditor(Number(button.dataset.openDraft)));
   document.querySelectorAll("[data-delete-idea]").forEach(button => button.onclick = async () => {
     if (!confirm("Видалити цю ідею?")) return;
     await api(`api/ideas/${button.dataset.deleteIdea}`, {method:"DELETE"});
@@ -645,12 +704,23 @@ async function runIdeaBulk(action) {
     value=prompt(`Slug рубрики:\n${(state.data.rubrics||[]).map(x=>x.slug).join(", ")}`)||"";
     if (!value) return;
   }
-  await api("api/ideas/bulk",{method:"POST",body:JSON.stringify({ids,action,value})});
+  const result = await api("api/ideas/bulk",{method:"POST",body:JSON.stringify({ids,action,value})});
+  if (action === "create_drafts") {
+    (result.job_ids || []).forEach(id => state.recentJobIds.add(Number(id)));
+    selected("ideas").clear();
+    delete state.lists.ideas;
+    delete state.lists.drafts;
+    toast(`Запущено генерацію чернеток: ${result.changed || ids.length}`);
+    await refresh(true);
+    setView("drafts");
+    return;
+  }
   selected("ideas").clear();delete state.lists.ideas;toast("Масову дію виконано");await refresh(true);renderIdeas();
 }
 async function generateIdea(button) {
   await loading(button, async () => {
-    await api(`api/ideas/${button.dataset.generateIdea}/generate`, {method:"POST",body:JSON.stringify(generationPayload())});
+    const result = await api(`api/ideas/${button.dataset.generateIdea}/generate`, {method:"POST",body:JSON.stringify(generationPayload())});
+    if (result.job_id) state.recentJobIds.add(Number(result.job_id));
     toast("Генерацію розпочато. Прогрес з’явиться у чернетках.");
     await refresh(true);
     delete state.lists.drafts;
@@ -738,7 +808,7 @@ function renderDrafts() {
   if (kanban) {
     target.innerHTML = `${bar}${generationStrip}<div class="kanban-board">${statusOrder.map(status => {const rows = status==="idea" ? [] : visibleDrafts.filter(x=>x.status===status);return `<section class="kanban-column"><div class="kanban-head"><span>${statusLabels[status]}</span><span>${rows.length}</span></div>${rows.map(item=>`<article class="kanban-card selectable-card">${selectionCheckbox("drafts",item.id)}<button class="kanban-open" data-open-draft="${item.id}">${pill(item.status)}<h4>${esc(item.title_plain||plain(item.title))}</h4><small class="muted">${formatDate(item.scheduled_at||item.created_at)}</small></button><div class="kanban-actions">${can("content.edit")?(statusActions[item.status]||[]).map(([next,label])=>`<button data-transition-draft="${item.id}" data-transition-status="${next}">${label}</button>`).join(""):""}</div></article>`).join("")}</section>`;}).join("")}</div>${pagination(data,"drafts",renderDrafts)}`;
   } else {
-    target.innerHTML = `${bar}${generationStrip}${visibleDrafts.length ? `<div class="table-wrap"><table class="users-table content-table"><thead><tr><th><input type="checkbox" data-select-all="drafts" aria-label="Обрати всі чернетки на сторінці"></th><th>Чернетка</th><th>Рубрика</th><th>Статус</th><th>Візуал</th><th>Дата</th><th>Дії</th></tr></thead><tbody>${visibleDrafts.map(item => `<tr><td>${selectionCheckbox("drafts",item.id)}</td><td class="content-main"><strong>${esc(item.title_plain||plain(item.title))}</strong><small>${esc((item.caption_plain||plain(item.caption_html)).slice(0,155))}</small></td><td>${esc((state.data.rubrics||[]).find(x=>x.slug===item.product)?.name||item.product)}</td><td>${pill(item.status)}</td><td>${item.image_path?'<span class="success-text">Готовий</span>':'<span class="muted">Без зображення</span>'}</td><td>${formatDate(item.scheduled_at||item.created_at)}</td><td><button data-open-draft="${item.id}">Відкрити</button></td></tr>`).join("")}</tbody></table></div>` : generationCards?"":empty("Чернеток ще немає","Створіть чернетку з ідеї або додайте матеріал вручну.")}${pagination(data,"drafts",renderDrafts)}`;
+    target.innerHTML = `${bar}${generationStrip}${visibleDrafts.length ? `<div class="table-wrap"><table class="users-table content-table"><thead><tr><th><input type="checkbox" data-select-all="drafts" aria-label="Обрати всі чернетки на сторінці"></th><th>${sortHeader("title","Чернетка","drafts",renderDrafts)}</th><th>Рубрика</th><th>${sortHeader("status","Статус","drafts",renderDrafts)}</th><th>Візуал</th><th>${sortHeader("scheduled_at","Дата","drafts",renderDrafts)}</th><th>Дії</th></tr></thead><tbody>${visibleDrafts.map(item => `<tr class="${state.recentDraftIds.has(Number(item.id)) ? "recent-row" : ""}"><td>${selectionCheckbox("drafts",item.id)}</td><td class="content-main"><strong>${esc(item.title_plain||plain(item.title))}</strong>${state.recentDraftIds.has(Number(item.id))?'<span class="fresh-chip">Щойно створено</span>':""}<small>${esc((item.caption_plain||plain(item.caption_html)).slice(0,155))}</small></td><td>${esc((state.data.rubrics||[]).find(x=>x.slug===item.product)?.name||item.product)}</td><td>${pill(item.status)}</td><td>${item.image_path?'<span class="success-text">Готовий</span>':'<span class="muted">Без зображення</span>'}</td><td>${item.scheduled_at?formatDate(item.scheduled_at):"Ще не заплановано"}</td><td><button data-open-draft="${item.id}">Відкрити</button></td></tr>`).join("")}</tbody></table></div>` : generationCards?"":empty("Чернеток ще немає","Створіть чернетку з ідеї або додайте матеріал вручну.")}${pagination(data,"drafts",renderDrafts)}`;
   }
   bindSelection("drafts",target,renderDrafts);
   target.querySelector("[data-clear-selection]")?.addEventListener("click",()=>{selected("drafts").clear();renderDrafts();});
@@ -834,10 +904,11 @@ function renderBrand() {
   if (state.brandTab === "profile") target.innerHTML = `<div class="brand-layout"><article class="card brand-summary"><div class="row"><span class="workspace-logo">${initials(state.company.name)}</span><div><h2 style="margin:0">${esc(state.company.name)}</h2><span class="muted">${esc(settings.key_services||"Додайте ключові послуги")}</span></div></div><div class="form-grid" style="margin-top:22px"><label>Сайт<input id="brandWebsite" type="url" placeholder="https://company.ua" value="${esc(settings.website_url||"")}"><small class="field-help">Сайт допомагає AI точніше зрозуміти продукт і термінологію.</small></label><label>Основний колір<input id="brandColor" type="color" value="${esc(settings.brand_primary_color||"#6366f1")}"><small class="field-help">Використовується у візуальних шаблонах.</small></label><label class="wide">Опис компанії<textarea id="brandDescription" placeholder="Хто ви, для кого працюєте, яку проблему вирішуєте і чим відрізняєтесь. 3–6 конкретних речень.">${esc(settings.company_description||"")}</textarea><small class="field-help">Приклад: «VoicerHub допомагає бізнесу автоматизувати голосові комунікації. Наші клієнти — контакт-центри та сервісні команди…»</small></label><label class="wide">Ключові продукти або послуги<textarea id="brandServices" placeholder="Назва продукту — коротко яку задачу він вирішує">${esc(settings.key_services||"")}</textarea><small class="field-help">Додайте конкретні назви, цільову аудиторію та користь. Це стане контекстом для генерації.</small></label></div><button class="primary" id="saveBrandProfile" style="margin-top:14px">Зберегти профіль</button></article><aside class="card panel"><h2>Рубрики</h2>${(state.data.rubrics||[]).map(x=>`<div class="usage-row"><span>${esc(x.name)}</span><strong>${(state.data.ideas||[]).filter(i=>i.product===x.slug).length}</strong></div>`).join("")||'<p class="muted">Ще немає рубрик.</p>'}</aside></div>`;
   else if (state.brandTab === "tone") target.innerHTML = `<article class="card panel"><div class="row between"><div><div class="eyebrow">Стиль комунікації</div><h2>Tone of voice</h2><p class="muted">Опишіть, як бренд звучить у текстах. Не використовуйте абстрактні слова без прикладів.</p></div><button class="primary" id="saveTone">Зберегти</button></div><textarea id="toneValue" placeholder="Пишемо українською, короткими реченнями. Звертаємося на «ви». Тон експертний, але доброзичливий. Пояснюємо терміни простими словами.">${esc(settings.tone_of_voice||"")}</textarea><small class="field-help">Добре: правила, довжина речень, форма звертання, рівень експертності та 1–2 приклади. Погано: лише «професійно та сучасно».</small><div class="tone-boxes" style="margin-top:14px"><div class="tone-good"><strong>✓ Що можна</strong><p>Писати зрозуміло, конкретно та впевнено; підкріплювати тези прикладами.</p></div><div class="tone-bad"><strong>× Чого не можна</strong><p>${esc(settings.forbidden_phrases||"Вкажіть кліше, перебільшення, небажані слова та обіцянки.")}</p></div></div></article>`;
   else if (state.brandTab === "rubrics") {
-    const data=pagedData("rubrics","api/rubrics",{},renderBrand);
+    const query = new URLSearchParams(location.search);
+    const data=pagedData("rubrics","api/rubrics",{sort:query.get("sort")||"",direction:query.get("direction")||""},renderBrand);
     if(!data){target.innerHTML='<span class="skeleton"></span>';return;}
     const rows=data.items||[];
-    target.innerHTML=`<article class="card panel"><div class="row between"><div><h2>Рубрики контенту</h2><p class="muted">Рубрики допомагають Content Studio створювати контент системно. Кожна рубрика задає тему, ціль, тон і правила для AI.</p></div>${can("rubrics.manage")?'<button class="primary" id="addRubric">＋ Створити рубрику</button>':""}</div><div class="callout"><strong>Як AI використовує рубрики</strong><p>Під час генерації ідей і контент-плану AI чергує різні формати та не повторює один тип контенту.</p></div>${bulkBar("rubrics",[["activate","Активувати"],["deactivate","Деактивувати"],["delete","Видалити","danger"]])}${rows.length?`<div class="table-wrap"><table class="users-table"><thead><tr><th><input type="checkbox" data-select-all="rubrics" aria-label="Обрати всі"></th><th>Рубрика</th><th>Ціль</th><th>Тон</th><th>Статус</th><th></th></tr></thead><tbody>${rows.map(x=>`<tr><td>${selectionCheckbox("rubrics",x.id)}</td><td><strong>${esc(x.name)}</strong><small>${esc(x.description)}</small></td><td>${esc(x.goal||"—")}</td><td>${esc(x.tone||"—")}</td><td>${x.active?"Активна":"Неактивна"}</td><td>${can("rubrics.manage")?`<button data-edit-rubric="${x.id}">Редагувати</button>`:""}</td></tr>`).join("")}</tbody></table></div>`:empty("У вас ще немає рубрик","Створіть рубрики, щоб AI міг планувати експертні пости, кейси, поради, новини та продажні матеріали.",can("rubrics.manage")?'<button class="primary" id="emptyAddRubric">Створити рубрику</button>':"")}${pagination(data,"rubrics",renderBrand)}</article>`;
+    target.innerHTML=`<article class="card panel"><div class="row between"><div><h2>Рубрики контенту</h2><p class="muted">Рубрики допомагають Content Studio створювати контент системно. Кожна рубрика задає тему, ціль, тон і правила для AI.</p></div>${can("rubrics.manage")?'<button class="primary" id="addRubric">＋ Створити рубрику</button>':""}</div><div class="callout"><strong>Як AI використовує рубрики</strong><p>Під час генерації ідей і контент-плану AI чергує різні формати та не повторює один тип контенту.</p></div>${bulkBar("rubrics",[["activate","Активувати"],["deactivate","Деактивувати"],["delete","Видалити","danger"]])}${rows.length?`<div class="table-wrap"><table class="users-table"><thead><tr><th><input type="checkbox" data-select-all="rubrics" aria-label="Обрати всі"></th><th>${sortHeader("name","Рубрика","rubrics",renderBrand)}</th><th>Ціль</th><th>Тон</th><th>Статус</th><th></th></tr></thead><tbody>${rows.map(x=>`<tr><td>${selectionCheckbox("rubrics",x.id)}</td><td><strong>${esc(x.name)}</strong><small>${esc(x.description)}</small></td><td>${esc(x.goal||"—")}</td><td>${esc(x.tone||"—")}</td><td>${x.active?"Активна":"Неактивна"}</td><td>${can("rubrics.manage")?`<button data-edit-rubric="${x.id}">Редагувати</button>`:""}</td></tr>`).join("")}</tbody></table></div>`:empty("У вас ще немає рубрик","Створіть рубрики, щоб AI міг планувати експертні пости, кейси, поради, новини та продажні матеріали.",can("rubrics.manage")?'<button class="primary" id="emptyAddRubric">Створити рубрику</button>':"")}${pagination(data,"rubrics",renderBrand)}</article>`;
     bindSelection("rubrics",target,renderBrand);target.querySelector("[data-clear-selection]")?.addEventListener("click",()=>{selected("rubrics").clear();renderBrand();});
     target.querySelectorAll("[data-bulk-action]").forEach(button=>button.onclick=()=>runRubricBulk(button.dataset.bulkAction));
     target.querySelectorAll("[data-edit-rubric]").forEach(button=>button.onclick=()=>openRubricForm(rows.find(x=>x.id===Number(button.dataset.editRubric))));
@@ -1026,7 +1097,7 @@ function renderPlatform() {
   } else if (state.platformSection === "clients") {
     const query=new URLSearchParams(location.search);
     target.innerHTML = `<form class="platform-filters" id="clientFilters"><input name="search" placeholder="Email, ім’я або компанія" value="${esc(query.get("search")||"")}"><select name="source"><option value="">Усі джерела</option><option value="referral" ${query.get("source")==="referral"?"selected":""}>Referral</option><option value="direct" ${query.get("source")==="direct"?"selected":""}>Direct</option></select><select name="period"><option value="">Весь період</option><option value="7d" ${query.get("period")==="7d"?"selected":""}>7 днів</option><option value="30d" ${query.get("period")==="30d"?"selected":""}>30 днів</option></select><select name="workspace"><option value="">Будь-який workspace</option><option value="yes" ${query.get("workspace")==="yes"?"selected":""}>Є workspace</option><option value="no" ${query.get("workspace")==="no"?"selected":""}>Без workspace</option></select><button class="primary">Застосувати</button></form>
-    ${bulkBar("platform-clients",[["export","Експортувати CSV"],["deactivate","Деактивувати","danger"]])}${data.clients.length?`<div class="table-wrap card"><table class="users-table"><thead><tr><th><input type="checkbox" data-select-all="platform-clients"></th><th>Клієнт</th><th>Реєстрація</th><th>Останній вхід</th><th>Компанії</th><th>Workspace</th><th>Джерело</th><th>Витрати</th><th></th></tr></thead><tbody>${data.clients.map(row=>`<tr><td>${selectionCheckbox("platform-clients",row.id)}</td><td><strong>${esc(row.display_name||row.username)}</strong><small>${esc(row.email||row.username)}</small></td><td>${platformDate(row.created_at)}</td><td>${platformDate(row.last_login_at)}</td><td>${row.company_count}<small>${esc(row.primary_company_name)}</small></td><td>${row.workspace_count}</td><td>${esc(row.registration_source)}<small>${esc(row.referral_code||"")}</small></td><td>${money(row.ai_cost)}</td><td><button data-client="${row.id}">Профіль</button></td></tr>`).join("")}</tbody></table></div>`:platformEmpty("Клієнтів ще немає","Нові реєстрації з’являться в цьому розділі.")}${pagination(data,"platform-clients",()=>loadPlatformSection(true))}`;
+    ${bulkBar("platform-clients",[["export","Експортувати CSV"],["deactivate","Деактивувати","danger"]])}${data.clients.length?`<div class="table-wrap card"><table class="users-table"><thead><tr><th><input type="checkbox" data-select-all="platform-clients"></th><th>${sortHeader("display_name","Клієнт","platform-clients",()=>loadPlatformSection(true))}</th><th>${sortHeader("created_at","Реєстрація","platform-clients",()=>loadPlatformSection(true))}</th><th>${sortHeader("last_login_at","Останній вхід","platform-clients",()=>loadPlatformSection(true))}</th><th>${sortHeader("company_count","Компанії","platform-clients",()=>loadPlatformSection(true))}</th><th>${sortHeader("workspace_count","Workspace","platform-clients",()=>loadPlatformSection(true))}</th><th>Джерело</th><th>${sortHeader("ai_cost","Витрати","platform-clients",()=>loadPlatformSection(true))}</th><th></th></tr></thead><tbody>${data.clients.map(row=>`<tr><td>${selectionCheckbox("platform-clients",row.id)}</td><td><strong>${esc(row.display_name||row.username)}</strong><small>${esc(row.email||row.username)}</small></td><td>${platformDate(row.created_at)}</td><td>${platformDate(row.last_login_at)}</td><td>${row.company_count}<small>${esc(row.primary_company_name)}</small></td><td>${row.workspace_count}</td><td>${esc(row.registration_source)}<small>${esc(row.referral_code||"")}</small></td><td>${money(row.ai_cost)}</td><td><button data-client="${row.id}">Профіль</button></td></tr>`).join("")}</tbody></table></div>`:platformEmpty("Клієнтів ще немає","Нові реєстрації з’являться в цьому розділі.")}${pagination(data,"platform-clients",()=>loadPlatformSection(true))}`;
     document.querySelector("#clientFilters").onsubmit=async event=>{event.preventDefault();const params=new URLSearchParams(new FormData(event.currentTarget));for(const [key,value] of [...params])if(!value)params.delete(key);history.pushState({view:"platform"},"",`${basePath}/platform/clients${params.size?`?${params}`:""}`);state.platformData.clients=null;await loadPlatformSection(true);};
     document.querySelectorAll("[data-client]").forEach(button=>button.onclick=()=>openPlatformSection("clients",{clientId:Number(button.dataset.client)}));
   } else if (state.platformSection === "companies" && state.platformCompanyId) {
@@ -1040,18 +1111,18 @@ function renderPlatform() {
     <article class="card panel"><h2>Остання активність компанії</h2>${data.activity.slice(0,30).map(row=>`<div class="timeline-row"><span></span><div><strong>${esc(row.action)}</strong><small>${platformDate(row.created_at)} · ${esc(row.display_name||row.username||"Система")} · ${esc(row.organization_name||"Без workspace")}</small><p>${esc(plain(row.details||""))}</p></div></div>`).join("")||'<p class="muted">Подій ще немає.</p>'}</article>`;
     document.querySelector("#backToCompanies").onclick=()=>openPlatformSection("companies");
   } else if (state.platformSection === "companies") {
-    target.innerHTML = `${bulkBar("platform-companies",[["export","Експортувати CSV"],["deactivate","Деактивувати","danger"]])}${data.companies.length?`<div class="table-wrap card"><table class="users-table"><thead><tr><th><input type="checkbox" data-select-all="platform-companies"></th><th>Компанія</th><th>Власник</th><th>Створено</th><th>Workspace</th><th>Люди</th><th>Ролі</th><th>Контент</th><th>AI-витрати</th><th></th></tr></thead><tbody>${data.companies.map(row=>`<tr><td>${selectionCheckbox("platform-companies",row.id)}</td><td><strong>${esc(row.name)}</strong><small>${esc(row.slug)}</small></td><td>${esc(row.owner_name||"—")}<small>${esc(row.owner_email||"")}</small></td><td>${platformDate(row.created_at)}</td><td>${row.workspace_count}/${row.max_workspaces}</td><td>${row.user_count}</td><td><small>Власники: ${row.role_counts.owner||0} · Адміни: ${row.role_counts.admin||0} · Учасники: ${row.role_counts.member||0}</small></td><td>${row.draft_count} / ${row.scheduled_count} / ${row.published_count}<small>чернетки / план / публікації</small></td><td>${money(row.ai_cost)}</td><td><button data-company-detail="${row.id}">Деталі</button></td></tr>`).join("")}</tbody></table></div>`:platformEmpty("Компаній ще немає","Зареєстровані клієнтські компанії з’являться тут.")}${pagination(data,"platform-companies",()=>loadPlatformSection(true))}`;
+    target.innerHTML = `${bulkBar("platform-companies",[["export","Експортувати CSV"],["deactivate","Деактивувати","danger"]])}${data.companies.length?`<div class="table-wrap card"><table class="users-table"><thead><tr><th><input type="checkbox" data-select-all="platform-companies"></th><th>${sortHeader("name","Компанія","platform-companies",()=>loadPlatformSection(true))}</th><th>Власник</th><th>${sortHeader("created_at","Створено","platform-companies",()=>loadPlatformSection(true))}</th><th>${sortHeader("workspace_count","Workspace","platform-companies",()=>loadPlatformSection(true))}</th><th>${sortHeader("user_count","Люди","platform-companies",()=>loadPlatformSection(true))}</th><th>Ролі</th><th>Контент</th><th>${sortHeader("ai_cost","AI-витрати","platform-companies",()=>loadPlatformSection(true))}</th><th></th></tr></thead><tbody>${data.companies.map(row=>`<tr><td>${selectionCheckbox("platform-companies",row.id)}</td><td><strong>${esc(row.name)}</strong><small>${esc(row.slug)}</small></td><td>${esc(row.owner_name||"—")}<small>${esc(row.owner_email||"")}</small></td><td>${platformDate(row.created_at)}</td><td>${row.workspace_count}/${row.max_workspaces}</td><td>${row.user_count}</td><td><small>Власники: ${row.role_counts.owner||0} · Адміни: ${row.role_counts.admin||0} · Учасники: ${row.role_counts.member||0}</small></td><td>${row.draft_count} / ${row.scheduled_count} / ${row.published_count}<small>чернетки / план / публікації</small></td><td>${money(row.ai_cost)}</td><td><button data-company-detail="${row.id}">Деталі</button></td></tr>`).join("")}</tbody></table></div>`:platformEmpty("Компаній ще немає","Зареєстровані клієнтські компанії з’являться тут.")}${pagination(data,"platform-companies",()=>loadPlatformSection(true))}`;
     document.querySelectorAll("[data-company-detail]").forEach(button=>button.onclick=()=>openPlatformSection("companies",{companyId:Number(button.dataset.companyDetail)}));
   } else if (state.platformSection === "users") {
-    target.innerHTML = `${bulkBar("platform-users",[["export","Експортувати CSV"],["deactivate","Деактивувати","danger"]])}${data.users.length?`<div class="table-wrap card"><table class="users-table"><thead><tr><th><input type="checkbox" data-select-all="platform-users"></th><th>Користувач</th><th>Реєстрація</th><th>Останній вхід</th><th>Email verified</th><th>Компанії</th><th>Workspace</th><th>Основна роль</th><th>Джерело</th><th>Статус</th></tr></thead><tbody>${data.users.map(row=>`<tr><td>${selectionCheckbox("platform-users",row.id)}</td><td><strong>${esc(row.display_name||row.username)}</strong><small>${esc(row.email||row.username)}</small></td><td>${platformDate(row.created_at)}</td><td>${platformDate(row.last_login_at)}</td><td>${row.email_verified?"Так":"Ні"}</td><td>${row.company_count}<small>${esc(row.primary_company_name||"")}</small></td><td>${row.workspace_count}</td><td>${esc(row.company_role||row.role||"—")}</td><td>${esc(row.registration_source)}</td><td>${row.active?"Активний":"Вимкнений"}</td></tr>`).join("")}</tbody></table></div>`:platformEmpty("Користувачів ще немає","Нові акаунти з’являться тут.")}${pagination(data,"platform-users",()=>loadPlatformSection(true))}`;
+    target.innerHTML = `${bulkBar("platform-users",[["export","Експортувати CSV"],["deactivate","Деактивувати","danger"]])}${data.users.length?`<div class="table-wrap card"><table class="users-table"><thead><tr><th><input type="checkbox" data-select-all="platform-users"></th><th>${sortHeader("display_name","Користувач","platform-users",()=>loadPlatformSection(true))}</th><th>${sortHeader("created_at","Реєстрація","platform-users",()=>loadPlatformSection(true))}</th><th>${sortHeader("last_login_at","Останній вхід","platform-users",()=>loadPlatformSection(true))}</th><th>Email verified</th><th>${sortHeader("company_count","Компанії","platform-users",()=>loadPlatformSection(true))}</th><th>${sortHeader("workspace_count","Workspace","platform-users",()=>loadPlatformSection(true))}</th><th>Основна роль</th><th>Джерело</th><th>Статус</th></tr></thead><tbody>${data.users.map(row=>`<tr><td>${selectionCheckbox("platform-users",row.id)}</td><td><strong>${esc(row.display_name||row.username)}</strong><small>${esc(row.email||row.username)}</small></td><td>${platformDate(row.created_at)}</td><td>${platformDate(row.last_login_at)}</td><td>${row.email_verified?"Так":"Ні"}</td><td>${row.company_count}<small>${esc(row.primary_company_name||"")}</small></td><td>${row.workspace_count}</td><td>${esc(row.company_role||row.role||"—")}</td><td>${esc(row.registration_source)}</td><td>${row.active?"Активний":"Вимкнений"}</td></tr>`).join("")}</tbody></table></div>`:platformEmpty("Користувачів ще немає","Нові акаунти з’являться тут.")}${pagination(data,"platform-users",()=>loadPlatformSection(true))}`;
   } else if (state.platformSection === "referrals") {
-    target.innerHTML = `${bulkBar("platform-referrals",[["export","Експортувати CSV"],["deactivate","Вимкнути","danger"]])}<div class="platform-grid"><article class="card panel"><h2>Реферальні посилання</h2>${data.codes.length?`<div class="table-wrap"><table class="users-table"><thead><tr><th><input type="checkbox" data-select-all="platform-referrals"></th><th>Код</th><th>Власник</th><th>Компанія</th><th>Переходи</th><th>Реєстрації</th><th>Статус</th></tr></thead><tbody>${data.codes.map(row=>`<tr><td>${selectionCheckbox("platform-referrals",row.id)}</td><td class="masked">${esc(row.code)}</td><td>${esc(row.owner_display_name||row.owner_username)}</td><td>${esc(row.owner_organization_name||"—")}</td><td>${row.clicks}</td><td>${row.signups}</td><td>${esc(row.status)}</td></tr>`).join("")}</tbody></table></div>`:platformEmpty("Поки немає реферальних посилань","Посилання з’являться після відкриття реферального блоку користувачами.")}</article>
+    target.innerHTML = `${bulkBar("platform-referrals",[["export","Експортувати CSV"],["deactivate","Вимкнути","danger"]])}<div class="platform-grid"><article class="card panel"><h2>Реферальні посилання</h2>${data.codes.length?`<div class="table-wrap"><table class="users-table"><thead><tr><th><input type="checkbox" data-select-all="platform-referrals"></th><th>${sortHeader("code","Код","platform-referrals",()=>loadPlatformSection(true))}</th><th>${sortHeader("owner_username","Власник","platform-referrals",()=>loadPlatformSection(true))}</th><th>Компанія</th><th>${sortHeader("clicks","Переходи","platform-referrals",()=>loadPlatformSection(true))}</th><th>${sortHeader("signups","Реєстрації","platform-referrals",()=>loadPlatformSection(true))}</th><th>${sortHeader("status","Статус","platform-referrals",()=>loadPlatformSection(true))}</th></tr></thead><tbody>${data.codes.map(row=>`<tr><td>${selectionCheckbox("platform-referrals",row.id)}</td><td class="masked">${esc(row.code)}</td><td>${esc(row.owner_display_name||row.owner_username)}</td><td>${esc(row.owner_organization_name||"—")}</td><td>${row.clicks}</td><td>${row.signups}</td><td>${esc(row.status)}</td></tr>`).join("")}</tbody></table></div>`:platformEmpty("Поки немає реферальних посилань","Посилання з’являться після відкриття реферального блоку користувачами.")}</article>
     <article class="card panel"><h2>Реферальні реєстрації</h2>${data.signups.map(row=>`<div class="usage-row"><span><strong>${esc(row.new_email||row.new_username)}</strong><small class="muted" style="display:block">Запросив: ${esc(row.referrer_username)} · ${esc(row.utm_source||"direct")}</small></span><small>${platformDate(row.created_at)}</small></div>`).join("")||platformEmpty("Поки немає реферальних реєстрацій","Коли користувачі зареєструються за посиланням, вони з’являться тут.")}</article></div>${pagination(data,"platform-referrals",()=>loadPlatformSection(true))}`;
   } else if (state.platformSection === "activity") {
-    target.innerHTML = `${bulkBar("platform-activity",[["export","Експортувати CSV"]])}<div class="platform-grid"><article class="card panel"><h2>Події платформи</h2>${data.events.map(row=>`<div class="timeline-row selectable-row">${selectionCheckbox("platform-activity",row.id)}<div><strong>${esc(row.action)}</strong><small>${platformDate(row.created_at)} · ${esc(row.display_name||row.username||"Система")} · ${esc(row.organization_name||"Без workspace")}</small><p>${esc(plain(row.details||""))}</p></div></div>`).join("")||'<p class="muted">Подій ще немає.</p>'}</article><article class="card panel"><h2>Останні входи</h2>${data.logins.map(row=>`<div class="usage-row"><span><strong>${esc(row.display_name||row.username||"Невідомий користувач")}</strong><small class="muted" style="display:block">${esc(row.organization_name||"Без workspace")} · ${platformDate(row.created_at)}</small></span><span class="${row.success?"success-text":"danger-text"}">${row.success?"Успішно":"Помилка"}</span></div>`).join("")||'<p class="muted">Входів ще немає.</p>'}</article></div>${pagination(data,"platform-activity",()=>loadPlatformSection(true))}`;
+    target.innerHTML = `${bulkBar("platform-activity",[["export","Експортувати CSV"]])}<div class="platform-grid"><article class="card panel"><div class="row between"><h2>Події платформи</h2><div class="mini-sort">${sortHeader("created_at","Дата","platform-activity",()=>loadPlatformSection(true))}${sortHeader("action","Подія","platform-activity",()=>loadPlatformSection(true))}</div></div>${data.events.map(row=>`<div class="timeline-row selectable-row">${selectionCheckbox("platform-activity",row.id)}<div><strong>${esc(row.action)}</strong><small>${platformDate(row.created_at)} · ${esc(row.display_name||row.username||"Система")} · ${esc(row.organization_name||"Без workspace")}</small><p>${esc(plain(row.details||""))}</p></div></div>`).join("")||'<p class="muted">Подій ще немає.</p>'}</article><article class="card panel"><h2>Останні входи</h2>${data.logins.map(row=>`<div class="usage-row"><span><strong>${esc(row.display_name||row.username||"Невідомий користувач")}</strong><small class="muted" style="display:block">${esc(row.organization_name||"Без workspace")} · ${platformDate(row.created_at)}</small></span><span class="${row.success?"success-text":"danger-text"}">${row.success?"Успішно":"Помилка"}</span></div>`).join("")||'<p class="muted">Входів ще немає.</p>'}</article></div>${pagination(data,"platform-activity",()=>loadPlatformSection(true))}`;
   } else {
     const report=data;
-    target.innerHTML = `<div class="filters platform-periods">${[["today","Сьогодні"],["7d","7 днів"],["month","Місяць"],["all","Весь час"]].map(([value,label])=>`<button class="${state.platformPeriod===value?"active":""}" data-platform-expense-period="${value}">${label}</button>`).join("")}</div><div class="platform-metric-grid">${[["Загальні витрати",money(report.totals.cost)],["Операції",report.totals.operations],["Тексти",report.totals.text_generations],["Зображення",report.totals.image_generations]].map(([label,value])=>`<article class="card metric"><span>${label}</span><strong>${value}</strong></article>`).join("")}</div><div class="table-wrap card"><table class="users-table"><thead><tr><th>Компанія</th><th>Workspace</th><th>Операції</th><th>Тексти</th><th>Зображення</th><th>Витрати</th></tr></thead><tbody>${report.companies.map(row=>`<tr><td><strong>${esc(row.company_name||row.organization_name)}</strong></td><td>${row.workspace_count||0}</td><td>${row.operations}</td><td>${row.text_generations}</td><td>${row.image_generations}</td><td>${money(row.cost)}</td></tr>`).join("")}</tbody></table></div>${pagination(report,"platform-expenses",()=>loadPlatformSection(true))}`;
+    target.innerHTML = `<div class="filters platform-periods">${[["today","Сьогодні"],["7d","7 днів"],["month","Місяць"],["all","Весь час"]].map(([value,label])=>`<button class="${state.platformPeriod===value?"active":""}" data-platform-expense-period="${value}">${label}</button>`).join("")}</div><div class="platform-metric-grid">${[["Загальні витрати",money(report.totals.cost)],["Операції",report.totals.operations],["Тексти",report.totals.text_generations],["Зображення",report.totals.image_generations]].map(([label,value])=>`<article class="card metric"><span>${label}</span><strong>${value}</strong></article>`).join("")}</div><div class="table-wrap card"><table class="users-table"><thead><tr><th>${sortHeader("company_name","Компанія","platform-expenses",()=>loadPlatformSection(true))}</th><th>${sortHeader("workspace_count","Workspace","platform-expenses",()=>loadPlatformSection(true))}</th><th>${sortHeader("operations","Операції","platform-expenses",()=>loadPlatformSection(true))}</th><th>${sortHeader("text_generations","Тексти","platform-expenses",()=>loadPlatformSection(true))}</th><th>${sortHeader("image_generations","Зображення","platform-expenses",()=>loadPlatformSection(true))}</th><th>${sortHeader("cost","Витрати","platform-expenses",()=>loadPlatformSection(true))}</th></tr></thead><tbody>${report.companies.map(row=>`<tr><td><strong>${esc(row.company_name||row.organization_name)}</strong></td><td>${row.workspace_count||0}</td><td>${row.operations}</td><td>${row.text_generations}</td><td>${row.image_generations}</td><td>${money(row.cost)}</td></tr>`).join("")}</tbody></table></div>${pagination(report,"platform-expenses",()=>loadPlatformSection(true))}`;
     document.querySelectorAll("[data-platform-expense-period]").forEach(button=>button.onclick=async()=>{state.platformPeriod=button.dataset.platformExpensePeriod;state.platformData.expenses=null;await loadPlatformSection(true);});
   }
   for(const key of ["platform-clients","platform-companies","platform-users","platform-referrals","platform-activity"]){
@@ -1086,16 +1157,22 @@ function renderSettings() {
   }
   else if (state.settingsTab === "mode") target.innerHTML = `<article class="card settings-card"><div class="eyebrow">Загальні</div><h2>Режим роботи workspace</h2><p class="muted">Оберіть, як ваша команда працює з контентом.</p><div class="mode-grid"><label class="card panel"><input type="radio" name="workspaceMode" value="pipeline" ${settings.workspace_mode==="pipeline"?"checked":""}> <strong>Редакційний pipeline</strong><p class="muted">Послідовний процес: ідеї → план → чернетки → календар.</p></label><label class="card panel"><input type="radio" name="workspaceMode" value="kanban" ${settings.workspace_mode==="kanban"?"checked":""}> <strong>Контент-дошка Kanban</strong><p class="muted">Усі матеріали за статусами на одній дошці.</p></label></div><button class="primary" id="saveWorkspaceMode">Зберегти режим</button></article>`;
   else if (state.settingsTab === "users") {
-    const data=pagedData("users","api/users",{},renderSettings);
+    const query = new URLSearchParams(location.search);
+    const data=pagedData("users","api/users",{sort:query.get("sort")||"",direction:query.get("direction")||""},renderSettings);
     if(!data){target.innerHTML='<span class="skeleton"></span>';return;}
     const rows=data.items||[];
-    target.innerHTML=`<article class="card settings-card"><div class="row between"><div><h2 style="margin:0">Користувачі workspace</h2><p class="muted">Запрошуйте команду та призначайте зрозумілі ролі.</p></div>${can("users.invite")?'<button class="primary" id="inviteUser">＋ Запросити користувача</button>':""}</div>${bulkBar("users",[["role","Змінити роль"],["deactivate","Деактивувати"],["remove","Видалити з workspace","danger"]])}<div class="table-wrap"><table class="users-table"><thead><tr><th><input type="checkbox" data-select-all="users" aria-label="Обрати всіх"></th><th>Користувач</th><th>Роль</th><th>Статус</th><th></th></tr></thead><tbody>${rows.map(x=>`<tr><td>${selectionCheckbox("users",x.id)}</td><td><strong>${esc(x.display_name||x.username)}</strong><small>${esc(x.email||x.username)}</small></td><td>${esc(x.role||"editor")}</td><td>${x.active?"Активний":"Вимкнений"}</td><td>${can("users.invite")?`<button data-reset-user="${x.id}">Reset link</button>`:""}</td></tr>`).join("")}</tbody></table></div>${pagination(data,"users",renderSettings)}</article>`;
+    target.innerHTML=`<article class="card settings-card"><div class="row between"><div><h2 style="margin:0">Користувачі workspace</h2><p class="muted">Запрошуйте команду та призначайте зрозумілі ролі.</p></div>${can("users.invite")?'<button class="primary" id="inviteUser">＋ Запросити користувача</button>':""}</div>${bulkBar("users",[["role","Змінити роль"],["deactivate","Деактивувати"],["remove","Видалити з workspace","danger"]])}<div class="table-wrap"><table class="users-table"><thead><tr><th><input type="checkbox" data-select-all="users" aria-label="Обрати всіх"></th><th>${sortHeader("display_name","Користувач","users",renderSettings)}</th><th>${sortHeader("role","Роль","users",renderSettings)}</th><th>${sortHeader("status","Статус","users",renderSettings)}</th><th></th></tr></thead><tbody>${rows.map(x=>`<tr><td>${selectionCheckbox("users",x.id)}</td><td><strong>${esc(x.display_name||x.username)}</strong><small>${esc(x.email||x.username)}</small></td><td>${esc(x.role||"editor")}</td><td>${x.active?"Активний":"Вимкнений"}</td><td>${can("users.invite")?`<button data-reset-user="${x.id}">Reset link</button>`:""}</td></tr>`).join("")}</tbody></table></div>${pagination(data,"users",renderSettings)}</article>`;
     bindSelection("users",target,renderSettings);target.querySelector("[data-clear-selection]")?.addEventListener("click",()=>{selected("users").clear();renderSettings();});
     target.querySelectorAll("[data-bulk-action]").forEach(button=>button.onclick=()=>runUserBulk(button.dataset.bulkAction));
   }
   else if (state.settingsTab === "roles") {
     if(!state.roles){target.innerHTML='<span class="skeleton"></span>';api("api/roles").then(data=>{state.roles=data;renderSettings();}).catch(error=>toast(error.message,true));return;}
     target.innerHTML=`<article class="card settings-card"><div class="eyebrow">Права доступу</div><h2>Ролі workspace</h2><p class="muted">Platform Admin є окремою платформною роллю. Ролі нижче діють лише всередині поточного workspace. Наведіть курсор або сфокусуйте право, щоб побачити пояснення.</p><div class="roles-list">${state.roles.items.map(role=>`<details class="role-card"><summary><span><strong>${esc(role.label)}</strong><small>${esc(role.description)}</small></span><span>${role.user_count} корист. · ${role.permissions.length} прав</span></summary><div class="permission-grid">${(role.permission_details||role.permissions.map(key=>({key,label:key,description:key}))).map(permission=>`<span class="permission-chip" tabindex="0" data-tooltip="${esc(permission.description)}" aria-label="${esc(`${permission.label}. ${permission.description}`)}"><strong>${esc(permission.label)}</strong><small>${esc(permission.key)}</small></span>`).join("")}</div></details>`).join("")}</div></article>`;
+  }
+  else if (state.settingsTab === "billing") {
+    if(!state.plans){target.innerHTML='<span class="skeleton"></span>';api("api/plans").then(data=>{state.plans=data;renderSettings();}).catch(error=>toast(error.message,true));return;}
+    const expires = state.plans.expires_at ? formatDate(state.plans.expires_at, "") : "";
+    target.innerHTML=`<article class="card settings-card pricing-panel"><div class="row between"><div><div class="eyebrow">Тарифи</div><h2>Оберіть план для workspace</h2><p class="muted">Публікації, користувачі, канали та AI-бюджет контролюються на рівні поточного workspace.</p></div><span class="pill ready">Поточний: ${esc(state.plans.current_plan||state.company.plan_code||"custom")}${expires?` · до ${esc(expires)}`:""}</span></div><div class="pricing-grid">${state.plans.plans.map(plan=>{const current=(state.plans.current_plan||state.company.plan_code)===plan.code;return `<article class="price-card ${plan.popular?"popular":""} ${current?"current":""}">${plan.popular?'<span class="popular-label">Найпопулярніший</span>':""}<h3>${esc(plan.name)}</h3><p class="tagline">${esc(plan.tagline)}</p><div class="price"><strong>${Number(plan.stars).toLocaleString("uk-UA")} ★</strong><span>/ 30 днів</span></div><div class="plan-limits"><div class="plan-limit"><strong>${plan.publications}</strong><span>публікацій</span></div><div class="plan-limit"><strong>${plan.users}</strong><span>користувачів</span></div><div class="plan-limit"><strong>${plan.channels}</strong><span>каналів</span></div><div class="plan-limit"><strong>${money(plan.ai_budget)}</strong><span>AI-бюджет</span></div></div><ul class="plan-features">${(plan.features||[]).map(item=>`<li>${esc(item)}</li>`).join("")}</ul>${current?'<button disabled class="current-plan">Поточний тариф</button>':`<button class="${plan.popular?"success":"primary"}" data-buy-plan="${esc(plan.code)}" ${can("billing.manage")?"":"disabled"}>${can("billing.manage")?"Оплатити в Telegram":"Доступно власнику"}</button>`}</article>`}).join("")}</div><div class="billing-note"><strong>Оплата через Telegram Stars</strong><span>Після оплати ліміти оновляться автоматично після підтвердження платежу.</span></div></article>`;
   }
   else if (state.settingsTab === "referral") {
     const referral = state.referral || {};
@@ -1119,7 +1196,7 @@ async function openEditor(id, push = true) {
       );
     }
     const target = document.querySelector("#editorContent");
-    target.innerHTML = `<header class="editor-header"><div class="row editor-title-row"><button id="closeEditor">←</button><div>${pill(draft.status)} <strong style="margin-left:8px">${esc(plain(draft.title))}</strong></div></div><div class="row editor-actions"><button id="regenText">Перегенерувати текст</button><button id="saveDraft">Зберегти</button><button class="primary" id="publishDraft" ${["ready","scheduled"].includes(draft.status)?"":"disabled title=\"Спочатку погодьте матеріал\""}>Опублікувати</button></div></header><div class="editor-grid"><form class="editor-form" id="editorForm"><div class="status-actions">${(statusActions[draft.status]||[]).map(([next,label])=>`<button type="button" data-editor-status="${next}">${label}</button>`).join("")}</div><div class="form-grid"><label>Рубрика<input value="${esc(draft.product)}" disabled></label><label>Дата і час<input id="scheduleAt" type="datetime-local" value="${localDateTimeValue(draft.scheduled_at)}"></label></div><label>Заголовок для поста<input id="editorTitle" value="${esc(draft.title)}"></label><label>Заголовок на візуалі<input id="editorVisualTitle" value="${esc(draft.visual_title||draft.title)}"><small class="muted">Без emoji та зайвих символів.</small></label><label>Текст публікації<textarea id="editorCaption" style="min-height:330px">${esc(draft.caption_html)}</textarea></label><label>Посилання<input id="editorLink" value="${esc(draft.link_url||"")}"></label><div class="row editor-secondary-actions"><button type="button" id="scheduleDraft" ${draft.image_path?"":"disabled title=\"Спочатку потрібен візуал\""}>Запланувати</button><button type="button" id="cancelSchedule" ${draft.status==="scheduled"?"":"hidden"}>Повернути в готові</button><button type="button" id="proofreadDraft">Перевірити текст</button></div></form><aside class="editor-preview"><div class="editor-preview-card"><div class="row"><span class="workspace-logo" style="width:30px;height:30px">${initials(state.company.name)}</span><div><strong>${esc(state.company.name)}</strong><small style="display:block;color:#94a3b8">Telegram</small></div></div><img src="${apiUrl(`api/drafts/${id}/image`)}" alt="" onerror="this.style.display='none'"><h2 id="previewTitle">${esc(plain(draft.visual_title||draft.title))}</h2><div id="previewText" class="telegram-preview-text">${safeHtml(draft.caption_html)}</div></div></aside></div>`;
+    target.innerHTML = `<header class="editor-header"><div class="row editor-title-row"><button id="closeEditor">←</button><div>${pill(draft.status)} <strong style="margin-left:8px">${esc(plain(draft.title))}</strong></div></div><div class="row editor-actions"><button id="regenText">Перегенерувати текст</button><button id="saveDraft">Зберегти</button><button id="scheduleDraft" ${draft.image_path?"":"disabled title=\"Спочатку потрібен візуал\""}>Запланувати</button><button class="primary" id="publishDraft" ${["ready","scheduled"].includes(draft.status)?"":"disabled title=\"Спочатку погодьте матеріал\""}>Опублікувати</button></div></header><div class="editor-grid"><form class="editor-form" id="editorForm"><div class="status-actions">${(statusActions[draft.status]||[]).map(([next,label])=>`<button type="button" data-editor-status="${next}">${label}</button>`).join("")}</div><div class="form-grid"><label>Рубрика<input value="${esc(draft.product)}" disabled></label><label>Дата і час<input id="scheduleAt" type="datetime-local" value="${localDateTimeValue(draft.scheduled_at)}"></label></div><label>Заголовок для поста<input id="editorTitle" value="${esc(decodeHtmlMarkup(draft.title))}"></label><label>Заголовок на візуалі<input id="editorVisualTitle" value="${esc(decodeHtmlMarkup(draft.visual_title||draft.title))}"><small class="muted">Без emoji та зайвих символів.</small></label><label>Текст публікації<textarea id="editorCaption" style="min-height:330px">${esc(decodeHtmlMarkup(draft.caption_html))}</textarea></label><label>Посилання<input id="editorLink" value="${esc(draft.link_url||"")}"></label><div class="row editor-secondary-actions"><button type="button" id="cancelSchedule" ${draft.status==="scheduled"?"":"hidden"}>Повернути в готові</button></div></form><aside class="editor-preview"><div class="editor-preview-card"><div class="row"><span class="workspace-logo" style="width:30px;height:30px">${initials(state.company.name)}</span><div><strong>${esc(state.company.name)}</strong><small style="display:block;color:#94a3b8">Telegram</small></div></div><img src="${apiUrl(`api/drafts/${id}/image`)}" alt="" onerror="this.style.display='none'"><h2 id="previewTitle">${esc(plain(draft.visual_title||draft.title))}</h2><div id="previewText" class="telegram-preview-text">${safeHtml(draft.caption_html)}</div></div></aside></div>`;
     document.querySelector("#editorOverlay").hidden = false;
     bindEditorActions();
   } catch (error) { toast(error.message,true); }
@@ -1437,6 +1514,18 @@ function bindSettingsActions() {
   document.querySelector("#copyReferral")?.addEventListener("click",async()=>{await navigator.clipboard.writeText(state.referral.url);toast("Реферальне посилання скопійовано");});
   document.querySelector("#rotateReferral")?.addEventListener("click",async()=>{state.referral=await api("api/referrals/me/rotate",{method:"POST"});renderSettings();toast("Створено новий реферальний код");});
   document.querySelector("#disableReferral")?.addEventListener("click",async()=>{if(!confirm("Вимкнути поточне реферальне посилання?"))return;state.referral=await api("api/referrals/me/disable",{method:"POST"});renderSettings();toast("Реферальне посилання вимкнено");});
+  document.querySelectorAll("[data-buy-plan]").forEach(button=>button.onclick=async()=>{
+    const popup = window.open("about:blank", "_blank");
+    try {
+      const result = await loading(button,()=>api("api/billing/checkout",{method:"POST",body:JSON.stringify({plan_code:button.dataset.buyPlan})}),"Створюємо рахунок…");
+      if (popup) popup.location = result.invoice_url;
+      else location.href = result.invoice_url;
+      toast("Рахунок відкрито в Telegram");
+    } catch (error) {
+      popup?.close();
+      throw error;
+    }
+  });
   const telegramValidator = document.querySelector("#telegramChannel")
     ? bindTelegramValidation("telegramChannel", "telegramToken", "telegramStatus", "testTelegram")
     : null;
@@ -1467,7 +1556,6 @@ function bindEditorActions() {
   });
   document.querySelector("#saveDraft").onclick=async event=>loading(event.currentTarget,async()=>{await api(`api/drafts/${state.currentDraft.id}`,{method:"PUT",body:JSON.stringify({title:document.querySelector("#editorTitle").value,visual_title:document.querySelector("#editorVisualTitle").value,caption_html:document.querySelector("#editorCaption").value,link_url:document.querySelector("#editorLink").value})});toast("Зміни збережено");await refresh(true);},"Зберігаємо…");
   document.querySelector("#regenText").onclick=async event=>loading(event.currentTarget,async()=>{await api(`api/drafts/${state.currentDraft.id}/regenerate-text`,{method:"POST",body:JSON.stringify(generationPayload())});toast("Нову версію поставлено в чергу");closeEditor();await refresh(true);delete state.lists.drafts;setView("drafts");},"Запускаємо…");
-  document.querySelector("#proofreadDraft").onclick=async event=>loading(event.currentTarget,async()=>{const draft=await api(`api/drafts/${state.currentDraft.id}/proofread`,{method:"POST",body:JSON.stringify({text_model:"gpt-5.4-mini"})});document.querySelector("#editorCaption").value=draft.caption_html;toast("Текст перевірено");},"Перевіряємо…");
   document.querySelector("#scheduleDraft").onclick=async event=>{const value=document.querySelector("#scheduleAt").value;if(!value)return toast("Оберіть дату і час",true);await loading(event.currentTarget,async()=>{await api(`api/drafts/${state.currentDraft.id}/schedule`,{method:"POST",body:JSON.stringify({scheduled_at:new Date(value).toISOString()})});toast("Публікацію заплановано");closeEditor();await refresh();},"Плануємо…");};
   document.querySelector("#cancelSchedule").onclick=async event=>loading(event.currentTarget,async()=>{await api(`api/drafts/${state.currentDraft.id}/cancel-schedule`,{method:"POST"});toast("Публікацію повернуто в готові");closeEditor();await refresh();},"Скасовуємо…");
   document.querySelector("#publishDraft").onclick=async event=>{if(!confirm("Опублікувати пост зараз?"))return;await loading(event.currentTarget,async()=>{await api(`api/drafts/${state.currentDraft.id}/publish`,{method:"POST"});toast("Пост опубліковано");closeEditor();await refresh();},"Публікуємо…");};
@@ -1494,6 +1582,25 @@ function activeGenerationSignature(data = state.data) {
     .sort()
     .join("|");
 }
+function trackGenerationCompletions(previousData, nextData) {
+  const previous = new Map((previousData?.jobs || []).map(job => [Number(job.id), job]));
+  for (const job of nextData?.jobs || []) {
+    const before = previous.get(Number(job.id));
+    if (!before || !activeGenerationStatuses.has(before.status)) continue;
+    if (job.status === "ready" && job.draft_id) {
+      state.recentJobIds.add(Number(job.id));
+      state.recentDraftIds.add(Number(job.draft_id));
+      state.completedJobs = [
+        {id: job.id, draft_id: job.draft_id, title: job.topic || `Чернетка #${job.draft_id}`},
+        ...state.completedJobs.filter(item => Number(item.id) !== Number(job.id)),
+      ].slice(0, 12);
+      toast("Чернетку створено. Вона підсвічена у списку чернеток.");
+    }
+    if (job.status === "failed") {
+      toast(job.error || "Генерація зупинилася. Деталі є у сповіщеннях.", true);
+    }
+  }
+}
 function updateGenerationPolling() {
   clearTimeout(generationPollTimer);
   generationPollTimer = null;
@@ -1504,6 +1611,7 @@ function updateGenerationPolling() {
       const data = await api("api/dashboard");
       const nextSignature = activeGenerationSignature(data);
       const changed = nextSignature !== generationSignature;
+      trackGenerationCompletions(state.data, data);
       state.data = data;
       generationSignature = nextSignature;
       if (changed) {
@@ -1511,6 +1619,7 @@ function updateGenerationPolling() {
         delete state.lists.ideas;
         delete state.lists.plan;
         applyIdentity();
+        updateNotificationBadge();
         renderCurrent();
       }
     } catch (error) {
@@ -1597,7 +1706,36 @@ document.querySelectorAll("[data-settings]").forEach(node=>node.onclick=()=>{sta
 document.querySelector("#searchButton").onclick=()=>{
   showForm("Пошук",`<label class="wide">Ідеї, чернетки та розділи<input name="query" id="globalSearch" autofocus></label><div class="wide stack" id="searchResults"></div>`,async()=>{});
   const input=document.querySelector("#globalSearch"),results=document.querySelector("#searchResults");
-  input.oninput=()=>{const query=input.value.trim().toLowerCase();if(!query){results.innerHTML="";return}const rows=[...(state.data.ideas||[]).map(x=>({...x,type:"Ідея",view:"ideas"})),...(state.data.drafts||[]).map(x=>({...x,type:"Чернетка",view:"drafts"}))].filter(x=>`${plain(x.title)} ${plain(x.angle||"")} ${plain(x.caption_html||"")}`.toLowerCase().includes(query)).slice(0,8);results.innerHTML=rows.map(x=>`<button type="button" class="quick-action" data-search-view="${x.view}" data-search-draft="${x.type==="Чернетка"?x.id:""}"><span class="pill ${x.type==="Ідея"?"idea":"draft"}">${x.type}</span><span>${esc(plain(x.title))}</span></button>`).join("")||'<p class="muted">Нічого не знайдено.</p>';results.querySelectorAll("button").forEach(button=>button.onclick=()=>{document.querySelector("#formOverlay").hidden=true;if(button.dataset.searchDraft)openEditor(Number(button.dataset.searchDraft));else setView(button.dataset.searchView);});};
+  let searchTimer;
+  input.oninput=()=>{
+    clearTimeout(searchTimer);
+    const query=input.value.trim();
+    if(!query){results.innerHTML="";return}
+    results.innerHTML='<span class="skeleton"></span>';
+    searchTimer=setTimeout(async()=>{
+      try {
+        const params = new URLSearchParams({search:query,page:"1",per_page:"6"});
+        const [ideas,drafts] = await Promise.all([
+          api(`api/ideas?${params}`),
+          api(`api/drafts?${params}`),
+        ]);
+        const sectionRows = Object.entries(titles)
+          .filter(([view,meta]) => view !== "platform" || state.me?.is_super_admin)
+          .filter(([,meta]) => `${meta[0]} ${meta[1]}`.toLowerCase().includes(query.toLowerCase()))
+          .slice(0,4)
+          .map(([view,meta])=>({type:"Розділ",view,title:meta[0],text:meta[1]}));
+        const rows=[
+          ...sectionRows,
+          ...(ideas.items||[]).map(x=>({...x,type:"Ідея",view:"ideas",text:x.angle||""})),
+          ...(drafts.items||[]).map(x=>({...x,type:"Чернетка",view:"drafts",text:x.caption_plain||plain(x.caption_html||""),draftId:x.id})),
+        ].slice(0,14);
+        results.innerHTML=rows.map(x=>`<button type="button" class="quick-action" data-search-view="${x.view}" data-search-draft="${x.draftId||""}"><span class="pill ${x.type==="Ідея"?"idea":x.type==="Чернетка"?"draft":"ready"}">${x.type}</span><span><strong>${esc(plain(x.title))}</strong><small class="muted">${esc(plain(x.text||"").slice(0,100))}</small></span></button>`).join("")||'<p class="muted">Нічого не знайдено.</p>';
+        results.querySelectorAll("button").forEach(button=>button.onclick=()=>{document.querySelector("#formOverlay").hidden=true;if(button.dataset.searchDraft)openEditor(Number(button.dataset.searchDraft));else setView(button.dataset.searchView);});
+      } catch (error) {
+        results.innerHTML=`<p class="danger-text">${esc(error.message)}</p>`;
+      }
+    },260);
+  };
 };
 document.querySelector("#createButton").onclick=()=>showForm(
   "Що бажаєте створити?",
@@ -1627,12 +1765,21 @@ const guideSteps = [
   {title:"Заплануйте або опублікуйте",visual:"calendar",text:"Календар показує, коли вийде кожен матеріал. Готові чернетки можна призначити на локальну дату й час, перенести, повернути в готові або опублікувати.",points:["У модалці планування перегляньте повний текст і картинку, щоб не помилитися з постом.","Матеріали без дати зібрані ліворуч, а заплановані пости видно в календарній сітці.","Публікувати може лише користувач із відповідними permissions."]},
   {title:"Керуйте командою та результатом",visual:"team",text:"Після налаштування контенту додайте людей, призначте ролі й контролюйте витрати. Так сервіс стає не просто генератором, а робочим SaaS-процесом для команди.",points:["Viewer може тільки переглядати, Editor редагує, Publisher планує й публікує, Owner керує всім workspace.","У витратах видно AI-usage по днях, моделях і рубриках.","До цього гайда можна повернутися з кнопки «Гайд» у верхньому хедері."]},
 ];
+const guideVisualLabels = {
+  workspace: "🏠 Workspace",
+  brand: "🎨 Бренд",
+  rubrics: "▦ Рубрики",
+  ideas: "💡 Ідеї",
+  drafts: "✍ Чернетки",
+  calendar: "🗓 План",
+  team: "👥 Команда",
+};
 function guideStorageKey(){return `content-studio:guide:${state.me?.id||"guest"}:${state.me?.organization_id||"none"}`;}
 function guideDismissedKey(){return `${guideStorageKey()}:dismissed`;}
 function renderGuide(){
   const step=guideSteps[state.guideStep];
   document.querySelector("#guideTitle").textContent=step.title;
-  document.querySelector("#guideContent").innerHTML=`<div class="guide-stage"><div class="guide-copy"><div class="eyebrow">Крок ${state.guideStep+1} з ${guideSteps.length}</div><h3>${esc(step.title)}</h3><p>${esc(step.text)}</p><ul class="guide-points">${(step.points||[]).map(point=>`<li>${esc(point)}</li>`).join("")}</ul></div><div class="guide-illustration ${step.visual}"><span class="guide-orbit"></span><span class="guide-core">${state.guideStep+1}</span><i></i><i></i><i></i></div></div>`;
+  document.querySelector("#guideContent").innerHTML=`<div class="guide-stage"><div class="guide-copy"><div class="eyebrow">Крок ${state.guideStep+1} з ${guideSteps.length}</div><h3>${esc(step.title)}</h3><p>${esc(step.text)}</p><ul class="guide-points">${(step.points||[]).map(point=>`<li>${esc(point)}</li>`).join("")}</ul></div><div class="guide-illustration ${step.visual}"><span class="guide-orbit"></span><span class="guide-core">${esc(guideVisualLabels[step.visual]||step.title)}</span><i></i><i></i><i></i></div></div>`;
   document.querySelector("#guideDots").innerHTML=guideSteps.map((_,index)=>`<button class="${index===state.guideStep?"active":""}" data-guide-step="${index}" aria-label="Крок ${index+1}"></button>`).join("");
   document.querySelector("#guideBack").disabled=state.guideStep===0;
   document.querySelector("#guideNext").textContent=state.guideStep===guideSteps.length-1?"Завершити":"Далі →";

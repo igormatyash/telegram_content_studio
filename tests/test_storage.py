@@ -292,6 +292,31 @@ def test_repair_draft_markup_cleans_titles_and_restores_exact_link(tmp_path: Pat
     assert repaired["cta_options"] == '["CTA"]'
 
 
+def test_select_idea_falls_back_from_missing_legacy_rubric(tmp_path: Path) -> None:
+    repository = DraftRepository(tmp_path / "legacy-rubric.sqlite3")
+    fallback = repository.add_rubric(
+        slug="active-rubric",
+        name="Активна рубрика",
+        description="Поточна рубрика workspace.",
+    )
+    idea = repository.add_ideas(
+        [
+            {
+                "product": "Voicer",
+                "title": "Як зібрати відгуки в одному місці",
+                "angle": "Пояснити користь централізованого збору фідбеку.",
+                "planned_for": None,
+                "tone": "expert",
+            }
+        ]
+    )[0]
+
+    job = repository.select_idea(idea["id"], generation_mode="fast")
+
+    assert job.product == fallback["slug"]
+    assert repository.get_idea(idea["id"])["product"] == fallback["slug"]
+
+
 def test_custom_rubrics_and_social_variants_are_stored_per_tenant(tmp_path: Path) -> None:
     repository = DraftRepository(tmp_path / "company.sqlite3")
     rubric = repository.add_rubric(
