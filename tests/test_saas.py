@@ -111,6 +111,52 @@ def test_organization_onboarding_settings_survive_reinitialization(tmp_path) -> 
     assert restored["tone_of_voice"] == "Лаконічно та професійно"
 
 
+def test_service_updates_are_idempotent_and_filter_public_feed(tmp_path) -> None:
+    database = tmp_path / "updates.sqlite3"
+    key = Fernet.generate_key().decode()
+    saas = SaasRepository(database, key)
+
+    published = saas.create_service_update(
+        title="Нова лента оновлень",
+        body="Тут будуть нові функції та важливі повідомлення.",
+        category="release",
+        importance="success",
+        status="published",
+        pinned=True,
+        created_by_user_id=None,
+    )
+    draft = saas.create_service_update(
+        title="Чернетка",
+        body="Користувачі цього не бачать.",
+        status="draft",
+    )
+
+    public_feed = saas.list_service_updates()
+    assert [item["id"] for item in public_feed] == [published["id"]]
+    assert public_feed[0]["pinned"] == 1
+
+    admin_feed = saas.list_service_updates(include_drafts=True)
+    assert {item["id"] for item in admin_feed} == {published["id"], draft["id"]}
+
+    updated = saas.update_service_update(
+        draft["id"],
+        title="Опублікована чернетка",
+        body="Тепер видно всім.",
+        category="announcement",
+        importance="info",
+        status="published",
+        pinned=False,
+    )
+    assert updated["published_at"]
+    assert len(saas.list_service_updates()) == 2
+
+    reinitialized = SaasRepository(database, key)
+    assert {item["title"] for item in reinitialized.list_service_updates()} == {
+        "Нова лента оновлень",
+        "Опублікована чернетка",
+    }
+
+
 def test_trial_workspace_has_start_limits_and_expiration(tmp_path) -> None:
     database = tmp_path / "trial.sqlite3"
     saas = SaasRepository(database, Fernet.generate_key().decode())

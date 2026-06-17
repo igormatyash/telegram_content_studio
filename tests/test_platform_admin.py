@@ -142,7 +142,71 @@ def test_platform_routes_are_hidden_from_regular_users(tmp_path) -> None:
     assert 'id="platformNav"' in platform_page.text
     assert 'id="platformView"' in platform_page.text
     assert "data-platform-section=\"referrals\"" in platform_page.text
-    assert "static/app.js?v=13" in platform_page.text
+    assert "static/app.js?v=14" in platform_page.text
+
+
+def test_service_updates_feed_is_public_but_managed_by_platform_admin(tmp_path) -> None:
+    app = make_app(tmp_path)
+    platform = TestClient(app)
+    assert platform.post(
+        "/api/login",
+        json={"username": "platform.owner", "password": "initial-password"},
+    ).status_code == 200
+
+    created = platform.post(
+        "/api/organizations",
+        headers=HEADERS,
+        json={
+            "name": "Client Workspace",
+            "slug": "client-workspace",
+            "owner_username": "client.owner",
+            "owner_password": "client-password",
+            "owner_email": "client@example.com",
+        },
+    )
+    assert created.status_code == 200
+
+    update = platform.post(
+        "/api/platform/service-updates",
+        headers=HEADERS,
+        json={
+            "title": "Оновили календар",
+            "body": "Тепер у плануванні видно текст і візуал чернетки.",
+            "category": "fix",
+            "importance": "success",
+            "status": "published",
+            "pinned": True,
+        },
+    )
+    assert update.status_code == 200
+    assert update.json()["published_at"]
+
+    client = TestClient(app)
+    assert client.post(
+        "/api/login",
+        json={"username": "client.owner", "password": "client-password"},
+    ).status_code == 200
+    public_feed = client.get("/api/service-updates", headers=HEADERS)
+    assert public_feed.status_code == 200
+    assert public_feed.json()["items"][0]["title"] == "Оновили календар"
+    assert public_feed.json()["latest_id"] == update.json()["id"]
+
+    forbidden = client.post(
+        "/api/platform/service-updates",
+        headers=HEADERS,
+        json={
+            "title": "Не можна",
+            "body": "",
+            "category": "announcement",
+            "importance": "info",
+            "status": "published",
+        },
+    )
+    assert forbidden.status_code == 403
+
+    admin_feed = platform.get("/api/platform/service-updates", headers=HEADERS)
+    assert admin_feed.status_code == 200
+    assert admin_feed.json()["items"][0]["pinned"] == 1
 
 
 def test_company_details_include_workspaces_users_and_roles(tmp_path) -> None:

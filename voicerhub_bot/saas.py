@@ -115,6 +115,21 @@ class SaasRepository:
                     details TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
+                CREATE TABLE IF NOT EXISTS service_updates (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    body TEXT NOT NULL DEFAULT '',
+                    category TEXT NOT NULL DEFAULT 'release',
+                    importance TEXT NOT NULL DEFAULT 'info',
+                    status TEXT NOT NULL DEFAULT 'published',
+                    pinned INTEGER NOT NULL DEFAULT 0,
+                    visible_from TEXT,
+                    visible_until TEXT,
+                    created_by_user_id INTEGER,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    published_at TEXT
+                );
                 CREATE TABLE IF NOT EXISTS billing_orders (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     organization_id INTEGER NOT NULL,
@@ -201,6 +216,12 @@ class SaasRepository:
             )
             connection.execute(
                 """
+                CREATE INDEX IF NOT EXISTS idx_service_updates_feed
+                ON service_updates(status, pinned, published_at, created_at)
+                """
+            )
+            connection.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_organizations_company
                 ON organizations(company_id, active)
                 """
@@ -228,6 +249,14 @@ class SaasRepository:
             connection.execute(
                 f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
             )
+
+    @staticmethod
+    def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
+        row = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+        return row is not None
 
     @staticmethod
     def _backfill_companies(connection: sqlite3.Connection) -> None:
@@ -1291,6 +1320,154 @@ class SaasRepository:
                 LIMIT ?
                 """,
                 params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def create_service_update(
+        self,
+        *,
+        title: str,
+        body: str = "",
+        category: str = "release",
+        importance: str = "info",
+        status: str = "published",
+        pinned: bool = False,
+        visible_from: str | None = None,
+        visible_until: str | None = None,
+        created_by_user_id: int | None = None,
+    ) -> dict:
+        published_at = "CURRENT_TIMESTAMP" if status == "published" else "NULL"
+        with self._connect() as connection:
+            cursor = connection.execute(
+                f"""
+                INSERT INTO service_updates (
+                    title, body, category, importance, status, pinned,
+                    visible_from, visible_until, created_by_user_id, published_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, {published_at})
+                """,
+                (
+                    title.strip(),
+                    body.strip(),
+                    category,
+                    importance,
+                    status,
+                    1 if pinned else 0,
+                    visible_from,
+                    visible_until,
+                    created_by_user_id,
+                ),
+            )
+            update_id = int(cursor.lastrowid)
+        return self.service_update(update_id)
+
+    def update_service_update(
+        self,
+        update_id: int,
+        *,
+        title: str,
+        body: str = "",
+        category: str = "release",
+        importance: str = "info",
+        status: str = "published",
+        pinned: bool = False,
+        visible_from: str | None = None,
+        visible_until: str | None = None,
+    ) -> dict:
+        current = self.service_update(update_id)
+        published_at = current.get("published_at")
+        if status == "published" and not published_at:
+            published_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        if status != "published":
+            published_at = None
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE service_updates
+                SET title = ?, body = ?, category = ?, importance = ?,
+                    status = ?, pinned = ?, visible_from = ?, visible_until = ?,
+                    updated_at = CURRENT_TIMESTAMP, published_at = ?
+                WHERE id = ?
+                """,
+                (
+                    title.strip(),
+                    body.strip(),
+                    category,
+                    importance,
+                    status,
+                    1 if pinned else 0,
+                    visible_from,
+                    visible_until,
+                    published_at,
+                    update_id,
+                ),
+            )
+        return self.service_update(update_id)
+
+    def service_update(self, update_id: int) -> dict:
+        with self._connect() as connection:
+            if self._table_exists(connection, "users"):
+                select = """
+                    SELECT su.*, u.username created_by_username,
+                        u.display_name created_by_display_name
+                    FROM service_updates su
+                    LEFT JOIN users u ON u.id = su.created_by_user_id
+                    WHERE su.id = ?
+                    """
+            else:
+                select = """
+                    SELECT su.*, '' created_by_username,
+                        '' created_by_display_name
+                    FROM service_updates su
+                    WHERE su.id = ?
+                    """
+            row = connection.execute(
+                select,
+                (update_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError("Service update not found")
+        return dict(row)
+
+    def list_service_updates(
+        self,
+        *,
+        limit: int = 50,
+        include_drafts: bool = False,
+    ) -> list[dict]:
+        conditions = []
+        if not include_drafts:
+            conditions.extend(
+                [
+                    "su.status = 'published'",
+                    "(su.visible_from IS NULL OR su.visible_from <= CURRENT_TIMESTAMP)",
+                    "(su.visible_until IS NULL OR su.visible_until >= CURRENT_TIMESTAMP)",
+                ]
+            )
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        with self._connect() as connection:
+            if self._table_exists(connection, "users"):
+                select = """
+                    SELECT su.*, u.username created_by_username,
+                        u.display_name created_by_display_name
+                    FROM service_updates su
+                    LEFT JOIN users u ON u.id = su.created_by_user_id
+                    """
+            else:
+                select = """
+                    SELECT su.*, '' created_by_username,
+                        '' created_by_display_name
+                    FROM service_updates su
+                    """
+            rows = connection.execute(
+                f"""
+                {select}
+                {where}
+                ORDER BY su.pinned DESC,
+                    COALESCE(su.published_at, su.created_at) DESC,
+                    su.id DESC
+                LIMIT ?
+                """,
+                (max(1, min(limit, 200)),),
             ).fetchall()
         return [dict(row) for row in rows]
 

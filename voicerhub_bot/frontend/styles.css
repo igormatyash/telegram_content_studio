@@ -219,6 +219,10 @@ textarea { min-height: 112px; resize: vertical; }
 .top-actions { display: flex; gap: 9px; align-items: center; }
 .guide-header-button { gap: 8px; color: var(--primary); background: #eef2ff; border-color: #c7d2fe; }
 .guide-header-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.updates-button { position: relative; gap: 8px; color: #6d28d9; background: #faf5ff; border-color: #ddd6fe; }
+.updates-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.updates-button.has-events { color: #7c2d12; border-color: #fed7aa; background: #fff7ed; }
+.updates-button #serviceUpdatesCount { min-width: 17px; height: 17px; padding: 0 5px; display: inline-grid; place-items: center; border-radius: 99px; color: white; background: var(--danger); font-size: 9px; font-weight: 850; }
 .notification-button { position: relative; }
 .notification-button.has-events { color: #b45309; border-color: #fde68a; background: #fffbeb; }
 .notification-button #notificationCount { position: absolute; top: -5px; right: -5px; min-width: 17px; height: 17px; padding: 0 4px; display: grid; place-items: center; border: 2px solid white; border-radius: 99px; color: white; background: var(--danger); font-size: 8px; font-weight: 800; }
@@ -260,6 +264,17 @@ textarea { min-height: 112px; resize: vertical; }
 .notification-item p { margin: 5px 0; color: var(--text-2); }
 .notification-item small { color: var(--muted); }
 .notification-item button { margin-top: 10px; min-height: 31px; color: #b91c1c; border-color: #fecaca; background: #fff; font-size: 10px; }
+.update-feed-head { padding: 14px; display: flex; justify-content: space-between; gap: 12px; border: 1px solid #ddd6fe; border-radius: 13px; background: linear-gradient(135deg,#faf5ff,#eef2ff); }
+.update-feed-head p { margin: 4px 0 0; }
+.service-update-list { display: grid; gap: 12px; }
+.service-update-card { padding: 15px; border: 1px solid var(--line); border-left: 4px solid var(--primary); border-radius: 13px; background: white; box-shadow: var(--shadow-sm); }
+.service-update-card.success { border-left-color: var(--success); }
+.service-update-card.warning, .service-update-card.maintenance { border-left-color: var(--warning); }
+.service-update-card.pinned { background: linear-gradient(135deg,#ffffff,#f8f7ff); }
+.service-update-card h3 { margin: 10px 0 6px; font-size: 16px; }
+.service-update-card p { margin: 0 0 12px; color: var(--text-2); white-space: pre-wrap; }
+.service-update-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.service-update-meta span { padding: 3px 8px; border-radius: 99px; color: var(--muted); background: var(--surface-soft); font-size: 10px; font-weight: 650; }
 .toast { position: fixed; right: 18px; bottom: 18px; z-index: 100; max-width: 380px; padding: 13px 15px; border: 1px solid var(--line); border-radius: 11px; color: var(--text); background: white; box-shadow: var(--shadow); }
 .toast.error { border-color: #fecaca; }
 .system-banner { margin: -24px -32px 20px; padding: 10px 32px; color: #92400e; background: #fffbeb; border-bottom: 1px solid #fde68a; font-size: 12px; font-weight: 650; }
@@ -621,6 +636,9 @@ textarea { min-height: 112px; resize: vertical; }
   .top-actions .notification-button { display: inline-grid; flex: 0 0 auto; }
   .guide-header-button { width: 44px; padding: 0; overflow: hidden; font-size: 0; }
   .guide-header-button svg { margin: auto; }
+  .updates-button { width: 44px; padding: 0; overflow: visible; font-size: 0; }
+  .updates-button svg { margin: auto; }
+  .updates-button #serviceUpdatesCount { position: absolute; top: -5px; right: -5px; border: 2px solid white; }
   #createButton { width: 44px; padding: 0; overflow: hidden; font-size: 0; }
   #createButton::before { content: "+"; font-size: 23px; line-height: 1; }
   .content { padding: 16px 14px 36px; }
@@ -633,6 +651,7 @@ textarea { min-height: 112px; resize: vertical; }
   .modal-body { padding: 16px; }
   .modal-foot { padding: 12px 16px max(12px,env(safe-area-inset-bottom)); }
   .modal-foot button { flex: 1; }
+  .update-feed-head { flex-direction: column; }
   .idea-grid, .draft-grid, .brand-layout, .tone-boxes, .analytics-metrics { grid-template-columns: 1fr; }
   .generation-strip { grid-template-columns: 1fr; }
   .idea-card { min-height: 0; }

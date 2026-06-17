@@ -271,6 +271,23 @@ class BulkActionRequest(BaseModel):
     value: str = Field(default="", max_length=120)
 
 
+class ServiceUpdateRequest(BaseModel):
+    title: str = Field(min_length=3, max_length=160)
+    body: str = Field(default="", max_length=3000)
+    category: str = Field(
+        default="release",
+        pattern=r"^(release|fix|maintenance|announcement)$",
+    )
+    importance: str = Field(
+        default="info",
+        pattern=r"^(info|success|warning|maintenance)$",
+    )
+    status: str = Field(default="published", pattern=r"^(draft|published|archived)$")
+    pinned: bool = False
+    visible_from: str = Field(default="", max_length=32)
+    visible_until: str = Field(default="", max_length=32)
+
+
 class ScheduleRequest(BaseModel):
     scheduled_at: datetime
 
@@ -1845,6 +1862,92 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/companies")
     def companies(_: dict = Depends(authorize_super_admin)) -> list[dict]:
         return saas.list_companies()
+
+    def normalize_update_time(value: str) -> str | None:
+        value = value.strip()
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="Некоректна дата показу оновлення",
+            ) from exc
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed.strftime("%Y-%m-%d %H:%M:%S")
+
+    @app.get("/api/service-updates")
+    def service_updates(_: dict = Depends(authorize), limit: int = 30) -> dict:
+        items = saas.list_service_updates(limit=limit)
+        return {
+            "items": items,
+            "latest_id": max((int(item["id"]) for item in items), default=0),
+        }
+
+    @app.get("/api/platform/service-updates")
+    def platform_service_updates(
+        _: dict = Depends(authorize_super_admin),
+        limit: int = 100,
+    ) -> dict:
+        items = saas.list_service_updates(limit=limit, include_drafts=True)
+        return {
+            "items": items,
+            "latest_id": max((int(item["id"]) for item in items), default=0),
+        }
+
+    @app.post("/api/platform/service-updates")
+    def create_service_update(
+        payload: ServiceUpdateRequest,
+        user: dict = Depends(authorize_super_admin),
+    ) -> dict:
+        item = saas.create_service_update(
+            title=payload.title,
+            body=payload.body,
+            category=payload.category,
+            importance=payload.importance,
+            status=payload.status,
+            pinned=payload.pinned,
+            visible_from=normalize_update_time(payload.visible_from),
+            visible_until=normalize_update_time(payload.visible_until),
+            created_by_user_id=user["id"],
+        )
+        saas.audit(
+            organization_id(user),
+            user["id"],
+            "service_update_created",
+            f"{item['id']}:{item['title']}",
+        )
+        return item
+
+    @app.put("/api/platform/service-updates/{update_id}")
+    def update_service_update(
+        update_id: int,
+        payload: ServiceUpdateRequest,
+        user: dict = Depends(authorize_super_admin),
+    ) -> dict:
+        try:
+            item = saas.update_service_update(
+                update_id,
+                title=payload.title,
+                body=payload.body,
+                category=payload.category,
+                importance=payload.importance,
+                status=payload.status,
+                pinned=payload.pinned,
+                visible_from=normalize_update_time(payload.visible_from),
+                visible_until=normalize_update_time(payload.visible_until),
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Оновлення не знайдено") from exc
+        saas.audit(
+            organization_id(user),
+            user["id"],
+            "service_update_updated",
+            f"{item['id']}:{item['status']}:{item['title']}",
+        )
+        return item
 
     @app.get("/api/platform/referrals")
     def platform_referrals(

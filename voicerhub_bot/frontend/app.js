@@ -20,6 +20,7 @@ const state = {
   platformClientId: null,
   platformCompanyId: null,
   platformData: {},
+  serviceUpdates: {items: [], latest_id: 0},
   lists: {},
   selected: {},
   roles: null,
@@ -317,6 +318,31 @@ function updateNotificationBadge() {
   notificationBadge.hidden = notificationCount === 0;
   document.querySelector("#notificationsButton").classList.toggle("has-events", notificationCount > 0);
 }
+function serviceUpdatesStorageKey() {
+  return `content-studio:service-updates:last-seen:${state.me?.id || "guest"}`;
+}
+function serviceUpdateLabel(value) {
+  return ({
+    release: "Нова функція",
+    fix: "Виправлення",
+    maintenance: "Технічні роботи",
+    announcement: "Оголошення",
+  }[value] || value || "Оновлення");
+}
+function serviceUpdateDate(value) {
+  return value
+    ? new Date(String(value).replace(" ", "T") + "Z").toLocaleDateString("uk-UA", {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})
+    : "";
+}
+function updateServiceUpdatesBadge() {
+  const badge = document.querySelector("#serviceUpdatesCount");
+  const items = state.serviceUpdates?.items || [];
+  const lastSeen = Number(localStorage.getItem(serviceUpdatesStorageKey()) || 0);
+  const unread = items.filter(item => Number(item.id) > lastSeen).length;
+  badge.textContent = unread;
+  badge.hidden = unread === 0;
+  document.querySelector("#serviceUpdatesButton").classList.toggle("has-events", unread > 0);
+}
 function appPathname() {
   const normalizedBase = basePath.replace(/\/+$/, "");
   return normalizedBase && location.pathname.startsWith(normalizedBase)
@@ -486,6 +512,7 @@ function applyIdentity() {
     if (node) node.hidden = readOnly;
   });
   updateNotificationBadge();
+  updateServiceUpdatesBadge();
   renderSystemBanner();
 }
 
@@ -1448,8 +1475,8 @@ function bindEditorActions() {
 
 async function refresh(background = false) {
   try {
-    const [me, company, data, usage, referral] = await Promise.all([api("api/me"),api("api/company"),api("api/dashboard"),api("api/usage"),api("api/referrals/me")]);
-    state.me=me;state.company=company;state.data=data;state.usage=usage;state.referral=referral;
+    const [me, company, data, usage, referral, serviceUpdates] = await Promise.all([api("api/me"),api("api/company"),api("api/dashboard"),api("api/usage"),api("api/referrals/me"),api("api/service-updates")]);
+    state.me=me;state.company=company;state.data=data;state.usage=usage;state.referral=referral;state.serviceUpdates=serviceUpdates;
     if (me.is_super_admin) state.platformUsage = await api(`api/platform/usage?period=${state.platformPeriod}`);
     if (me.is_admin) state.users=await api("api/users");
     applyIdentity();
@@ -1616,6 +1643,72 @@ document.querySelector("#openGuide").onclick=()=>openGuide();
 document.querySelector("#guideBack").onclick=()=>{if(state.guideStep>0){state.guideStep--;renderGuide();}};
 document.querySelector("#guideDismiss").onclick=()=>{localStorage.setItem(guideDismissedKey(),"1");localStorage.setItem(guideStorageKey(),"done");document.querySelector("#guideOverlay").hidden=true;toast("Гайд більше не буде відкриватися автоматично. Він доступний у хедері.");};
 document.querySelector("#guideNext").onclick=()=>{if(state.guideStep<guideSteps.length-1){state.guideStep++;renderGuide();return;}localStorage.setItem(guideStorageKey(),"done");document.querySelector("#guideOverlay").hidden=true;toast("Гайд завершено. Він завжди доступний у хедері.");};
+
+function updateTimeInput(value) {
+  return value ? String(value).replace(" ", "T").slice(0, 16) : "";
+}
+function serviceUpdateFormFields(item = {}) {
+  return `<label class="wide">Заголовок<input name="title" required maxlength="160" value="${esc(item.title||"")}" placeholder="Наприклад: Оновили календар і планування постів"></label>
+    <label>Тип<select name="category">${[["release","Нова функція"],["fix","Виправлення"],["maintenance","Технічні роботи"],["announcement","Оголошення"]].map(([value,label])=>`<option value="${value}" ${item.category===value?"selected":""}>${label}</option>`).join("")}</select></label>
+    <label>Важливість<select name="importance">${[["info","Інформація"],["success","Позитивне оновлення"],["warning","Важливо"],["maintenance","Технічні роботи"]].map(([value,label])=>`<option value="${value}" ${item.importance===value?"selected":""}>${label}</option>`).join("")}</select></label>
+    <label>Статус<select name="status">${[["published","Опубліковано"],["draft","Чернетка"],["archived","Архів"]].map(([value,label])=>`<option value="${value}" ${item.status===value?"selected":""}>${label}</option>`).join("")}</select></label>
+    <label class="check-label"><input name="pinned" type="checkbox" ${item.pinned?"checked":""}> Закріпити зверху</label>
+    <label>Показувати з<input name="visible_from" type="datetime-local" value="${esc(updateTimeInput(item.visible_from))}"></label>
+    <label>Показувати до<input name="visible_until" type="datetime-local" value="${esc(updateTimeInput(item.visible_until))}"></label>
+    <label class="wide">Текст повідомлення<textarea name="body" maxlength="3000" placeholder="Коротко напишіть, що змінилось, кого це стосується і що користувачу потрібно зробити.">${esc(item.body||"")}</textarea><small class="field-help">Це побачать користувачі сервісу в ленті оновлень. Без секретів, внутрішніх технічних деталей і токенів.</small></label>`;
+}
+async function reloadServiceUpdates({platform = false} = {}) {
+  state.serviceUpdates = await api(platform && state.me?.is_super_admin ? "api/platform/service-updates" : "api/service-updates");
+  updateServiceUpdatesBadge();
+  return state.serviceUpdates;
+}
+function openServiceUpdateEditor(item = null) {
+  showForm(
+    item ? "Редагувати оновлення" : "Нове повідомлення в ленту",
+    serviceUpdateFormFields(item || {status:"published",category:"release",importance:"info"}),
+    async form => {
+      const payload = {
+        title: form.get("title"),
+        body: form.get("body"),
+        category: form.get("category"),
+        importance: form.get("importance"),
+        status: form.get("status"),
+        pinned: form.get("pinned") === "on",
+        visible_from: form.get("visible_from") || "",
+        visible_until: form.get("visible_until") || "",
+      };
+      await api(item ? `api/platform/service-updates/${item.id}` : "api/platform/service-updates", {
+        method: item ? "PUT" : "POST",
+        body: JSON.stringify(payload),
+      });
+      await reloadServiceUpdates({platform:true});
+      toast(item ? "Оновлення збережено" : "Оновлення опубліковано");
+    },
+    {submitLabel:item?"Зберегти":"Опублікувати"},
+  );
+}
+async function openServiceUpdates() {
+  const data = await reloadServiceUpdates({platform:state.me?.is_super_admin});
+  const items = data.items || [];
+  localStorage.setItem(serviceUpdatesStorageKey(), String(data.latest_id || 0));
+  updateServiceUpdatesBadge();
+  showForm(
+    "Оновлення сервісу",
+    `<div class="wide update-feed-head"><div><strong>Що нового в Content Studio</strong><p class="muted">Тут з’являються нові функції, виправлення, планові роботи та важливі оголошення.</p></div>${state.me?.is_super_admin?'<button type="button" class="primary" id="createServiceUpdate">＋ Додати повідомлення</button>':""}</div>
+    <div class="wide service-update-list">${items.map(item=>`<article class="service-update-card ${esc(item.importance)} ${item.pinned?"pinned":""}"><div class="row between"><span class="pill ${item.category==="fix"?"ready":item.importance==="warning"?"needs_changes":"idea"}">${esc(serviceUpdateLabel(item.category))}</span><small>${esc(serviceUpdateDate(item.published_at||item.created_at))}</small></div><h3>${esc(item.title)}</h3>${item.body?`<p>${esc(item.body)}</p>`:""}<div class="service-update-meta">${item.pinned?"<span>Закріплено</span>":""}${item.status!=="published"?`<span>${esc(item.status)}</span>`:""}${item.created_by_display_name||item.created_by_username?`<span>${esc(item.created_by_display_name||item.created_by_username)}</span>`:""}</div>${state.me?.is_super_admin?`<div class="row"><button type="button" data-edit-service-update="${item.id}">Редагувати</button><button type="button" data-archive-service-update="${item.id}" ${item.status==="archived"?"disabled":""}>Архівувати</button></div>`:""}</article>`).join("") || '<div class="empty-state"><h3>Оновлень ще немає</h3><p class="muted">Коли з’являться нові функції або важливі повідомлення, вони будуть тут.</p></div>'}</div>`,
+    null,
+  );
+  document.querySelector("#createServiceUpdate")?.addEventListener("click",()=>openServiceUpdateEditor());
+  document.querySelectorAll("[data-edit-service-update]").forEach(button=>button.onclick=()=>openServiceUpdateEditor(items.find(item=>String(item.id)===String(button.dataset.editServiceUpdate))));
+  document.querySelectorAll("[data-archive-service-update]").forEach(button=>button.onclick=async()=>{
+    const item = items.find(row=>String(row.id)===String(button.dataset.archiveServiceUpdate));
+    if(!item || !confirm(`Архівувати повідомлення «${item.title}»?`))return;
+    await api(`api/platform/service-updates/${item.id}`,{method:"PUT",body:JSON.stringify({...item,status:"archived",visible_from:item.visible_from||"",visible_until:item.visible_until||""})});
+    await openServiceUpdates();
+  });
+}
+document.querySelector("#serviceUpdatesButton").onclick=()=>openServiceUpdates().catch(error=>toast(error.message,true));
+
 function openNotifications() {
   const items = notificationItems({includeRead:true});
   const unreadCount = items.filter(item => !item.read).length;
