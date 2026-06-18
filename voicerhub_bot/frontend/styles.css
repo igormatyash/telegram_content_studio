@@ -408,14 +408,8 @@ textarea { min-height: 112px; resize: vertical; }
 .integration-status.success { color: #047857; background: #d1fae5; }
 .integration-status.warning { color: #92400e; background: #fef3c7; }
 .instagram-card { background: radial-gradient(circle at 100% 0,rgba(236,72,153,.13),transparent 30%),linear-gradient(145deg,#fff,#f8fafc); }
-.social-logo { width: 42px; height: 42px; flex: 0 0 auto; display: inline-grid; place-items: center; border-radius: 14px; color: white; background: linear-gradient(135deg,#6366f1,#8b5cf6); box-shadow: 0 12px 26px rgba(99,102,241,.22); }
-.social-logo svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.social-logo.telegram { background: linear-gradient(135deg,#2aabee,#229ed9); }
-.social-logo.instagram { background: radial-gradient(circle at 30% 110%,#feda75 0,#fa7e1e 25%,#d62976 52%,#962fbf 75%,#4f5bd5 100%); }
-.social-logo.facebook { background: linear-gradient(135deg,#1877f2,#0b5bd3); }
-.social-logo.whatsapp { background: linear-gradient(135deg,#25d366,#128c7e); }
-.social-logo.linkedin { background: linear-gradient(135deg,#0a66c2,#004182); }
-.social-logo.tiktok { background: linear-gradient(135deg,#111827,#020617); box-shadow: 0 12px 26px rgba(15,23,42,.25); }
+.social-logo { width: 28px; height: 28px; flex: 0 0 auto; display: inline-grid; place-items: center; color: inherit; background: transparent; box-shadow: none; }
+.social-logo svg { width: 100%; height: 100%; display: block; fill: initial; stroke: initial; stroke-width: initial; }
 .connected-account { padding: 13px; border: 1px solid var(--line); border-radius: 12px; background: white; }
 .connected-account strong, .connected-account span, .connected-account small { display: block; }
 .connected-account span { color: var(--muted); }
@@ -426,15 +420,13 @@ textarea { min-height: 112px; resize: vertical; }
 .capability.soon, .soon-card { border: 1px dashed #c7d2fe; color: #6d28d9; background: #f5f3ff; }
 .soon-grid { grid-template-columns: repeat(4,minmax(0,1fr)); }
 .soon-card { min-height: 106px; padding: 14px; border-radius: 16px; display: flex; flex-direction: column; justify-content: space-between; animation: guideFloat 4s ease-in-out infinite; }
-.soon-card .social-logo { width: 36px; height: 36px; border-radius: 12px; }
-.soon-card .social-logo svg { width: 20px; height: 20px; }
+.soon-card .social-logo { width: 24px; height: 24px; }
 .soon-card span { font-size: 10px; font-weight: 850; text-transform: uppercase; letter-spacing: .08em; }
 .publish-channels { margin-top: 14px; padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface-soft); }
 .publish-channels h3 { margin: 0 0 4px; }
 .channel-grid { grid-template-columns: repeat(2,minmax(0,1fr)); margin-top: 12px; }
 .channel-card { padding: 13px; border: 1px solid var(--line); border-radius: 12px; background: white; }
-.channel-card .social-logo { width: 36px; height: 36px; margin-bottom: 10px; border-radius: 12px; }
-.channel-card .social-logo svg { width: 20px; height: 20px; }
+.channel-card .social-logo { width: 24px; height: 24px; margin-bottom: 8px; }
 .channel-card span, .channel-card strong, .channel-card small { display: block; }
 .channel-card span { color: var(--muted); font-size: 10px; font-weight: 850; text-transform: uppercase; letter-spacing: .08em; }
 .channel-card small { margin: 5px 0 9px; color: var(--muted); }
