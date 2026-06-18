@@ -6,8 +6,10 @@ from telegram import Bot
 
 from voicerhub_bot.billing import BillingService
 from voicerhub_bot.config import Settings, get_settings
+from voicerhub_bot.instagram import instagram_configured
 from voicerhub_bot.saas import SaasRepository
-from voicerhub_bot.storage import DraftRepository
+from voicerhub_bot.social_publishing import InstagramPublisher
+from voicerhub_bot.storage import DraftRepository, TenantRepository
 from voicerhub_bot.worker import GenerationWorker
 
 
@@ -56,6 +58,12 @@ class SaaSWorker:
         self.saas = SaasRepository(settings.database_path, settings.app_encryption_key)
         self.saas.ensure_legacy_organization(channel_id=settings.telegram_channel)
         self.billing = BillingService(self.saas, settings.telegram_bot_token)
+        self.tenants = TenantRepository(settings.database_path, settings.organizations_dir)
+        self.instagram = InstagramPublisher(
+            settings=settings,
+            saas=self.saas,
+            tenants=self.tenants,
+        )
 
     async def run_forever(self) -> None:
         while True:
@@ -79,6 +87,12 @@ class SaaSWorker:
                 await self._tick_organization(organization_id)
             except Exception:
                 logger.exception("Organization %s tick failed", organization_id)
+        if instagram_configured(self.settings):
+            for job in self.saas.due_social_publish_jobs("instagram"):
+                try:
+                    await self.instagram.publish_job(int(job["id"]))
+                except Exception:
+                    logger.exception("Instagram publish job %s failed", job["id"])
 
     async def _tick_organization(self, organization_id: int) -> None:
         generated_dir, reference_dir = _organization_dirs(self.settings, organization_id)

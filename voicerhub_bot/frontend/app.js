@@ -28,6 +28,8 @@ const state = {
   completedJobs: [],
   plans: null,
   roles: null,
+  instagramIntegration: null,
+  currentPublishJobs: [],
   guideStep: 0,
 };
 let generationPollTimer = null;
@@ -340,6 +342,14 @@ function notificationItems({includeRead = false} = {}) {
     title: "Чернетку створено",
     text: job.title || job.topic || `Завдання #${job.id}`,
     action: job.draft_id ? "Натисніть у чернетках на позначку «Щойно створено», щоб швидко знайти матеріал." : "Матеріал готовий.",
+  })));
+  items.push(...(state.data?.social_publish_jobs || []).filter(job => ["failed","published"].includes(job.status)).slice(0,12).map(job => ({
+    key: `social-job:${job.id}:${job.status}`,
+    type: job.status === "failed" ? "error" : "success",
+    jobId: null,
+    title: job.status === "failed" ? "Instagram не опублікував пост" : "Instagram-публікацію створено",
+    text: job.status === "failed" ? (job.error || "Meta повернула помилку без деталей.") : (job.permalink || `Чернетка #${job.draft_id}`),
+    action: job.status === "failed" ? "Відкрийте чернетку, перевірте зображення та підключення Instagram." : "Публікація доступна у підключеному Instagram акаунті.",
   })));
   const expiry = state.company?.plan_expires_at
     ? Math.ceil((new Date(state.company.plan_expires_at) - new Date()) / 86400000)
@@ -844,7 +854,8 @@ function renderCalendar() {
     const day = new Date(start); day.setDate(start.getDate()+i);
     const key = localDateKey(day);
     const events = drafts.filter(x => x.scheduled_at && localDateKey(x.scheduled_at)===key);
-    cells.push(`<div class="calendar-day ${day.getMonth()!==month?"outside":""} ${key===localDateKey(new Date())?"today":""}"><strong>${day.getDate()}</strong>${events.map(x=>`<button class="calendar-event" data-open-draft="${x.id}">${new Date(x.scheduled_at).toLocaleTimeString("uk-UA",{hour:"2-digit",minute:"2-digit"})} · ${esc(plain(x.title))}</button>`).join("")}</div>`);
+    const socialEvents = (state.data.social_publish_jobs||[]).filter(x => x.scheduled_at && localDateKey(x.scheduled_at)===key);
+    cells.push(`<div class="calendar-day ${day.getMonth()!==month?"outside":""} ${key===localDateKey(new Date())?"today":""}"><strong>${day.getDate()}</strong>${events.map(x=>`<button class="calendar-event" data-open-draft="${x.id}">${new Date(x.scheduled_at).toLocaleTimeString("uk-UA",{hour:"2-digit",minute:"2-digit"})} · ${esc(plain(x.title))}</button>`).join("")}${socialEvents.map(job=>{const draft=drafts.find(item=>Number(item.id)===Number(job.draft_id));return `<button class="calendar-event instagram" data-open-draft="${job.draft_id}">${new Date(job.scheduled_at).toLocaleTimeString("uk-UA",{hour:"2-digit",minute:"2-digit"})} · Instagram · ${esc(plain(draft?.title||`Чернетка #${job.draft_id}`))}</button>`}).join("")}</div>`);
   }
   document.querySelector("#calendarGrid").innerHTML = ["Пн","Вт","Ср","Чт","Пт","Сб","Нд"].map(x=>`<div class="calendar-weekday">${x}</div>`).join("")+cells.join("");
   document.querySelectorAll("[data-open-draft]").forEach(node => node.onclick = () => openEditor(Number(node.dataset.openDraft)));
@@ -1179,7 +1190,14 @@ function renderSettings() {
     const disabled = referral.status === "disabled";
     target.innerHTML = `<article class="card settings-card"><div class="eyebrow">Реферальна програма</div><h2>Запрошуйте нових користувачів</h2><p class="muted">Поділіться персональним посиланням. Тут відображається лише ваша статистика в поточному workspace.</p><div class="referral-link"><input id="referralUrl" readonly value="${esc(referral.url||"")}"><button id="copyReferral" ${disabled?"disabled":""}>Скопіювати посилання</button></div>${disabled?'<div class="callout warning"><strong>Посилання вимкнено</strong><p>Оновіть код, щоб знову приймати реферальні переходи.</p></div>':""}<div class="analytics-metrics" style="margin-top:18px"><div class="card metric"><span>Переходи</span><strong>${Number(referral.clicks||0)}</strong></div><div class="card metric"><span>Реєстрації</span><strong>${Number(referral.signups||0)}</strong></div><div class="card metric"><span>Активні клієнти</span><strong>${Number(referral.active_clients||0)}</strong></div><div class="card metric"><span>Статус</span><strong style="font-size:18px">${disabled?"Вимкнено":"Активне"}</strong></div></div><div class="row"><button id="rotateReferral">Оновити код</button><button class="danger" id="disableReferral" ${disabled?"disabled":""}>Вимкнути посилання</button></div></article>`;
   }
-  else if (state.settingsTab === "integrations") target.innerHTML = `<article class="card settings-card"><div class="eyebrow">Telegram</div><h2>Підключення каналу</h2><p class="muted">1. Створіть бота через @BotFather. 2. Додайте його адміністратором каналу. 3. Вкажіть @username каналу та token.</p><div class="form-grid"><label>Channel username<input id="telegramChannel" placeholder="@company_channel" value="${esc(state.company.telegram?.channel_id||"")}"><small class="field-help">Канал має бути публічним або доступним боту.</small></label><label>Bot token<input id="telegramToken" type="password" placeholder="123456789:AA..."><small class="field-help">Token зберігається зашифрованим і не показується повторно.</small></label></div><div class="connection-status ${state.company.telegram?.connected?"success":""}" id="telegramStatus">${state.company.telegram?.connected?`Підключено: @${esc(state.company.telegram.bot_username||"bot")}`:"Введіть дані для автоматичної перевірки."}</div><div class="row" style="margin-top:14px"><button id="testTelegram">Перевірити підключення</button><button class="primary" id="saveTelegram">Перевірити та зберегти</button></div></article>`;
+  else if (state.settingsTab === "integrations") {
+    if(!state.instagramIntegration){target.innerHTML='<span class="skeleton"></span>';api("api/integrations/instagram/status").then(data=>{state.instagramIntegration=data;renderSettings();}).catch(error=>toast(error.message,true));return;}
+    const ig = state.instagramIntegration;
+    const connected = ig.connected && ig.connection;
+    target.innerHTML = `<div class="integrations-stack"><article class="card settings-card integration-card"><div class="integration-head"><div><div class="eyebrow">Telegram</div><h2>Підключення каналу</h2><p class="muted">1. Створіть бота через @BotFather. 2. Додайте його адміністратором каналу. 3. Вкажіть @username каналу та token.</p></div><span class="integration-status ${state.company.telegram?.connected?"success":""}">${state.company.telegram?.connected?"Підключено":"Не підключено"}</span></div><div class="form-grid"><label>Channel username<input id="telegramChannel" placeholder="@company_channel" value="${esc(state.company.telegram?.channel_id||"")}"><small class="field-help">Канал має бути публічним або доступним боту.</small></label><label>Bot token<input id="telegramToken" type="password" placeholder="123456789:AA..."><small class="field-help">Token зберігається зашифрованим і не показується повторно.</small></label></div><div class="connection-status ${state.company.telegram?.connected?"success":""}" id="telegramStatus">${state.company.telegram?.connected?`Підключено: @${esc(state.company.telegram.bot_username||"bot")}`:"Введіть дані для автоматичної перевірки."}</div><div class="row" style="margin-top:14px"><button id="testTelegram">Перевірити підключення</button><button class="primary" id="saveTelegram">Перевірити та зберегти</button></div></article>
+    <article class="card settings-card integration-card instagram-card"><div class="integration-head"><div><div class="eyebrow">Instagram</div><h2>Instagram Feed</h2><p class="muted">Публікуйте готові візуальні пости у Instagram Feed. Reels і Carousel вже закладені в інтерфейс, але будуть увімкнені після окремого медіа-модуля.</p></div><span class="integration-status ${connected?"success":ig.setup_required?"warning":""}">${connected?"Підключено":ig.setup_required?"Потрібен Meta App":"Готово до підключення"}</span></div>${connected?`<div class="connected-account"><strong>@${esc(ig.connection.username||ig.connection.external_account_id)}</strong><span>${esc(ig.connection.page_name||"Facebook Page")} · ${esc(ig.connection.account_type||"Business")}</span>${ig.connection.last_error?`<small class="danger-text">${esc(ig.connection.last_error)}</small>`:""}</div>`:ig.setup_required?`<div class="callout warning"><strong>Instagram ще не активовано на платформі</strong><p>Додайте META_APP_ID, META_APP_SECRET, PUBLIC_APP_URL/META_REDIRECT_URI та увімкніть INSTAGRAM_ENABLED. Telegram працює без змін.</p><small class="muted">Бракує: ${esc((ig.missing||[]).join(", ")||"Meta credentials")}</small></div>`:`<div class="callout"><strong>Потрібен Instagram Business або Creator</strong><p>Підключення відбувається через Facebook Login і прив’язану Facebook Page.</p></div>`}<div class="capability-grid"><span class="capability active">Feed image</span><span class="capability soon">Reels скоро</span><span class="capability soon">Carousel скоро</span></div><div class="row" style="margin-top:14px">${connected?`<button class="danger" id="disconnectInstagram">Відключити Instagram</button>`:`<button class="primary" id="connectInstagram" ${ig.setup_required?"disabled":""}>Підключити Instagram</button>`}</div></article>
+    <article class="card settings-card integration-card"><div class="eyebrow">Скоро з’являться</div><h2>Більше соцмереж</h2><p class="muted">Ми готуємо публікації в інші канали без dead controls: картки нижче лише показують roadmap.</p><div class="soon-grid">${(ig.soon||[]).map(item=>`<div class="soon-card"><strong>${esc(item.label)}</strong><span>Скоро</span></div>`).join("")}</div></article></div>`;
+  }
   else target.innerHTML = `<article class="card settings-card"><h2>Безпека</h2><p class="muted">Змініть пароль або створіть одноразове посилання через адміністратора workspace.</p><div class="form-grid"><label>Новий пароль<input id="ownPassword" type="password" minlength="10"></label></div><button class="primary" id="changePassword" style="margin-top:14px">Змінити пароль</button></article>`;
   bindSettingsActions();
 }
@@ -1188,6 +1206,15 @@ async function openEditor(id, push = true) {
   try {
     const draft = await api(`api/drafts/${id}`);
     state.currentDraft = draft;
+    state.currentPublishJobs = await api(`api/drafts/${id}/publish-jobs`).catch(()=>[]);
+    const instagram = state.instagramIntegration || await api("api/integrations/instagram/status").catch(()=>null);
+    state.instagramIntegration = instagram;
+    const latestInstagramJob = (state.currentPublishJobs||[]).find(job=>job.platform==="instagram");
+    const instagramConnected = instagram?.connected;
+    const instagramStatus = latestInstagramJob
+      ? `${statusLabels[latestInstagramJob.status] || latestInstagramJob.status}${latestInstagramJob.permalink ? " · є permalink" : ""}`
+      : instagramConnected ? "Готово до публікації у Feed" : "Не підключено";
+    const publishChannels = `<section class="publish-channels"><div><h3>Канали публікації</h3><p class="muted">Telegram працює як раніше. Instagram — окрема публікація, яка не змінює статус Telegram-поста.</p></div><div class="channel-grid"><article class="channel-card active"><span>Telegram</span><strong>${esc(state.company.telegram?.channel_id||"Підключений канал")}</strong><small>Кнопки «Запланувати» та «Опублікувати» зверху керують Telegram.</small></article><article class="channel-card ${instagramConnected?"active":""}"><span>Instagram Feed</span><strong>${esc(instagramStatus)}</strong><small>${latestInstagramJob?.error?esc(latestInstagramJob.error):"Одиночне зображення + caption."}</small>${instagramConnected?`<div class="row"><button type="button" id="publishInstagram" ${draft.image_path?"":"disabled title=\"Спочатку потрібен візуал\""}>Опублікувати</button><button type="button" id="scheduleInstagram" ${draft.image_path?"":"disabled title=\"Спочатку потрібен візуал\""}>Запланувати</button></div>`:`<button type="button" disabled>Підключіть Instagram</button>`}</article><article class="channel-card soon"><span>Reels</span><strong>Скоро</strong><small>Потрібен відео-модуль.</small></article><article class="channel-card soon"><span>Carousel</span><strong>Скоро</strong><small>Потрібно кілька медіа в чернетці.</small></article></div></section>`;
     if (push) {
       history.pushState(
         {draftId:id,fromView:state.view,pushed:true},
@@ -1196,7 +1223,7 @@ async function openEditor(id, push = true) {
       );
     }
     const target = document.querySelector("#editorContent");
-    target.innerHTML = `<header class="editor-header"><div class="row editor-title-row"><button id="closeEditor">←</button><div>${pill(draft.status)} <strong style="margin-left:8px">${esc(plain(draft.title))}</strong></div></div><div class="row editor-actions"><button id="regenText">Перегенерувати текст</button><button id="saveDraft">Зберегти</button><button id="scheduleDraft" ${draft.image_path?"":"disabled title=\"Спочатку потрібен візуал\""}>Запланувати</button><button class="primary" id="publishDraft" ${["ready","scheduled"].includes(draft.status)?"":"disabled title=\"Спочатку погодьте матеріал\""}>Опублікувати</button></div></header><div class="editor-grid"><form class="editor-form" id="editorForm"><div class="status-actions">${(statusActions[draft.status]||[]).map(([next,label])=>`<button type="button" data-editor-status="${next}">${label}</button>`).join("")}</div><div class="form-grid"><label>Рубрика<input value="${esc(draft.product)}" disabled></label><label>Дата і час<input id="scheduleAt" type="datetime-local" value="${localDateTimeValue(draft.scheduled_at)}"></label></div><label>Заголовок для поста<input id="editorTitle" value="${esc(decodeHtmlMarkup(draft.title))}"></label><label>Заголовок на візуалі<input id="editorVisualTitle" value="${esc(decodeHtmlMarkup(draft.visual_title||draft.title))}"><small class="muted">Без emoji та зайвих символів.</small></label><label>Текст публікації<textarea id="editorCaption" style="min-height:330px">${esc(decodeHtmlMarkup(draft.caption_html))}</textarea></label><label>Посилання<input id="editorLink" value="${esc(draft.link_url||"")}"></label><div class="row editor-secondary-actions"><button type="button" id="cancelSchedule" ${draft.status==="scheduled"?"":"hidden"}>Повернути в готові</button></div></form><aside class="editor-preview"><div class="editor-preview-card"><div class="row"><span class="workspace-logo" style="width:30px;height:30px">${initials(state.company.name)}</span><div><strong>${esc(state.company.name)}</strong><small style="display:block;color:#94a3b8">Telegram</small></div></div><img src="${apiUrl(`api/drafts/${id}/image`)}" alt="" onerror="this.style.display='none'"><h2 id="previewTitle">${esc(plain(draft.visual_title||draft.title))}</h2><div id="previewText" class="telegram-preview-text">${safeHtml(draft.caption_html)}</div></div></aside></div>`;
+    target.innerHTML = `<header class="editor-header"><div class="row editor-title-row"><button id="closeEditor">←</button><div>${pill(draft.status)} <strong style="margin-left:8px">${esc(plain(draft.title))}</strong></div></div><div class="row editor-actions"><button id="regenText">Перегенерувати текст</button><button id="saveDraft">Зберегти</button><button id="scheduleDraft" ${draft.image_path?"":"disabled title=\"Спочатку потрібен візуал\""}>Запланувати</button><button class="primary" id="publishDraft" ${["ready","scheduled"].includes(draft.status)?"":"disabled title=\"Спочатку погодьте матеріал\""}>Опублікувати</button></div></header><div class="editor-grid"><form class="editor-form" id="editorForm"><div class="status-actions">${(statusActions[draft.status]||[]).map(([next,label])=>`<button type="button" data-editor-status="${next}">${label}</button>`).join("")}</div><div class="form-grid"><label>Рубрика<input value="${esc(draft.product)}" disabled></label><label>Дата і час<input id="scheduleAt" type="datetime-local" value="${localDateTimeValue(draft.scheduled_at)}"></label></div><label>Заголовок для поста<input id="editorTitle" value="${esc(decodeHtmlMarkup(draft.title))}"></label><label>Заголовок на візуалі<input id="editorVisualTitle" value="${esc(decodeHtmlMarkup(draft.visual_title||draft.title))}"><small class="muted">Без emoji та зайвих символів.</small></label><label>Текст публікації<textarea id="editorCaption" style="min-height:330px">${esc(decodeHtmlMarkup(draft.caption_html))}</textarea></label><label>Посилання<input id="editorLink" value="${esc(draft.link_url||"")}"></label>${publishChannels}<div class="row editor-secondary-actions"><button type="button" id="cancelSchedule" ${draft.status==="scheduled"?"":"hidden"}>Повернути в готові</button></div></form><aside class="editor-preview"><div class="editor-preview-card"><div class="row"><span class="workspace-logo" style="width:30px;height:30px">${initials(state.company.name)}</span><div><strong>${esc(state.company.name)}</strong><small style="display:block;color:#94a3b8">Telegram</small></div></div><img src="${apiUrl(`api/drafts/${id}/image`)}" alt="" onerror="this.style.display='none'"><h2 id="previewTitle">${esc(plain(draft.visual_title||draft.title))}</h2><div id="previewText" class="telegram-preview-text">${safeHtml(draft.caption_html)}</div></div></aside></div>`;
     document.querySelector("#editorOverlay").hidden = false;
     bindEditorActions();
   } catch (error) { toast(error.message,true); }
@@ -1535,6 +1562,18 @@ function bindSettingsActions() {
     toast("Telegram підключено");
     await refresh();
   });
+  document.querySelector("#connectInstagram")?.addEventListener("click",async event=>{
+    const result = await loading(event.currentTarget,()=>api("api/integrations/instagram/connect-url",{method:"POST"}),"Готуємо Meta Login…");
+    if (!result.url) return toast(result.message || "Instagram ще не налаштовано", true);
+    location.href = result.url;
+  });
+  document.querySelector("#disconnectInstagram")?.addEventListener("click",async event=>{
+    if(!confirm("Відключити Instagram для цього workspace? Telegram залишиться підключеним."))return;
+    await loading(event.currentTarget,()=>api("api/integrations/instagram",{method:"DELETE"}),"Відключаємо…");
+    state.instagramIntegration=null;
+    toast("Instagram відключено");
+    renderSettings();
+  });
   document.querySelector("#changePassword")?.addEventListener("click",async()=>{await api("api/account/password",{method:"PUT",body:JSON.stringify({password:document.querySelector("#ownPassword").value})});location.href=`${basePath}/`;});
 }
 async function runUserBulk(action) {
@@ -1559,12 +1598,31 @@ function bindEditorActions() {
   document.querySelector("#scheduleDraft").onclick=async event=>{const value=document.querySelector("#scheduleAt").value;if(!value)return toast("Оберіть дату і час",true);await loading(event.currentTarget,async()=>{await api(`api/drafts/${state.currentDraft.id}/schedule`,{method:"POST",body:JSON.stringify({scheduled_at:new Date(value).toISOString()})});toast("Публікацію заплановано");closeEditor();await refresh();},"Плануємо…");};
   document.querySelector("#cancelSchedule").onclick=async event=>loading(event.currentTarget,async()=>{await api(`api/drafts/${state.currentDraft.id}/cancel-schedule`,{method:"POST"});toast("Публікацію повернуто в готові");closeEditor();await refresh();},"Скасовуємо…");
   document.querySelector("#publishDraft").onclick=async event=>{if(!confirm("Опублікувати пост зараз?"))return;await loading(event.currentTarget,async()=>{await api(`api/drafts/${state.currentDraft.id}/publish`,{method:"POST"});toast("Пост опубліковано");closeEditor();await refresh();},"Публікуємо…");};
+  document.querySelector("#publishInstagram")?.addEventListener("click",async event=>{
+    if(!confirm("Опублікувати цей пост в Instagram Feed? Telegram-публікація не зміниться."))return;
+    await loading(event.currentTarget,async()=>{
+      const job = await api(`api/drafts/${state.currentDraft.id}/instagram/publish`,{method:"POST"});
+      toast(job.permalink ? "Пост опубліковано в Instagram" : "Instagram-публікацію створено");
+      await refresh(true);
+      await openEditor(state.currentDraft.id,false);
+    },"Публікуємо в Instagram…");
+  });
+  document.querySelector("#scheduleInstagram")?.addEventListener("click",async event=>{
+    const value = document.querySelector("#scheduleAt").value;
+    if(!value)return toast("Оберіть дату і час для Instagram",true);
+    await loading(event.currentTarget,async()=>{
+      await api(`api/drafts/${state.currentDraft.id}/instagram/schedule`,{method:"POST",body:JSON.stringify({scheduled_at:new Date(value).toISOString()})});
+      toast("Instagram Feed заплановано");
+      await refresh(true);
+      await openEditor(state.currentDraft.id,false);
+    },"Плануємо Instagram…");
+  });
 }
 
 async function refresh(background = false) {
   try {
-    const [me, company, data, usage, referral, serviceUpdates] = await Promise.all([api("api/me"),api("api/company"),api("api/dashboard"),api("api/usage"),api("api/referrals/me"),api("api/service-updates")]);
-    state.me=me;state.company=company;state.data=data;state.usage=usage;state.referral=referral;state.serviceUpdates=serviceUpdates;
+    const [me, company, data, usage, referral, serviceUpdates, instagram] = await Promise.all([api("api/me"),api("api/company"),api("api/dashboard"),api("api/usage"),api("api/referrals/me"),api("api/service-updates"),api("api/integrations/instagram/status")]);
+    state.me=me;state.company=company;state.data=data;state.usage=usage;state.referral=referral;state.serviceUpdates=serviceUpdates;state.instagramIntegration=instagram;
     if (me.is_super_admin) state.platformUsage = await api(`api/platform/usage?period=${state.platformPeriod}`);
     if (me.is_admin) state.users=await api("api/users");
     applyIdentity();

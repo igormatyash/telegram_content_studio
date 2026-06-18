@@ -41,6 +41,15 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     google_client_secret: str = ""
     google_redirect_uri: str = ""
+    instagram_enabled: bool = False
+    meta_app_id: str = ""
+    meta_app_secret: str = ""
+    meta_redirect_uri: str = ""
+    meta_graph_version: str = "v24.0"
+    meta_instagram_scopes: str = (
+        "pages_show_list,pages_read_engagement,"
+        "instagram_basic,instagram_content_publish"
+    )
     privacy_hash_salt: str = ""
 
     model_config = SettingsConfigDict(

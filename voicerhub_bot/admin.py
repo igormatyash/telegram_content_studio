@@ -1,5 +1,8 @@
 from io import BytesIO
 from datetime import date, datetime, timedelta, timezone
+import base64
+import hashlib
+import hmac
 import html
 import json
 from pathlib import Path
@@ -44,6 +47,15 @@ from voicerhub_bot.content_tools import (
 from voicerhub_bot.ideas import IdeaGenerator
 from voicerhub_bot.images import ImageGenerator
 from voicerhub_bot.formatting import sanitize_preview_html, strip_formatting
+from voicerhub_bot.instagram import (
+    InstagramApiError,
+    InstagramSetupError,
+    MetaInstagramClient,
+    instagram_configured,
+    instagram_connect_url,
+    instagram_redirect_uri,
+    verify_media_signature,
+)
 from voicerhub_bot.permissions import (
     ROLE_LABELS,
     WORKSPACE_ROLES,
@@ -61,6 +73,7 @@ from voicerhub_bot.rendering import (
 from voicerhub_bot.referrals import ReferralRepository
 from voicerhub_bot.saas import SaasRepository
 from voicerhub_bot.slugs import generate_slug
+from voicerhub_bot.social_publishing import InstagramPublisher
 from voicerhub_bot.storage import DraftRepository, TenantRepository
 from voicerhub_bot.visual_templates import DEFAULT_TEMPLATE_ID, VISUAL_TEMPLATES
 
@@ -288,6 +301,10 @@ class ScheduleRequest(BaseModel):
     scheduled_at: datetime
 
 
+class InstagramScheduleRequest(BaseModel):
+    scheduled_at: datetime
+
+
 class LoginRequest(BaseModel):
     username: str = Field(min_length=3, max_length=50)
     password: str = Field(min_length=1, max_length=200)
@@ -485,6 +502,79 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not base:
             base = settings.admin_base_path.rstrip("/")
         return f"{base}/{path.lstrip('/')}"
+
+    def instagram_setup_status() -> dict:
+        configured = instagram_configured(settings)
+        missing = []
+        if not settings.instagram_enabled:
+            missing.append("INSTAGRAM_ENABLED")
+        if not settings.meta_app_id:
+            missing.append("META_APP_ID")
+        if not settings.meta_app_secret:
+            missing.append("META_APP_SECRET")
+        if not settings.public_app_url and not settings.meta_redirect_uri:
+            missing.append("PUBLIC_APP_URL або META_REDIRECT_URI")
+        return {
+            "enabled": bool(settings.instagram_enabled),
+            "configured": configured,
+            "setup_required": not configured,
+            "missing": missing,
+            "scopes": [
+                item.strip()
+                for item in settings.meta_instagram_scopes.split(",")
+                if item.strip()
+            ],
+            "graph_version": settings.meta_graph_version,
+            "supports": {
+                "feed_image": configured,
+                "reels": False,
+                "carousel": False,
+            },
+        }
+
+    def oauth_secret() -> bytes:
+        return (
+            settings.app_encryption_key
+            or settings.privacy_hash_salt
+            or settings.admin_password
+            or settings.product_name
+        ).encode()
+
+    def sign_instagram_state(user: dict) -> str:
+        payload = {
+            "nonce": uuid4().hex,
+            "user_id": int(user["id"]),
+            "organization_id": organization_id(user),
+            "ts": int(datetime.now(timezone.utc).timestamp()),
+        }
+        raw = base64.urlsafe_b64encode(
+            json.dumps(payload, separators=(",", ":")).encode()
+        ).decode().rstrip("=")
+        signature = hmac.new(oauth_secret(), raw.encode(), hashlib.sha256).hexdigest()
+        return f"{raw}.{signature}"
+
+    def verify_instagram_state(state: str, cookie_state: str, user: dict | None = None) -> dict:
+        if not state or not cookie_state or state != cookie_state or "." not in state:
+            raise HTTPException(status_code=400, detail="Instagram OAuth state недійсний")
+        raw, signature = state.rsplit(".", 1)
+        expected = hmac.new(oauth_secret(), raw.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, signature):
+            raise HTTPException(status_code=400, detail="Instagram OAuth state недійсний")
+        try:
+            payload = json.loads(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)))
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=400, detail="Instagram OAuth state пошкоджено") from exc
+        if int(datetime.now(timezone.utc).timestamp()) - int(payload.get("ts") or 0) > 15 * 60:
+            raise HTTPException(status_code=400, detail="Instagram OAuth state застарів")
+        if user and int(payload.get("user_id") or 0) != int(user["id"]):
+            raise HTTPException(status_code=403, detail="Instagram OAuth належить іншому користувачу")
+        return payload
+
+    instagram_publisher = InstagramPublisher(
+        settings=settings,
+        saas=saas,
+        tenants=repository,
+    )
 
     def request_ip(request: Request) -> str:
         forwarded = request.headers.get("x-forwarded-for", "")
@@ -3130,6 +3220,182 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict:
         return await validate_telegram_connection(payload)
 
+    @app.get("/api/integrations/instagram/status")
+    def instagram_status(user: dict = Depends(authorize)) -> dict:
+        current_organization_id = organization_id(user)
+        setup = instagram_setup_status()
+        try:
+            connection = saas.social_connection_by_platform(
+                current_organization_id,
+                "instagram",
+                include_token=False,
+            )
+        except KeyError:
+            connection = None
+        return {
+            **setup,
+            "connected": bool(connection and connection.get("active")),
+            "connection": connection,
+            "soon": [
+                {"platform": "facebook", "label": "Facebook", "status": "soon"},
+                {"platform": "whatsapp", "label": "WhatsApp", "status": "soon"},
+                {"platform": "linkedin", "label": "LinkedIn", "status": "soon"},
+                {"platform": "tiktok", "label": "TikTok", "status": "soon"},
+            ],
+        }
+
+    @app.post("/api/integrations/instagram/connect-url")
+    def instagram_connect(
+        response: Response,
+        user: dict = Depends(require_permission("channels.manage")),
+    ) -> dict:
+        setup = instagram_setup_status()
+        if setup["setup_required"]:
+            return {
+                **setup,
+                "url": "",
+                "message": "Meta App ще не налаштовано. Telegram працює без змін.",
+            }
+        try:
+            state = sign_instagram_state(user)
+            url = instagram_connect_url(settings, state)
+        except InstagramSetupError as exc:
+            return {**setup, "setup_required": True, "url": "", "message": str(exc)}
+        response.set_cookie(
+            "instagram_oauth_state",
+            state,
+            max_age=15 * 60,
+            httponly=True,
+            samesite="lax",
+            secure=settings.session_cookie_secure,
+        )
+        return {"url": url, "setup_required": False}
+
+    @app.get("/oauth/instagram/callback")
+    async def instagram_callback(
+        request: Request,
+        response: Response,
+        code: str = "",
+        state: str = "",
+        error: str = "",
+        instagram_oauth_state: str | None = Cookie(default=None),
+        voicerhub_session: str | None = Cookie(default=None),
+    ) -> RedirectResponse:
+        redirect = RedirectResponse(
+            f"{settings.admin_base_path.rstrip('/')}/settings?tab=integrations"
+        )
+        redirect.delete_cookie("instagram_oauth_state")
+        if error:
+            redirect.headers["location"] += "&instagram=error"
+            return redirect
+        user = auth.session_user(voicerhub_session)
+        if user is None:
+            redirect.headers["location"] = f"{settings.admin_base_path.rstrip('/')}/login"
+            return redirect
+        repository.use(organization_id(user))
+        if not has_permission(
+            user.get("role") or "viewer",
+            "channels.manage",
+            platform_admin=bool(user.get("is_super_admin")),
+        ):
+            raise HTTPException(status_code=403, detail="Недостатньо прав")
+        payload = verify_instagram_state(state, instagram_oauth_state or "", user)
+        setup = instagram_setup_status()
+        if setup["setup_required"]:
+            redirect.headers["location"] += "&instagram=setup"
+            return redirect
+        client = MetaInstagramClient(settings)
+        try:
+            token = await client.exchange_code(code, instagram_redirect_uri(settings))
+            long_token = await client.long_lived_token(token["access_token"])
+            account = await client.resolve_account(long_token.get("access_token") or token["access_token"])
+            expires_at = ""
+            if long_token.get("expires_in"):
+                expires_at = (
+                    datetime.now(timezone.utc)
+                    + timedelta(seconds=int(long_token["expires_in"]))
+                ).isoformat()
+            connection = saas.save_social_connection(
+                int(payload["organization_id"]),
+                platform="instagram",
+                external_account_id=account.instagram_id,
+                username=account.username,
+                display_name=account.display_name,
+                account_type=account.account_type,
+                page_id=account.page_id,
+                page_name=account.page_name,
+                access_token=account.access_token,
+                token_expires_at=expires_at,
+                permissions=account.permissions or [],
+                metadata={"source": "facebook_login"},
+            )
+            saas.audit(
+                int(payload["organization_id"]),
+                user["id"],
+                "instagram_connected",
+                connection.get("username") or connection.get("external_account_id") or "",
+                ip_address=request_ip(request),
+                user_agent=request.headers.get("user-agent", ""),
+            )
+            redirect.headers["location"] += "&instagram=connected"
+            return redirect
+        except Exception as exc:
+            try:
+                current = saas.social_connection_by_platform(
+                    int(payload["organization_id"]),
+                    "instagram",
+                    include_token=False,
+                )
+                saas.set_social_connection_error(int(current["id"]), str(exc))
+            except KeyError:
+                pass
+            redirect.headers["location"] += "&instagram=error"
+            return redirect
+
+    @app.delete("/api/integrations/instagram")
+    def instagram_disconnect(
+        user: dict = Depends(require_permission("channels.manage")),
+    ) -> dict:
+        try:
+            connection = saas.disable_social_connection(organization_id(user), "instagram")
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Instagram не підключено") from exc
+        saas.audit(organization_id(user), user["id"], "instagram_disconnected")
+        return connection
+
+    @app.get("/media/instagram/{draft_id}")
+    def instagram_media(
+        draft_id: int,
+        org: int,
+        exp: int,
+        sig: str,
+        variant: str = "",
+    ) -> FileResponse:
+        if not verify_media_signature(
+            settings,
+            organization_id=org,
+            draft_id=draft_id,
+            variant=variant,
+            expires_at=exp,
+            signature=sig,
+        ):
+            raise HTTPException(status_code=403, detail="Media URL недійсний або застарів")
+        repo = repository.for_organization(org)
+        if variant == "instagram":
+            try:
+                media_path = Path(repo.get_social_variant(draft_id, "instagram")["image_path"])
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail="Зображення не знайдено") from exc
+        else:
+            try:
+                media_path = Path(repo.draft_record(draft_id)["image_path"])
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail="Чернетку не знайдено") from exc
+        if not media_path.is_file():
+            raise HTTPException(status_code=404, detail="Файл зображення відсутній")
+        media_type = "image/jpeg" if media_path.suffix.lower() in {".jpg", ".jpeg"} else "image/png"
+        return FileResponse(media_path, media_type=media_type)
+
     @app.patch("/api/users/{user_id}")
     def update_user(
         user_id: int,
@@ -3234,6 +3500,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def dashboard_data(_: dict = Depends(authorize)) -> dict:
         data = repository.dashboard()
         data["rubrics"] = repository.list_rubrics(include_inactive=True)
+        data["social_publish_jobs"] = saas.list_social_publish_jobs(
+            repository.organization_id,
+            limit=100,
+        )
         data["templates"] = [
             {**item, "custom": False, "has_preview": True}
             for item in VISUAL_TEMPLATES
@@ -4547,6 +4817,91 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             str(draft_id),
         )
         return {"message_id": message.message_id}
+
+    @app.get("/api/drafts/{draft_id}/publish-jobs")
+    def draft_publish_jobs(
+        draft_id: int,
+        user: dict = Depends(authorize),
+    ) -> list[dict]:
+        try:
+            repository.draft_record(draft_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Чернетку не знайдено") from exc
+        return saas.list_social_publish_jobs(
+            organization_id(user),
+            draft_id=draft_id,
+            limit=50,
+        )
+
+    @app.post("/api/drafts/{draft_id}/instagram/publish")
+    async def publish_instagram_draft(
+        draft_id: int,
+        user: dict = Depends(require_permission("content.publish")),
+    ) -> dict:
+        setup = instagram_setup_status()
+        if setup["setup_required"]:
+            raise HTTPException(
+                status_code=409,
+                detail="Instagram ще не налаштовано. Telegram працює без змін.",
+            )
+        try:
+            job = instagram_publisher.create_job_for_draft(
+                organization_id=organization_id(user),
+                draft_id=draft_id,
+                scheduled_at=None,
+                status="queued",
+                created_by_user_id=user["id"],
+            )
+            result = await instagram_publisher.publish_job(int(job["id"]))
+            saas.audit(
+                organization_id(user),
+                user["id"],
+                "instagram_published",
+                str(draft_id),
+            )
+            return result
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Instagram не підключено") from exc
+        except InstagramApiError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.post("/api/drafts/{draft_id}/instagram/schedule")
+    def schedule_instagram_draft(
+        draft_id: int,
+        payload: InstagramScheduleRequest,
+        user: dict = Depends(require_permission("content.schedule")),
+    ) -> dict:
+        setup = instagram_setup_status()
+        if setup["setup_required"]:
+            raise HTTPException(
+                status_code=409,
+                detail="Instagram ще не налаштовано. Telegram працює без змін.",
+            )
+        scheduled_at = payload.scheduled_at
+        if scheduled_at.tzinfo is None:
+            scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+        scheduled_at = scheduled_at.astimezone(timezone.utc)
+        if scheduled_at <= datetime.now(timezone.utc):
+            raise HTTPException(status_code=422, detail="Час публікації має бути в майбутньому")
+        try:
+            job = instagram_publisher.create_job_for_draft(
+                organization_id=organization_id(user),
+                draft_id=draft_id,
+                scheduled_at=scheduled_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                status="scheduled",
+                created_by_user_id=user["id"],
+            )
+            saas.audit(
+                organization_id(user),
+                user["id"],
+                "instagram_scheduled",
+                f"{draft_id}:{job['scheduled_at']}",
+            )
+            return job
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Instagram не підключено") from exc
+        except InstagramApiError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/drafts/{draft_id}/schedule")
     def schedule_draft(

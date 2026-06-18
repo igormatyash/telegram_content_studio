@@ -1,4 +1,5 @@
 import hashlib
+import json
 import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -130,6 +131,50 @@ class SaasRepository:
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     published_at TEXT
                 );
+                CREATE TABLE IF NOT EXISTS social_connections (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    organization_id INTEGER NOT NULL,
+                    platform TEXT NOT NULL,
+                    external_account_id TEXT NOT NULL,
+                    username TEXT NOT NULL DEFAULT '',
+                    display_name TEXT NOT NULL DEFAULT '',
+                    account_type TEXT NOT NULL DEFAULT '',
+                    page_id TEXT NOT NULL DEFAULT '',
+                    page_name TEXT NOT NULL DEFAULT '',
+                    access_token_encrypted TEXT,
+                    token_expires_at TEXT,
+                    permissions TEXT NOT NULL DEFAULT '[]',
+                    metadata TEXT NOT NULL DEFAULT '{}',
+                    active INTEGER NOT NULL DEFAULT 1,
+                    verified_at TEXT,
+                    last_error TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(organization_id, platform),
+                    FOREIGN KEY (organization_id) REFERENCES organizations(id)
+                );
+                CREATE TABLE IF NOT EXISTS social_publish_jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    organization_id INTEGER NOT NULL,
+                    draft_id INTEGER NOT NULL,
+                    platform TEXT NOT NULL,
+                    connection_id INTEGER,
+                    variant_id INTEGER,
+                    media_kind TEXT NOT NULL DEFAULT 'feed_image',
+                    scheduled_at TEXT,
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    provider_container_id TEXT NOT NULL DEFAULT '',
+                    provider_media_id TEXT NOT NULL DEFAULT '',
+                    permalink TEXT NOT NULL DEFAULT '',
+                    error TEXT NOT NULL DEFAULT '',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    created_by_user_id INTEGER,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    published_at TEXT,
+                    FOREIGN KEY (organization_id) REFERENCES organizations(id),
+                    FOREIGN KEY (connection_id) REFERENCES social_connections(id)
+                );
                 CREATE TABLE IF NOT EXISTS billing_orders (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     organization_id INTEGER NOT NULL,
@@ -224,6 +269,18 @@ class SaasRepository:
                 """
                 CREATE INDEX IF NOT EXISTS idx_organizations_company
                 ON organizations(company_id, active)
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_social_publish_jobs_due
+                ON social_publish_jobs(platform, status, scheduled_at)
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_social_publish_jobs_draft
+                ON social_publish_jobs(organization_id, draft_id, platform, created_at)
                 """
             )
             connection.execute(
@@ -713,6 +770,14 @@ class SaasRepository:
             )
             connection.execute(
                 "DELETE FROM telegram_connections WHERE organization_id = ?",
+                (organization_id,),
+            )
+            connection.execute(
+                "DELETE FROM social_publish_jobs WHERE organization_id = ?",
+                (organization_id,),
+            )
+            connection.execute(
+                "DELETE FROM social_connections WHERE organization_id = ?",
                 (organization_id,),
             )
             connection.execute(
@@ -1247,6 +1312,262 @@ class SaasRepository:
         if include_token and encrypted:
             result["bot_token"] = self.cipher.decrypt(encrypted)
         return result
+
+    def save_social_connection(
+        self,
+        organization_id: int,
+        *,
+        platform: str,
+        external_account_id: str,
+        access_token: str,
+        username: str = "",
+        display_name: str = "",
+        account_type: str = "",
+        page_id: str = "",
+        page_name: str = "",
+        token_expires_at: str = "",
+        permissions: list[str] | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        encrypted = self.cipher.encrypt(access_token.strip())
+        permissions_json = json.dumps(permissions or [], ensure_ascii=False)
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO social_connections (
+                    organization_id, platform, external_account_id, username,
+                    display_name, account_type, page_id, page_name,
+                    access_token_encrypted, token_expires_at, permissions,
+                    metadata, active, verified_at, last_error, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, '', CURRENT_TIMESTAMP)
+                ON CONFLICT(organization_id, platform) DO UPDATE SET
+                    external_account_id = excluded.external_account_id,
+                    username = excluded.username,
+                    display_name = excluded.display_name,
+                    account_type = excluded.account_type,
+                    page_id = excluded.page_id,
+                    page_name = excluded.page_name,
+                    access_token_encrypted = excluded.access_token_encrypted,
+                    token_expires_at = excluded.token_expires_at,
+                    permissions = excluded.permissions,
+                    metadata = excluded.metadata,
+                    active = 1,
+                    verified_at = CURRENT_TIMESTAMP,
+                    last_error = '',
+                    updated_at = CURRENT_TIMESTAMP
+                RETURNING id
+                """,
+                (
+                    organization_id,
+                    platform,
+                    external_account_id,
+                    username,
+                    display_name,
+                    account_type,
+                    page_id,
+                    page_name,
+                    encrypted,
+                    token_expires_at,
+                    permissions_json,
+                    metadata_json,
+                ),
+            )
+            connection_id = int(cursor.fetchone()["id"])
+        return self.social_connection(connection_id, include_token=False)
+
+    def social_connection_by_platform(
+        self,
+        organization_id: int,
+        platform: str,
+        *,
+        include_token: bool = False,
+        active_only: bool = False,
+    ) -> dict:
+        with self._connect() as connection:
+            query = """
+                SELECT * FROM social_connections
+                WHERE organization_id = ? AND platform = ?
+            """
+            params: list[object] = [organization_id, platform]
+            if active_only:
+                query += " AND active = 1"
+            row = connection.execute(query, params).fetchone()
+        if row is None:
+            raise KeyError(f"{platform} connection is not configured")
+        return self._social_connection_row(row, include_token=include_token)
+
+    def social_connection(self, connection_id: int, *, include_token: bool) -> dict:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM social_connections WHERE id = ?",
+                (connection_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"Social connection {connection_id} not found")
+        return self._social_connection_row(row, include_token=include_token)
+
+    def _social_connection_row(self, row: sqlite3.Row, *, include_token: bool) -> dict:
+        result = dict(row)
+        encrypted = result.pop("access_token_encrypted")
+        result["configured"] = bool(encrypted)
+        result["permissions"] = json.loads(result["permissions"] or "[]")
+        result["metadata"] = json.loads(result["metadata"] or "{}")
+        if include_token and encrypted:
+            result["access_token"] = self.cipher.decrypt(encrypted)
+        return result
+
+    def disable_social_connection(self, organization_id: int, platform: str) -> dict:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE social_connections
+                SET active = 0, updated_at = CURRENT_TIMESTAMP
+                WHERE organization_id = ? AND platform = ?
+                """,
+                (organization_id, platform),
+            )
+        return self.social_connection_by_platform(
+            organization_id,
+            platform,
+            include_token=False,
+        )
+
+    def set_social_connection_error(
+        self,
+        connection_id: int,
+        error: str,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE social_connections
+                SET last_error = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (error[:1000], connection_id),
+            )
+
+    def create_social_publish_job(
+        self,
+        *,
+        organization_id: int,
+        draft_id: int,
+        platform: str,
+        connection_id: int | None,
+        variant_id: int | None,
+        media_kind: str = "feed_image",
+        scheduled_at: str | None = None,
+        status: str = "queued",
+        created_by_user_id: int | None = None,
+    ) -> dict:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO social_publish_jobs (
+                    organization_id, draft_id, platform, connection_id,
+                    variant_id, media_kind, scheduled_at, status, created_by_user_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    organization_id,
+                    draft_id,
+                    platform,
+                    connection_id,
+                    variant_id,
+                    media_kind,
+                    scheduled_at,
+                    status,
+                    created_by_user_id,
+                ),
+            )
+            job_id = int(cursor.lastrowid)
+        return self.social_publish_job(job_id)
+
+    def social_publish_job(self, job_id: int) -> dict:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM social_publish_jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"Social publish job {job_id} not found")
+        return dict(row)
+
+    def list_social_publish_jobs(
+        self,
+        organization_id: int,
+        *,
+        draft_id: int | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        query = "SELECT * FROM social_publish_jobs WHERE organization_id = ?"
+        params: list[object] = [organization_id]
+        if draft_id is not None:
+            query += " AND draft_id = ?"
+            params.append(draft_id)
+        query += " ORDER BY created_at DESC, id DESC LIMIT ?"
+        params.append(limit)
+        with self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def due_social_publish_jobs(self, platform: str = "instagram") -> list[dict]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM social_publish_jobs
+                WHERE platform = ?
+                  AND status = 'scheduled'
+                  AND scheduled_at IS NOT NULL
+                  AND scheduled_at <= STRFTIME('%Y-%m-%dT%H:%M:%SZ', 'now')
+                ORDER BY scheduled_at, id
+                LIMIT 50
+                """,
+                (platform,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_social_publish_job(
+        self,
+        job_id: int,
+        *,
+        status: str | None = None,
+        provider_container_id: str | None = None,
+        provider_media_id: str | None = None,
+        permalink: str | None = None,
+        error: str | None = None,
+        increment_attempts: bool = False,
+        published: bool = False,
+    ) -> dict:
+        assignments = ["updated_at = CURRENT_TIMESTAMP"]
+        params: list[object] = []
+        if status is not None:
+            assignments.append("status = ?")
+            params.append(status)
+        if provider_container_id is not None:
+            assignments.append("provider_container_id = ?")
+            params.append(provider_container_id)
+        if provider_media_id is not None:
+            assignments.append("provider_media_id = ?")
+            params.append(provider_media_id)
+        if permalink is not None:
+            assignments.append("permalink = ?")
+            params.append(permalink)
+        if error is not None:
+            assignments.append("error = ?")
+            params.append(error[:1000])
+        if increment_attempts:
+            assignments.append("attempts = attempts + 1")
+        if published:
+            assignments.append("published_at = CURRENT_TIMESTAMP")
+        params.append(job_id)
+        with self._connect() as connection:
+            connection.execute(
+                f"UPDATE social_publish_jobs SET {', '.join(assignments)} WHERE id = ?",
+                params,
+            )
+        return self.social_publish_job(job_id)
 
     def organization_ids(self) -> list[int]:
         with self._connect() as connection:

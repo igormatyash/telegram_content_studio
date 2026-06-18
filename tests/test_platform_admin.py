@@ -142,7 +142,7 @@ def test_platform_routes_are_hidden_from_regular_users(tmp_path) -> None:
     assert 'id="platformNav"' in platform_page.text
     assert 'id="platformView"' in platform_page.text
     assert "data-platform-section=\"referrals\"" in platform_page.text
-    assert "static/app.js?v=15" in platform_page.text
+    assert "static/app.js?v=16" in platform_page.text
 
 
 def test_service_updates_feed_is_public_but_managed_by_platform_admin(tmp_path) -> None:
