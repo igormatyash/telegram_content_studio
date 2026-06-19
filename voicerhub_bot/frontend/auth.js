@@ -10,7 +10,7 @@ form.addEventListener("submit", async event => {
   const button = form.querySelector("button[type=submit]");
   const old = button.textContent;
   button.disabled = true;
-  button.innerHTML = '<span class="spinner"></span>Входимо…';
+  button.innerHTML = `<span class="spinner"></span>${window.authT ? window.authT("Входимо…") : "Входимо…"}`;
   try {
     const response = await fetch(`${basePath}/api/login`, {
       method: "POST",
@@ -21,10 +21,10 @@ form.addEventListener("submit", async event => {
       }),
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || "Не вдалося увійти");
+    if (!response.ok) throw new Error(data.detail || (window.authT ? window.authT("Не вдалося увійти") : "Не вдалося увійти"));
     location.reload();
   } catch (reason) {
-    error.textContent = reason.message;
+    error.textContent = window.authT ? window.authT(reason.message) : reason.message;
   } finally {
     button.disabled = false;
     button.textContent = old;
@@ -33,5 +33,5 @@ form.addEventListener("submit", async event => {
 
 document.querySelector("#resetHelp").addEventListener("click", event => {
   event.preventDefault();
-  error.textContent = "Попросіть адміністратора workspace створити одноразове посилання для відновлення.";
+  error.textContent = window.authT ? window.authT("Попросіть адміністратора workspace створити одноразове посилання для відновлення.") : "Попросіть адміністратора workspace створити одноразове посилання для відновлення.";
 });

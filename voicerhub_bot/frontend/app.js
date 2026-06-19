@@ -90,6 +90,675 @@ const translations = {
     fillBrand: "Complete profile →",
   },
 };
+const uiTextEn = {
+  "Завантаження…": "Loading...",
+  "Workspace": "Workspace",
+  "Головна": "Home",
+  "Ідеї": "Ideas",
+  "Контент-план": "Content plan",
+  "Дошка": "Board",
+  "Чернетки": "Drafts",
+  "Календар": "Calendar",
+  "Налаштування": "Settings",
+  "Бренд": "Brand",
+  "Витрати": "Expenses",
+  "Аналітика": "Analytics",
+  "Платформа": "Platform",
+  "Огляд": "Overview",
+  "Клієнти": "Clients",
+  "Компанії": "Companies",
+  "Користувачі": "Users",
+  "Реферали": "Referrals",
+  "Активність": "Activity",
+  "Вийти": "Log out",
+  "Відкрити меню": "Open menu",
+  "Змінити мову": "Change language",
+  "Оновлення": "Updates",
+  "Пошук": "Search",
+  "Сповіщення": "Notifications",
+  "Створити": "Create",
+  "＋ Створити": "+ Create",
+  "Що зробити зараз": "What to do now",
+  "Швидкі дії": "Quick actions",
+  "Наступні публікації": "Upcoming posts",
+  "Заплановано": "Scheduled",
+  "Нові теми": "New topics",
+  "У роботі": "In progress",
+  "Потребують уваги": "Need attention",
+  "Очікують публікації": "Waiting to publish",
+  "У календарі": "In calendar",
+  "За весь час": "All time",
+  "Згенерувати ідеї": "Generate ideas",
+  "AI запропонує теми на основі бренду": "AI will suggest topics based on the brand",
+  "Створити контент-план": "Create content plan",
+  "На тиждень або місяць": "For a week or month",
+  "Створити чернетку": "Create draft",
+  "З ідеї або з нуля": "From an idea or from scratch",
+  "Запланувати пост": "Schedule post",
+  "Чернетка з візуалом → календар": "Draft with visual → calendar",
+  "Публікацій ще немає": "No publications yet",
+  "Підготуйте чернетку та додайте її до календаря.": "Prepare a draft and add it to the calendar.",
+  "Бренд-профіль": "Brand profile",
+  "Заповнений бренд-профіль робить AI-результати точнішими.": "A complete brand profile makes AI results more accurate.",
+  "Створити вручну": "Create manually",
+  "✦ Згенерувати ідеї": "✦ Generate ideas",
+  "Параметри плану": "Plan settings",
+  "Швидко створіть тижневий або місячний план без довгого скролу.": "Quickly create a weekly or monthly plan without long scrolling.",
+  "✦ Згенерувати план": "✦ Generate plan",
+  "Період": "Period",
+  "Тиждень": "Week",
+  "Місяць": "Month",
+  "Дата початку": "Start date",
+  "Кількість постів": "Number of posts",
+  "Рубрика": "Rubric",
+  "Результат": "Result",
+  "Створити ідеї": "Create ideas",
+  "Поставити чернетки в чергу": "Queue drafts",
+  "Мета": "Goal",
+  "Редакційний календар": "Editorial calendar",
+  "Експорт": "Export",
+  "Без розкладу": "Unscheduled",
+  "Матеріали без дати": "Materials without date",
+  "Виберіть матеріал, щоб одразу призначити дату.": "Choose a material to assign a date immediately.",
+  "Сьогодні": "Today",
+  "Профіль компанії": "Company profile",
+  "Tone of voice": "Tone of voice",
+  "Рубрики": "Rubrics",
+  "Візуальні стилі": "Visual styles",
+  "Матеріали бренду": "Brand materials",
+  "Оформлення": "Appearance",
+  "Витрати по днях": "Daily expenses",
+  "Останні 30 днів": "Last 30 days",
+  "Експортувати звіт": "Export report",
+  "Наведіть на стовпчик": "Hover a bar",
+  "Деталі витрат": "Expense details",
+  "Сума, дата та частка періоду зʼявляться тут.": "Amount, date and share of the period will appear here.",
+  "По моделях": "By models",
+  "Топ рубрик": "Top rubrics",
+  "Режим роботи": "Workflow mode",
+  "Ролі": "Roles",
+  "Тарифи": "Plans",
+  "Реферальна програма": "Referral program",
+  "Канали": "Channels",
+  "Безпека": "Security",
+  "Super Admin Dashboard": "Super Admin Dashboard",
+  "Огляд платформи": "Platform overview",
+  "Клієнти, workspace, активність і AI-витрати в одному місці.": "Clients, workspaces, activity and AI expenses in one place.",
+  "Оновити дані": "Refresh data",
+  "Ваші робочі простори": "Your workspaces",
+  "Вибрати workspace": "Choose workspace",
+  "Кожен workspace має окремі бренд, контент, команду, канал і календар.": "Each workspace has a separate brand, content, team, channel and calendar.",
+  "Закрити": "Close",
+  "Налаштування workspace": "Workspace setup",
+  "Пропустити": "Skip",
+  "← Назад": "← Back",
+  "Далі →": "Next →",
+  "Скасувати": "Cancel",
+  "Зберегти": "Save",
+  "Ваші ідеї генеруються": "Your ideas are being generated",
+  "Аналізуємо бренд, рубрики та формуємо нові теми.": "Analyzing the brand and rubrics, then creating new topics.",
+  "Не закривайте сторінку. Зазвичай це займає до хвилини.": "Do not close the page. It usually takes up to a minute.",
+  "Редактор публікації": "Publication editor",
+  "Як працювати із сервісом": "How to use the service",
+  "Більше не показувати": "Do not show again",
+  "CONTENT STUDIO · Налаштування workspace · Voicer Wave": "CONTENT STUDIO · Workspace settings · Voicer Wave",
+  "Ідея": "Idea",
+  "Чернетка": "Draft",
+  "На перевірці": "In review",
+  "Потрібні правки": "Needs changes",
+  "Готово": "Ready",
+  "Опубліковано": "Published",
+  "Генерується": "Generating",
+  "Візуал": "Visual",
+  "Помилка": "Error",
+  "Скасовано": "Cancelled",
+  "На перевірку": "Send to review",
+  "Позначити готовим": "Mark ready",
+  "Повернути на правки": "Request changes",
+  "Погодити": "Approve",
+  "Повернути в чернетки": "Return to drafts",
+  "Platform Admin": "Platform Admin",
+  "Власник": "Owner",
+  "Адміністратор": "Administrator",
+  "Контент-менеджер": "Content manager",
+  "Редактор": "Editor",
+  "Публікатор": "Publisher",
+  "Переглядач": "Viewer",
+  "Учасник": "Member",
+  "Ще не заплановано": "Not scheduled yet",
+  "Сайт": "Website",
+  "Основний колір": "Primary color",
+  "Опис компанії": "Company description",
+  "Ключові продукти або послуги": "Key products or services",
+  "Зберегти профіль": "Save profile",
+  "Стиль комунікації": "Communication style",
+  "Зберегти": "Save",
+  "Що можна": "What to do",
+  "Чого не можна": "What to avoid",
+  "Рубрики контенту": "Content rubrics",
+  "Як AI використовує рубрики": "How AI uses rubrics",
+  "Створити рубрику": "Create rubric",
+  "Ціль": "Goal",
+  "Тон": "Tone",
+  "Статус": "Status",
+  "Активна": "Active",
+  "Неактивна": "Inactive",
+  "Редагувати": "Edit",
+  "Стилі workspace": "Workspace styles",
+  "Вбудовані стилі": "Built-in styles",
+  "Системний": "System",
+  "Власних стилів ще немає": "No custom styles yet",
+  "Створити стиль": "Create style",
+  "Матеріалів ще немає": "No materials yet",
+  "Додати посилання": "Add link",
+  "Завантажити матеріал": "Upload material",
+  "Видалити": "Delete",
+  "Брендований workspace": "Branded workspace",
+  "Назва workspace": "Workspace name",
+  "Короткий опис": "Short description",
+  "Кольори інтерфейсу": "Interface colors",
+  "Основний": "Primary",
+  "Додатковий": "Secondary",
+  "Аватар workspace": "Workspace avatar",
+  "Логотип компанії": "Company logo",
+  "Завантажити й обрізати": "Upload and crop",
+  "Завантажити логотип": "Upload logo",
+  "Зберегти оформлення": "Save appearance",
+  "Так workspace виглядатиме в інтерфейсі": "This is how the workspace will look in the interface",
+  "Тариф": "Plan",
+  "Публікації": "Publications",
+  "AI-бюджет": "AI budget",
+  "Повторити onboarding": "Restart onboarding",
+  "Небезпечна зона": "Danger zone",
+  "Видалення workspace": "Delete workspace",
+  "Видалити workspace": "Delete workspace",
+  "Загальні": "General",
+  "Режим роботи workspace": "Workspace workflow mode",
+  "Оберіть, як ваша команда працює з контентом.": "Choose how your team works with content.",
+  "Редакційний pipeline": "Editorial pipeline",
+  "Контент-дошка Kanban": "Content Kanban board",
+  "Зберегти режим": "Save mode",
+  "Користувачі workspace": "Workspace users",
+  "Запросити користувача": "Invite user",
+  "Змінити роль": "Change role",
+  "Деактивувати": "Deactivate",
+  "Видалити з workspace": "Remove from workspace",
+  "Активний": "Active",
+  "Вимкнений": "Disabled",
+  "Права доступу": "Access permissions",
+  "Ролі workspace": "Workspace roles",
+  "Оберіть план для workspace": "Choose a workspace plan",
+  "Оплатити в Telegram": "Pay in Telegram",
+  "Поточний тариф": "Current plan",
+  "Оплата через Telegram Stars": "Payment via Telegram Stars",
+  "Запрошуйте нових користувачів": "Invite new users",
+  "Скопіювати посилання": "Copy link",
+  "Оновити код": "Rotate code",
+  "Вимкнути посилання": "Disable link",
+  "Переходи": "Clicks",
+  "Реєстрації": "Signups",
+  "Активні клієнти": "Active clients",
+  "Підключення каналу": "Channel connection",
+  "Підключено": "Connected",
+  "Не підключено": "Not connected",
+  "Перевірити підключення": "Test connection",
+  "Перевірити та зберегти": "Test and save",
+  "Підключити Instagram": "Connect Instagram",
+  "Відключити Instagram": "Disconnect Instagram",
+  "Скоро з’являться": "Coming soon",
+  "Більше соцмереж": "More social networks",
+  "Змінити пароль": "Change password",
+  "Новий пароль": "New password",
+  "Клієнт": "Client",
+  "Реєстрація": "Registration",
+  "Останній вхід": "Last login",
+  "Джерело": "Source",
+  "Компанія": "Company",
+  "Люди": "People",
+  "Контент": "Content",
+  "AI-витрати": "AI expenses",
+  "Деталі": "Details",
+  "Код": "Code",
+  "Власник": "Owner",
+  "Події платформи": "Platform events",
+  "Подія": "Event",
+  "Дата": "Date",
+  "Останні входи": "Recent logins",
+  "Успішно": "Success",
+  "Операції": "Operations",
+  "Тексти": "Texts",
+  "Зображення": "Images",
+  "Загальні витрати": "Total expenses",
+  "Оберіть формат експорту": "Choose export format",
+  "Легкий текстовий формат для таблиць і CRM.": "Lightweight text format for spreadsheets and CRM.",
+  "Відкривається напряму в Microsoft Excel.": "Opens directly in Microsoft Excel.",
+  "Немає даних для експорту": "No data to export",
+  "Пошук": "Search",
+  "Ідеї, чернетки та розділи": "Ideas, drafts and sections",
+  "Нічого не знайдено.": "Nothing found.",
+  "Що бажаєте створити?": "What would you like to create?",
+  "Почніть із потрібного результату": "Start with the desired result",
+  "Ідеї з AI": "AI ideas",
+  "Чернетку вручну": "Manual draft",
+  "Додати свій текст або почати з нуля": "Add your own text or start from scratch",
+  "Розкласти публікації на тиждень чи місяць": "Plan posts for a week or month",
+  "Оновлення сервісу": "Service updates",
+  "Що нового в Content Studio": "What is new in Content Studio",
+  "Додати повідомлення": "Add message",
+  "Оновлень ще немає": "No updates yet",
+  "Редагувати оновлення": "Edit update",
+  "Нове повідомлення в ленту": "New feed message",
+  "Опублікувати": "Publish",
+  "Архівувати": "Archive",
+  "Непрочитаних:": "Unread:",
+  "Усі сповіщення прочитані": "All notifications are read",
+  "Прочитати все": "Mark all as read",
+  "Прочитано": "Read",
+  "Повторити швидку генерацію": "Retry quick generation",
+  "Все гаразд": "Everything is fine",
+  "Немає помилок генерації, попереджень про тариф або бюджет.": "No generation errors, plan warnings or budget alerts.",
+};
+Object.assign(uiTextEn, {
+  "Перегенерувати текст": "Regenerate text",
+  "Запланувати": "Schedule",
+  "Спочатку потрібен візуал": "A visual is required first",
+  "Спочатку погодьте матеріал": "Approve the material first",
+  "Дата і час": "Date and time",
+  "Заголовок для поста": "Post title",
+  "Заголовок на візуалі": "Visual title",
+  "Без emoji та зайвих символів.": "Without emoji or unnecessary characters.",
+  "Текст публікації": "Publication text",
+  "Посилання": "Link",
+  "Повернути в готові": "Return to ready",
+  "Канали публікації": "Publishing channels",
+  "Опублікувати": "Publish",
+  "Підключіть Instagram": "Connect Instagram",
+  "Одиночне зображення + caption.": "Single image + caption.",
+  "Reels": "Reels",
+  "Carousel": "Carousel",
+  "Потрібен відео-модуль.": "Video module required.",
+  "Потрібно кілька медіа в чернетці.": "Multiple media files are required in the draft.",
+  "Ласкаво просимо до Content Studio": "Welcome to Content Studio",
+  "Назва компанії": "Company name",
+  "Технічний URL система створює автоматично.": "The system creates the technical URL automatically.",
+  "Бренд та стиль комунікації": "Brand and communication style",
+  "Ці дані використовуються як постійний контекст для AI. Пишіть факти й правила, а не рекламні гасла.": "This data is used as persistent AI context. Write facts and rules, not advertising slogans.",
+  "Ключові послуги": "Key services",
+  "Заборонені фрази": "Forbidden phrases",
+  "Підключіть Telegram-канал": "Connect a Telegram channel",
+  "Додайте бота адміністратором каналу. Ми перевіримо token, канал і права до збереження.": "Add the bot as a channel administrator. We will check the token, channel and permissions before saving.",
+  "Введіть обидва значення для перевірки.": "Enter both values to test the connection.",
+  "Перевірити зараз": "Test now",
+  "Додайте рубрики контенту": "Add content rubrics",
+  "Рубрика — це постійний напрям контенту. Для кожної вкажіть назву та поясніть, про що писати.": "A rubric is a recurring content direction. Give each one a name and explain what to write about.",
+  "Назва": "Name",
+  "Що публікуємо": "What to publish",
+  "Додати рубрику": "Add rubric",
+  "Створіть перший контент-план": "Create the first content plan",
+  "AI використає бренд-профіль і рубрики. План створиться як ідеї, які можна переглянути до генерації чернеток.": "AI will use the brand profile and rubrics. The plan will be created as ideas that can be reviewed before draft generation.",
+  "Завершити": "Finish",
+  "Створіть робочий простір": "Create a workspace",
+  "Заповніть бренд-профіль": "Complete the brand profile",
+  "Створіть рубрики": "Create rubrics",
+  "Згенеруйте та відберіть ідеї": "Generate and select ideas",
+  "Підготуйте чернетки": "Prepare drafts",
+  "Заплануйте або опублікуйте": "Schedule or publish",
+  "Керуйте командою та результатом": "Manage team and results",
+  "Крок": "Step",
+  "Заголовок": "Title",
+  "Тип": "Type",
+  "Нова функція": "New feature",
+  "Виправлення": "Fix",
+  "Технічні роботи": "Maintenance",
+  "Оголошення": "Announcement",
+  "Важливість": "Importance",
+  "Інформація": "Information",
+  "Позитивне оновлення": "Positive update",
+  "Важливо": "Important",
+  "Опубліковано": "Published",
+  "Архів": "Archive",
+  "Закріпити зверху": "Pin to top",
+  "Показувати з": "Show from",
+  "Показувати до": "Show until",
+  "Текст повідомлення": "Message text",
+  "Зберегти": "Save",
+  "Створити компанію та власника": "Create company and owner",
+  "Що відбудеться": "What will happen",
+  "Назва першого workspace": "First workspace name",
+  "Ім’я власника": "Owner name",
+  "Email власника": "Owner email",
+  "Логін власника": "Owner login",
+  "Тимчасовий пароль": "Temporary password",
+  "Ліміт користувачів": "User limit",
+  "Публікацій на місяць": "Publications per month",
+  "Створити компанію": "Create company",
+  "Змінити URL вручну": "Change URL manually",
+  "Необов’язково. Якщо поле порожнє, URL буде створено автоматично.": "Optional. If empty, the URL will be created automatically.",
+  "Відкрито": "Opened",
+  "Перейти": "Open",
+  "Поточна компанія": "Current company",
+  "Новий workspace матиме окремі контент, бренд, Telegram-канал, календар і ролі.": "The new workspace will have separate content, brand, Telegram channel, calendar and roles.",
+  "URL буде створено автоматично з назви.": "URL will be generated automatically from the name.",
+  "Видалити назавжди": "Delete permanently",
+  "Видаляємо…": "Deleting...",
+  "Усі дані буде видалено без можливості відновлення": "All data will be permanently deleted",
+  "Для підтвердження введіть точну назву:": "To confirm, enter the exact name:",
+  "Рубрику збережено": "Rubric saved",
+  "Активувати": "Activate",
+  "Вибрати всі": "Select all",
+  "Обрати всіх": "Select all",
+  "Обрати всі": "Select all",
+});
+Object.assign(uiTextEn, {
+  "AI generator": "AI generator",
+  "AI-витрати · місяць": "AI expenses · month",
+  "AI запропонує теми на основі бренду": "AI will suggest topics based on the brand",
+  "AI використає бренд-профіль і рубрики. План створиться як ідеї, які можна переглянути до генерації чернеток.": "AI will use the brand profile and rubrics. The plan will be created as ideas you can review before generating drafts.",
+  "AI дивиться на листи і дзвінки без шуму": "AI reviews messages and calls without noise",
+  "AI-бюджет, $": "AI budget, $",
+  "Відключаємо…": "Disconnecting...",
+  "Готуємо Meta Login…": "Preparing Meta Login...",
+  "Business": "Business",
+  "Channel username": "Channel username",
+  "Content Studio Academy": "Content Studio Academy",
+  "Content Studio AI": "Content Studio AI",
+  "Email": "Email",
+  "Email власника": "Owner email",
+  "Facebook Page": "Facebook Page",
+  "Feed image": "Feed image",
+  "Instagram Feed": "Instagram Feed",
+  "Instagram Feed заплановано": "Instagram Feed scheduled",
+  "Instagram не опублікував пост": "Instagram did not publish the post",
+  "Instagram відключено": "Instagram disconnected",
+  "Instagram ще не активовано на платформі": "Instagram is not enabled on the platform yet",
+  "Instagram-публікацію створено": "Instagram publication created",
+  "Пост опубліковано в Instagram": "Post published to Instagram",
+  "Meta повернула помилку без деталей.": "Meta returned an error without details.",
+  "Owner": "Owner",
+  "PNG, JPG, WebP, PDF, DOCX або PPTX до 20 MB.": "PNG, JPG, WebP, PDF, DOCX or PPTX up to 20 MB.",
+  "Platform Admin є окремою платформною роллю. Ролі нижче діють лише всередині поточного workspace. Наведіть курсор або сфокусуйте право, щоб побачити пояснення.": "Platform Admin is a separate platform role. The roles below apply only inside the current workspace. Hover or focus a permission to see its explanation.",
+  "Reels скоро": "Reels soon",
+  "Carousel скоро": "Carousel soon",
+  "Reset link": "Reset link",
+  "Slug рубрики:": "Rubric slug:",
+  "Telegram підключено": "Telegram connected",
+  "Telegram працює без змін.": "Telegram keeps working without changes.",
+  "Telegram працює як раніше. Instagram — окрема публікація, яка не змінює статус Telegram-поста.": "Telegram works as before. Instagram is a separate publication and does not change the Telegram post status.",
+  "Token зберігається зашифрованим і не показується повторно.": "The token is stored encrypted and is not shown again.",
+  "Trial завершується через": "Trial ends in",
+  "URL": "URL",
+  "URL буде створено автоматично з назви.": "The URL will be generated automatically from the name.",
+  "Ваш бренд · Telegram": "Your brand · Telegram",
+  "Ваші робочі простори": "Your workspaces",
+  "Вас запросили до Content Studio": "You were invited to Content Studio",
+  "Вбудовані стилі": "Built-in styles",
+  "Введіть дані для автоматичної перевірки.": "Enter data for automatic validation.",
+  "Введіть точну назву workspace для підтвердження.": "Enter the exact workspace name to confirm.",
+  "Виберіть матеріал, щоб одразу призначити дату.": "Choose a material to assign a date right away.",
+  "Виберіть параметри та створіть перший план.": "Choose parameters and create the first plan.",
+  "Видалити матеріал?": "Delete this material?",
+  "Видалити помилкове завдання?": "Delete the failed job?",
+  "Видалити цю ідею?": "Delete this idea?",
+  "Видалити назавжди": "Delete permanently",
+  "Видалення workspace": "Workspace deletion",
+  "Видаляємо…": "Deleting...",
+  "Використовується у візуальних шаблонах.": "Used in visual templates.",
+  "Використовуйте таблицю, пошук, фільтри й bulk-дії для великих списків.": "Use the table, search, filters and bulk actions for large lists.",
+  "Вимкнути поточне реферальне посилання?": "Disable the current referral link?",
+  "Відключити Instagram для цього workspace? Telegram залишиться підключеним.": "Disconnect Instagram for this workspace? Telegram will remain connected.",
+  "Відкрийте розділ «Витрати» для деталізації.": "Open Expenses for details.",
+  "Відкрийте чернетку, перевірте зображення та підключення Instagram.": "Open the draft and check the image and Instagram connection.",
+  "Відкрити посилання": "Open link",
+  "Відкрито": "Opened",
+  "Власних стилів ще немає": "No custom styles yet",
+  "Гайд більше не буде відкриватися автоматично. Він доступний у хедері.": "The guide will no longer open automatically. It remains available in the header.",
+  "Гайд завершено. Він завжди доступний у хедері.": "Guide completed. It is always available in the header.",
+  "Генерацію перезапущено": "Generation restarted",
+  "Генерацію повторено": "Generation retried",
+  "Генерацію розпочато. Прогрес з’явиться у чернетках.": "Generation started. Progress will appear in Drafts.",
+  "Генерація зупинилася без детального опису.": "Generation stopped without a detailed description.",
+  "Генерація зупинилася. Деталі є у сповіщеннях.": "Generation stopped. Details are available in notifications.",
+  "Глобальні шаблони доступні для використання, але не редагуються. Прев’ю завантажуються одразу, щоб швидше оцінити стиль.": "Global templates are available for use but cannot be edited. Previews load immediately so you can evaluate the style faster.",
+  "Готові": "Ready",
+  "Готовий": "Ready",
+  "Готово до підключення": "Ready to connect",
+  "Готово до публікації у Feed": "Ready to publish to Feed",
+  "Дата від": "Date from",
+  "Дата до": "Date to",
+  "Дата публікації": "Publication date",
+  "Датою публікації": "Publication date",
+  "Датою створення": "Creation date",
+  "Деактивувати записів?": "Deactivate records?",
+  "Джерело реєстрації": "Registration source",
+  "Додайте META_APP_ID, META_APP_SECRET, PUBLIC_APP_URL/META_REDIRECT_URI та увімкніть INSTAGRAM_ENABLED. Telegram працює без змін.": "Add META_APP_ID, META_APP_SECRET, PUBLIC_APP_URL/META_REDIRECT_URI and enable INSTAGRAM_ENABLED. Telegram keeps working unchanged.",
+  "Додайте бота адміністратором каналу. Ми перевіримо token, канал і права до збереження.": "Add the bot as a channel administrator. We will validate the token, channel and permissions before saving.",
+  "Додайте конкретні назви, цільову аудиторію та користь. Це стане контекстом для генерації.": "Add specific names, target audience and value. This becomes generation context.",
+  "Додайте ключові послуги": "Add key services",
+  "Додайте рубрики контенту": "Add content rubrics",
+  "Додати повідомлення": "Add message",
+  "Додати свій текст або почати з нуля": "Add your own text or start from scratch",
+  "Доступно власнику": "Available to owner",
+  "Дочекайтесь індикатора готовності, не оновлюючи сторінку.": "Wait for the readiness indicator without refreshing the page.",
+  "Завантажте логотип, фото, референс або додайте важливе посилання.": "Upload a logo, photo, reference or add an important link.",
+  "Завдання": "Job",
+  "Залишилося": "Remaining",
+  "Заплановані": "Scheduled",
+  "Заплануйте або опублікуйте": "Schedule or publish",
+  "Заповнений бренд-профіль робить AI-результати точнішими.": "A complete brand profile makes AI results more accurate.",
+  "Запрошуйте команду та призначайте зрозумілі ролі.": "Invite your team and assign clear roles.",
+  "Запустіть контент-систему компанії за кілька хвилин.": "Launch a company content system in minutes.",
+  "Зберігаємо…": "Saving...",
+  "Зміни збережено": "Changes saved",
+  "Змінити URL компанії вручну": "Change company URL manually",
+  "Змінити URL вручну": "Change URL manually",
+  "Змінити пароль або створіть одноразове посилання через адміністратора workspace.": "Change the password or create a one-time link through a workspace administrator.",
+  "Ідею видалено": "Idea deleted",
+  "Ідею додано": "Idea added",
+  "Ідеї готові та збережені": "Ideas are ready and saved",
+  "Ідеї з AI": "AI ideas",
+  "Ідеї, чернетки та розділи": "Ideas, drafts and sections",
+  "Ідеї не публікуються напряму: спочатку з них створюється чернетка.": "Ideas are not published directly: first create a draft from them.",
+  "Ім’я власника": "Owner name",
+  "Канал має бути публічним або доступним боту.": "The channel must be public or accessible to the bot.",
+  "Керуйте contentом системно, з командою і без хаосу.": "Manage content systematically, with a team and without chaos.",
+  "Керуйте командою та результатом": "Manage the team and results",
+  "Керуйте workspace, користувачами, каналами та режимом роботи.": "Manage workspace, users, channels and workflow mode.",
+  "Клієнти, компанії, активність і витрати сервісу.": "Clients, companies, activity and service expenses.",
+  "Клієнти, workspace, активність і AI-витрати в одному місці.": "Clients, workspaces, activity and AI expenses in one place.",
+  "Коли з’являться нові функції або важливі повідомлення, вони будуть тут.": "New features and important messages will appear here.",
+  "Компанія об’єднує користувачів, ролі та всі ваші workspace.": "A company brings together users, roles and all your workspaces.",
+  "Контент-дошка Kanban": "Content Kanban board",
+  "Контент-процес від ідеї до публікації": "Content process from idea to publication",
+  "Коротко напишіть, що змінилось, кого це стосується і що користувачу потрібно зробити.": "Briefly describe what changed, who it affects and what the user should do.",
+  "Латиниця, цифри та дефіс.": "Latin letters, digits and hyphen.",
+  "Ліміт користувачів": "User limit",
+  "Логін власника": "Owner login",
+  "Матеріал готовий.": "Material is ready.",
+  "Матеріал завантажено": "Material uploaded",
+  "Матеріал збережено": "Material saved",
+  "Матеріали допомагають AI краще розуміти стиль компанії: логотипи, кольори, презентації, брендбук і референси.": "Materials help AI better understand the company style: logos, colors, presentations, brand book and references.",
+  "Матеріали оновлено": "Materials updated",
+  "Ми готуємо публікації в інші канали без dead controls: картки нижче лише показують roadmap.": "We are preparing publishing to other channels without dead controls: the cards below only show the roadmap.",
+  "Можна повторити генерацію або змінити рубрику/дані чернетки.": "You can retry generation or change the rubric/draft data.",
+  "На перевірці": "In review",
+  "Наведіть курсор або сфокусуйте право, щоб побачити пояснення.": "Hover or focus a permission to see its explanation.",
+  "Назва або опис": "Name or description",
+  "Назва продукту — коротко яку задачу він вирішує": "Product name — briefly what task it solves",
+  "Назвою": "Name",
+  "Найпопулярніший": "Most popular",
+  "Налаштуйте стиль комунікації, рубрики та візуальні правила.": "Configure communication style, rubrics and visual rules.",
+  "Налаштуйте workspace за п’ять коротких кроків. Прогрес зберігається після кожного кроку.": "Set up the workspace in five short steps. Progress is saved after each step.",
+  "Наприклад: Оновили календар і планування постів": "For example: Updated calendar and post scheduling",
+  "Наприклад: пояснити користь продукту, зібрати заявки, прогріти аудиторію": "For example: explain product value, collect leads, warm up the audience",
+  "Натисніть у чернетках на позначку «Щойно створено», щоб швидко знайти матеріал.": "In Drafts, click the “Just created” marker to quickly find the material.",
+  "Не вдалося згенерувати матеріал": "Could not generate material",
+  "Не закривайте сторінку. Зазвичай це займає до хвилини.": "Do not close the page. This usually takes up to a minute.",
+  "Не підключено": "Not connected",
+  "Немає з’єднання з мережею. Зміни стануть доступними після відновлення зв’язку.": "No network connection. Changes will be available after connection is restored.",
+  "Немає помилок генерації, попереджень про тариф або бюджет.": "No generation errors, plan warnings or budget alerts.",
+  "Необов’язково. Латиниця, цифри та дефіс.": "Optional. Latin letters, digits and hyphen.",
+  "Необов’язково. Якщо поле порожнє, URL буде створено автоматично.": "Optional. If empty, the URL will be created automatically.",
+  "Нові спочатку": "Newest first",
+  "Нові теми на основі бренду й рубрик": "New topics based on brand and rubrics",
+  "Новий workspace матиме окремі контент, бренд, Telegram-канал, календар і ролі.": "The new workspace will have separate content, brand, Telegram channel, calendar and roles.",
+  "Нову версію поставлено в чергу": "New version queued",
+  "Оберіть дату і час": "Choose date and time",
+  "Оберіть дату і час для Instagram": "Choose date and time for Instagram",
+  "Оберіть план для workspace": "Choose a plan for the workspace",
+  "Оберіть, як ваша команда працює з контентом.": "Choose how your team works with content.",
+  "Окремий простір для контенту, команди та публікацій.": "Separate space for content, team and publications.",
+  "Окремі бренд, команда, канал і календар": "Separate brand, team, channel and calendar",
+  "Оплатити в Telegram": "Pay in Telegram",
+  "Опублікувати пост зараз?": "Publish the post now?",
+  "Опублікувати цей пост в Instagram Feed? Telegram-публікація не зміниться.": "Publish this post to Instagram Feed? Telegram publication will not change.",
+  "Опубліковані": "Published",
+  "Оплата через Telegram Stars": "Payment via Telegram Stars",
+  "Опис": "Description",
+  "Орієнтовна дата": "Approximate date",
+  "Основний workspace": "Primary workspace",
+  "Передайте власнику логін і тимчасовий пароль.": "Give the owner their login and temporary password.",
+  "Перейти": "Open",
+  "Перевірте тариф у налаштуваннях workspace.": "Check the plan in workspace settings.",
+  "Перспективна тема для майбутньої публікації.": "Promising topic for a future post.",
+  "Плануємо…": "Scheduling...",
+  "Плануємо Instagram…": "Scheduling Instagram...",
+  "Платформа": "Platform",
+  "Планова дата": "Planned date",
+  "Повторюємо…": "Retrying...",
+  "Поділіться персональним посиланням. Тут відображається лише ваша статистика в поточному workspace.": "Share your personal link. Only your statistics for the current workspace are shown here.",
+  "Позначку": "Marker",
+  "Потрібен Instagram Business або Creator": "Instagram Business or Creator account required",
+  "Потрібен Meta App": "Meta App required",
+  "Поточний": "Current",
+  "Поточний тариф": "Current plan",
+  "Публікацій на місяць": "Publications per month",
+  "Публікацію додано до календаря": "Publication added to calendar",
+  "Публікацію заплановано": "Publication scheduled",
+  "Публікацію повернуто в готові": "Publication returned to ready",
+  "Публікуємо…": "Publishing...",
+  "Публікуємо в Instagram…": "Publishing to Instagram...",
+  "Після оплати ліміти оновляться автоматично після підтвердження платежу.": "After payment, limits update automatically once payment is confirmed.",
+  "Після реєстрації ми створимо перший workspace. Додаткові workspace можна буде додати в кабінеті компанії.": "After registration we will create the first workspace. Additional workspaces can be added in the company account.",
+  "Підготуйте чернетку та додайте її до календаря.": "Prepare a draft and add it to the calendar.",
+  "Підключення відбувається через Facebook Login і прив’язану Facebook Page.": "Connection uses Facebook Login and a linked Facebook Page.",
+  "Підключіть Telegram-канал": "Connect a Telegram channel",
+  "Підключіть Instagram": "Connect Instagram",
+  "Підключено:": "Connected:",
+  "Підключений канал": "Connected channel",
+  "Публікуйте готові візуальні пости у Instagram Feed. Reels і Carousel вже закладені в інтерфейс, але будуть увімкнені після окремого медіа-модуля.": "Publish finished visual posts to Instagram Feed. Reels and Carousel are already prepared in the UI, but will be enabled after a separate media module.",
+  "Редакційний pipeline": "Editorial pipeline",
+  "Режим збережено": "Mode saved",
+  "Реферальне джерело буде збережено після реєстрації.": "The referral source will be saved after registration.",
+  "Реферальне посилання вимкнено": "Referral link disabled",
+  "Реферальне посилання скопійовано": "Referral link copied",
+  "Рубрика — це постійний напрям контенту. Для кожної вкажіть назву та поясніть, про що писати.": "A rubric is a recurring content direction. Give each one a name and explain what to write about.",
+  "Рубрики допомагають Content Studio створювати контент системно. Кожна рубрика задає тему, ціль, тон і правила для AI.": "Rubrics help Content Studio create content systematically. Each rubric defines a topic, goal, tone and AI rules.",
+  "Рубрики оновлено": "Rubrics updated",
+  "Рубрику збережено": "Rubric saved",
+  "Скасовуємо…": "Cancelling...",
+  "Скоро з’являться": "Coming soon",
+  "Спробуйте повторити генерацію або перевірте налаштування AI.": "Try generation again or check AI settings.",
+  "Старі спочатку": "Oldest first",
+  "Статус змінено:": "Status changed:",
+  "Створено": "Created",
+  "Створено новий реферальний код": "New referral code created",
+  "Створити компанію": "Create company",
+  "Створити компанію та workspace": "Create company and workspace",
+  "Створити workspace": "Create workspace",
+  "Створіть компанію": "Create a company",
+  "Створіть перші теми на основі бренду та рубрик.": "Create the first topics based on brand and rubrics.",
+  "Створіть рубрики, щоб AI міг планувати експертні пости, кейси, поради, новини та продажні матеріали.": "Create rubrics so AI can plan expert posts, cases, tips, news and sales content.",
+  "Створіть стиль для генерації візуалів у впізнаваній манері бренду.": "Create a style for generating visuals in a recognizable brand manner.",
+  "Створюємо…": "Creating...",
+  "Запускаємо…": "Starting...",
+  "Створюємо текст і структуру поста": "Creating text and post structure",
+  "Сума, дата та частка періоду зʼявляться тут.": "Amount, date and share of period will appear here.",
+  "Сьогодні": "Today",
+  "Тариф і ліміти": "Plan and limits",
+  "Текст": "Text",
+  "Текст уже готовий, створюємо зображення": "Text is ready, creating image",
+  "Термін тарифу завершився. AI-генерація та публікація тимчасово недоступні.": "The plan has expired. AI generation and publishing are temporarily unavailable.",
+  "Технічний URL система створює автоматично.": "The system creates the technical URL automatically.",
+  "Тимчасовий пароль": "Temporary password",
+  "Тут з’являються нові функції, виправлення, планові роботи та важливі оголошення.": "New features, fixes, maintenance and important announcements appear here.",
+  "У вас ще немає ідей": "You do not have ideas yet",
+  "У вас ще немає рубрик": "You do not have rubrics yet",
+  "Увійдіть у workspace": "Sign in to workspace",
+  "Увійти": "Sign in",
+  "Усі дані буде видалено без можливості відновлення": "All data will be permanently deleted",
+  "Усі рубрики": "All rubrics",
+  "Усі статуси": "All statuses",
+  "Файл": "File",
+  "Хто ви, для кого працюєте, яку проблему вирішуєте і чим відрізняєтесь.": "Who you are, who you work for, what problem you solve and how you differ.",
+  "Це назавжди видалить контент, файли, налаштування й доступи поточного workspace.": "This will permanently delete content, files, settings and access for the current workspace.",
+  "Це побачать користувачі сервісу в ленті оновлень. Без секретів, внутрішніх технічних деталей і токенів.": "Service users will see this in the updates feed. Do not include secrets, internal technical details or tokens.",
+  "Чернетка з візуалом → календар": "Draft with visual → calendar",
+  "Чернетку створено": "Draft created",
+  "Чернетку створено. Вона підсвічена у списку чернеток.": "Draft created. It is highlighted in the drafts list.",
+  "Чернеток ще немає": "No drafts yet",
+  "Ще не маєте акаунта?": "Do not have an account yet?",
+  "Щойно створено": "Just created",
+  "Що нового в Content Studio": "What is new in Content Studio",
+  "Що публікуємо": "What to publish",
+  "7 днів": "7 days",
+  "30 днів": "30 days",
+  "Активна": "Active",
+  "Активні компанії": "Active companies",
+  "Агрегований звіт без перемикання між workspace.": "Aggregated report without switching workspaces.",
+  "Будь-який workspace": "Any workspace",
+  "Весь період": "All time",
+  "Весь час": "All time",
+  "Витрати всіх компаній": "All company expenses",
+  "Витрати по компаніях, моделях і користувачах.": "Expenses by companies, models and users.",
+  "Входів": "Logins",
+  "Входів ще немає.": "No logins yet.",
+  "До списку клієнтів": "Back to clients",
+  "До списку компаній": "Back to companies",
+  "Є workspace": "Has workspace",
+  "Журнал важливих дій і входів без відкритих IP-адрес.": "Important action and login log without exposed IP addresses.",
+  "Загальний список акаунтів сервісу.": "Full list of service accounts.",
+  "Зареєстровані клієнтські компанії з’являться тут.": "Registered client companies will appear here.",
+  "Запросив:": "Invited by:",
+  "Клієнтів ще немає": "No clients yet",
+  "Ключові метрики реєстрацій, клієнтів і використання.": "Key registration, client and usage metrics.",
+  "Компаній не створено.": "No companies created.",
+  "Компаній ще немає": "No companies yet",
+  "Користувачів ще немає": "No users yet",
+  "Люди": "People",
+  "Місяць": "Month",
+  "Невідомий користувач": "Unknown user",
+  "Немає доступу": "No access",
+  "Ні": "No",
+  "Нові акаунти з’являться тут.": "New accounts will appear here.",
+  "Нові за 7 днів": "New in 7 days",
+  "Нові реєстрації з’являться в цьому розділі.": "New registrations will appear in this section.",
+  "Нові сьогодні": "New today",
+  "Остання активність": "Last activity",
+  "Основна роль": "Primary role",
+  "Перший workspace з’явиться після реєстрації або створення власником.": "The first workspace will appear after registration or owner creation.",
+  "ПІБ / акаунт": "Full name / account",
+  "Поки немає реферальних посилань": "No referral links yet",
+  "Поки немає реферальних реєстрацій": "No referral signups yet",
+  "Подій ще немає.": "No events yet.",
+  "Посилання з’являться після відкриття реферального блоку користувачами.": "Links will appear after users open the referral block.",
+  "Посилання, переходи та реферальні реєстрації.": "Links, clicks and referral signups.",
+  "Помилка": "Error",
+  "Профіль": "Profile",
+  "Реєстрації по днях": "Registrations by day",
+  "Реферальні посилання": "Referral links",
+  "Реферальні реєстрації": "Referral signups",
+  "Ролі у workspace": "Workspace roles",
+  "Система": "System",
+  "Так": "Yes",
+  "Топ компаній за usage": "Top companies by usage",
+  "Усі джерела": "All sources",
+  "Усі зареєстровані клієнти та джерела їх залучення.": "All registered clients and acquisition sources.",
+  "Учасники компанії з’являться тут.": "Company members will appear here.",
+  "Час": "Time",
+  "Чернетка #": "Draft #",
+  "Workspace за місяць": "Workspaces this month",
+  "Юридичні клієнти, їхні користувачі, ролі, workspace та активність.": "Legal clients, their users, roles, workspaces and activity.",
+});
 const localizedTitles = {
   en: {
     home: ["Home", "Overview of your content and next actions."],
@@ -104,6 +773,67 @@ const localizedTitles = {
   },
 };
 const t = key => (translations[state.locale] || translations.uk)[key] || translations.uk[key] || key;
+function translateText(value) {
+  if (state.locale !== "en") return value;
+  const text = String(value ?? "");
+  const trimmed = text.trim();
+  if (!trimmed) return text;
+  let translated = uiTextEn[trimmed];
+  if (!translated) {
+    translated = trimmed
+      .replace(/(\d+)\s*корист\./g, "$1 users")
+      .replace(/(\d+)\s*прав/g, "$1 permissions")
+      .replace(/(\d+)\s*дн\./g, "$1 days")
+      .replace(/Без workspace/g, "No workspace")
+      .replace(/користувачів/g, "users")
+      .replace(/користувач/g, "user")
+      .replace(/публікацій/g, "publications")
+      .replace(/публікації/g, "publications")
+      .replace(/чернетки/g, "drafts")
+      .replace(/чернетка/g, "draft")
+      .replace(/план/g, "plan")
+      .replace(/Власник/g, "Owner")
+      .replace(/Адміністратор/g, "Administrator")
+      .replace(/Контент-менеджер/g, "Content manager")
+      .replace(/Редактор/g, "Editor")
+      .replace(/Публікатор/g, "Publisher")
+      .replace(/Переглядач/g, "Viewer")
+      .replace(/Учасник/g, "Member")
+      .replace(/Власники/g, "Owners")
+      .replace(/Адміни/g, "Admins")
+      .replace(/Учасники/g, "Members")
+      .replace(/створено/g, "created")
+      .replace(/Скоро/g, "Soon");
+  }
+  if (translated === trimmed) return text;
+  return text.replace(trimmed, translated);
+}
+const nativeConfirm = window.confirm.bind(window);
+const nativePrompt = window.prompt.bind(window);
+window.confirm = message => nativeConfirm(translateText(message));
+window.prompt = (message, defaultValue = "") => nativePrompt(translateText(message), defaultValue);
+function localizeDom(root = document.body) {
+  if (state.locale !== "en" || !root) return;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      if (!parent) return NodeFilter.FILTER_REJECT;
+      if (["SCRIPT", "STYLE", "TEXTAREA", "CODE", "PRE"].includes(parent.tagName)) return NodeFilter.FILTER_REJECT;
+      if (parent.closest(".telegram-preview-text,.content-main,.schedule-preview-card,.editor-preview-card,.asset-body,.service-update-card p")) return NodeFilter.FILTER_REJECT;
+      return node.nodeValue.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    },
+  });
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  nodes.forEach(node => {
+    node.nodeValue = translateText(node.nodeValue);
+  });
+  root.querySelectorAll("[placeholder],[title],[aria-label],[data-tooltip]").forEach(node => {
+    for (const attr of ["placeholder", "title", "aria-label", "data-tooltip"]) {
+      if (node.hasAttribute(attr)) node.setAttribute(attr, translateText(node.getAttribute(attr)));
+    }
+  });
+}
 const statusLabels = {
   idea: "Ідея", suggested: "Ідея", draft: "Чернетка", review: "На перевірці",
   needs_changes: "Потрібні правки", ready: "Готово", scheduled: "Заплановано",
@@ -138,10 +868,37 @@ const auditActionLabels = {
   brand_material_updated: "Оновлено матеріал бренду",
   workspace_appearance_updated: "Оновлено оформлення workspace",
 };
+const auditActionLabelsEn = {
+  user_logged_in: "User logged in",
+  user_registered: "User registered",
+  email_verified: "Email verified",
+  organization_created: "Workspace created",
+  organization_updated: "Workspace updated",
+  workspace_selected: "Workspace selected",
+  "workspace.invitation_created": "Workspace invitation created",
+  telegram_connected: "Telegram connected",
+  instagram_connected: "Instagram connected",
+  instagram_disconnected: "Instagram disconnected",
+  rubric_created: "Rubric created",
+  "rubric.updated": "Rubric updated",
+  idea_created: "Idea created",
+  draft_created: "Draft created",
+  draft_scheduled: "Draft scheduled",
+  draft_published: "Draft published",
+  referral_link_opened: "Referral link opened",
+  referral_signup_completed: "Referral signup completed",
+  service_update_created: "Service update created",
+  service_update_updated: "Service update updated",
+  visual_style_created: "Visual style created",
+  visual_style_updated: "Visual style updated",
+  brand_material_created: "Brand material added",
+  brand_material_updated: "Brand material updated",
+  workspace_appearance_updated: "Workspace appearance updated",
+};
 function auditActionLabel(action) {
   const raw = String(action || "");
   if (state.locale === "en") {
-    return raw
+    return auditActionLabelsEn[raw] || raw
       .replace(/[._-]+/g, " ")
       .replace(/\b\w/g, char => char.toUpperCase())
       .trim() || "System event";
@@ -155,13 +912,31 @@ const statusActions = {
   needs_changes: [["draft","Повернути в чернетки"]],
   ready: [["draft","Повернути в чернетки"]],
 };
+const statusLabelsEn = {
+  idea: "Idea", suggested: "Idea", draft: "Draft", review: "In review",
+  needs_changes: "Needs changes", ready: "Ready", scheduled: "Scheduled",
+  published: "Published", queued_text: "Generating", queued_image: "Visual",
+  text_batch: "Generating", image_batch: "Visual", failed: "Error",
+  error: "Error", cancelled: "Cancelled",
+};
+function statusLabel(status) {
+  return state.locale === "en"
+    ? (statusLabelsEn[status] || translateText(statusLabels[status] || status))
+    : (statusLabels[status] || status);
+}
 const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
 const money = value => `$${Number(value || 0).toFixed(2)}`;
-const roleLabel = role => ({
+const roleLabelsUk = {
   platform_admin:"Platform Admin",owner:"Власник",admin:"Адміністратор",
   content_manager:"Контент-менеджер",editor:"Редактор",
   publisher:"Публікатор",viewer:"Переглядач",member:"Учасник",
-}[role] || role || "Учасник");
+};
+const roleLabelsEn = {
+  platform_admin:"Platform Admin",owner:"Owner",admin:"Administrator",
+  content_manager:"Content manager",editor:"Editor",
+  publisher:"Publisher",viewer:"Viewer",member:"Member",
+};
+const roleLabel = role => (state.locale === "en" ? roleLabelsEn : roleLabelsUk)[role] || role || (state.locale === "en" ? "Member" : "Учасник");
 function decodeHtmlMarkup(value) {
   let result = String(value || "");
   const textarea = document.createElement("textarea");
@@ -184,8 +959,8 @@ const formatDate = (value, fallback = "Ще не заплановано") => {
   if (!value) return fallback;
   const date = parseDateValue(value);
   return Number.isNaN(date.getTime())
-    ? fallback
-    : date.toLocaleDateString("uk-UA", {day:"2-digit",month:"short"});
+    ? translateText(fallback)
+    : date.toLocaleDateString(state.locale === "en" ? "en-US" : "uk-UA", {day:"2-digit",month:"short"});
 };
 const localDateKey = value => {
   const date = parseDateValue(value);
@@ -260,6 +1035,7 @@ function brandCompletion() {
         (hasValue("website_url") ? 5 : 0) +
         (hasValue("brand_primary_color") ? 5 : 0),
       hints: ["Опис компанії", "Ключові продукти/послуги", "Сайт", "Основний колір"],
+      hintsEn: ["Company description", "Key products/services", "Website", "Primary color"],
     },
     {
       key: "tone",
@@ -268,6 +1044,7 @@ function brandCompletion() {
       weight: 20,
       score: (hasValue("tone_of_voice") ? 16 : 0) + (hasValue("forbidden_phrases") ? 4 : 0),
       hints: ["Правила мови", "Заборонені слова або кліше"],
+      hintsEn: ["Language rules", "Forbidden words or cliches"],
     },
     {
       key: "rubrics",
@@ -276,6 +1053,7 @@ function brandCompletion() {
       weight: 20,
       score: activeRubrics >= 3 ? 20 : activeRubrics >= 1 ? 12 : 0,
       hints: ["1 активна рубрика = +12%", "3+ активні рубрики = +20%"],
+      hintsEn: ["1 active rubric = +12%", "3+ active rubrics = +20%"],
     },
     {
       key: "visuals",
@@ -284,6 +1062,7 @@ function brandCompletion() {
       weight: 15,
       score: customVisuals >= 1 ? 15 : 0,
       hints: ["Створіть власний стиль для генерації зображень"],
+      hintsEn: ["Create a custom style for image generation"],
     },
     {
       key: "assets",
@@ -292,6 +1071,7 @@ function brandCompletion() {
       weight: 10,
       score: materialCount >= 2 ? 10 : materialCount >= 1 ? 6 : 0,
       hints: ["Логотип, брендбук, фото, презентація або посилання"],
+      hintsEn: ["Logo, brand book, photo, presentation or link"],
     },
     {
       key: "appearance",
@@ -303,6 +1083,7 @@ function brandCompletion() {
         (Number(settings.brand_logo_asset_id) ? 2 : 0) +
         (hasValue("brand_primary_color") && hasValue("brand_secondary_color") ? 1 : 0),
       hints: ["Аватар workspace", "Логотип компанії", "Основний і додатковий колір"],
+      hintsEn: ["Workspace avatar", "Company logo", "Primary and secondary color"],
     },
   ].map(section => ({...section, score: Math.min(section.weight, section.score)}));
   const total = Math.min(100, sections.reduce((sum, section) => sum + section.score, 0));
@@ -313,7 +1094,7 @@ function renderBrandCompletionDetails({compact = false} = {}) {
   return `<div class="brand-completion ${compact ? "compact" : ""}">
     <div class="row between"><div><div class="eyebrow">Бренд-профіль</div><h3>${t("brandFilled")} ${completion.total}%</h3></div><strong>${completion.total}/100</strong></div>
     <div class="brand-completion-bar"><span style="width:${completion.total}%"></span></div>
-    <div class="brand-score-grid">${completion.sections.map(section => `<button type="button" data-brand-score-tab="${esc(section.key)}" class="${state.brandTab === section.key ? "active" : ""}"><span>${esc(state.locale === "en" ? section.labelEn : section.label)}</span><strong>${section.score}/${section.weight}%</strong><small>${esc(section.hints.join(" · "))}</small></button>`).join("")}</div>
+    <div class="brand-score-grid">${completion.sections.map(section => `<button type="button" data-brand-score-tab="${esc(section.key)}" class="${state.brandTab === section.key ? "active" : ""}"><span>${esc(state.locale === "en" ? section.labelEn : section.label)}</span><strong>${section.score}/${section.weight}%</strong><small>${esc((state.locale === "en" ? section.hintsEn : section.hints).join(" · "))}</small></button>`).join("")}</div>
   </div>`;
 }
 function updateBrandTabLabels() {
@@ -416,7 +1197,8 @@ function pagination(data, key, rerender) {
     document.querySelectorAll(`[data-pagination="${key}"] [data-page]`).forEach(button => button.onclick = () => updateListQuery({page:button.dataset.page}, rerender, key));
     document.querySelector(`[data-pagination="${key}"] select`)?.addEventListener("change", event => updateListQuery({page:"1",per_page:event.target.value}, rerender, key));
   });
-  return `<nav class="pagination" data-pagination="${key}" aria-label="Пагінація"><span>Показано ${start}–${end} з ${data.total}</span><div><button data-page="${Math.max(1,data.page-1)}" ${data.page<=1?"disabled":""}>Назад</button>${pages.map(page=>`<button data-page="${page}" class="${page===data.page?"active":""}">${page}</button>`).join("")}<button data-page="${Math.min(data.total_pages,data.page+1)}" ${data.page>=data.total_pages?"disabled":""}>Вперед</button></div><label>На сторінці<select>${[10,25,50,100].map(size=>`<option value="${size}" ${size===data.per_page?"selected":""}>${size}</option>`).join("")}</select></label></nav>`;
+  const label = state.locale === "en" ? `Showing ${start}–${end} of ${data.total}` : `Показано ${start}–${end} з ${data.total}`;
+  return `<nav class="pagination" data-pagination="${key}" aria-label="${state.locale === "en" ? "Pagination" : "Пагінація"}"><span>${label}</span><div><button data-page="${Math.max(1,data.page-1)}" ${data.page<=1?"disabled":""}>${state.locale === "en" ? "Back" : "Назад"}</button>${pages.map(page=>`<button data-page="${page}" class="${page===data.page?"active":""}">${page}</button>`).join("")}<button data-page="${Math.min(data.total_pages,data.page+1)}" ${data.page>=data.total_pages?"disabled":""}>${state.locale === "en" ? "Next" : "Вперед"}</button></div><label>${state.locale === "en" ? "Per page" : "На сторінці"}<select>${[10,25,50,100].map(size=>`<option value="${size}" ${size===data.per_page?"selected":""}>${size}</option>`).join("")}</select></label></nav>`;
 }
 function selected(key) {
   if (!state.selected[key]) state.selected[key] = new Set();
@@ -480,7 +1262,7 @@ async function api(path, options = {}) {
 
 function toast(message, error = false) {
   const node = document.querySelector("#toast");
-  node.textContent = message;
+  node.textContent = translateText(message);
   node.classList.toggle("error", error);
   node.hidden = false;
   clearTimeout(toast.timer);
@@ -489,7 +1271,7 @@ function toast(message, error = false) {
 async function loading(button, task, label = "Зачекайте…") {
   const old = button.innerHTML;
   button.disabled = true;
-  button.innerHTML = `<span class="spinner"></span>${label}`;
+  button.innerHTML = `<span class="spinner"></span>${translateText(label)}`;
   try { return await task(); }
   catch (error) { toast(error.message, true); throw error; }
   finally { button.disabled = false; button.innerHTML = old; }
@@ -510,10 +1292,10 @@ function initials(name) {
 }
 function pill(status) {
   const normalized = status === "suggested" ? "idea" : status;
-  return `<span class="pill ${esc(normalized)}">${esc(statusLabels[status] || status)}</span>`;
+  return `<span class="pill ${esc(normalized)}">${esc(statusLabel(status))}</span>`;
 }
 function empty(title, text, action = "") {
-  return `<div class="empty-state"><div style="font-size:28px;color:#818cf8">✦</div><h3>${esc(title)}</h3><p class="muted">${esc(text)}</p>${action}</div>`;
+  return `<div class="empty-state"><div style="font-size:28px;color:#818cf8">✦</div><h3>${esc(translateText(title))}</h3><p class="muted">${esc(translateText(text))}</p>${action}</div>`;
 }
 function notificationStorageKey() {
   return `content-studio:read-notifications:${state.me?.id || "guest"}:${state.me?.organization_id || "none"}`;
@@ -593,16 +1375,23 @@ function serviceUpdatesStorageKey() {
   return `content-studio:service-updates:last-seen:${state.me?.id || "guest"}`;
 }
 function serviceUpdateLabel(value) {
-  return ({
+  const labelsUk = {
     release: "Нова функція",
     fix: "Виправлення",
     maintenance: "Технічні роботи",
     announcement: "Оголошення",
-  }[value] || value || "Оновлення");
+  };
+  const labelsEn = {
+    release: "New feature",
+    fix: "Fix",
+    maintenance: "Maintenance",
+    announcement: "Announcement",
+  };
+  return (state.locale === "en" ? labelsEn : labelsUk)[value] || value || (state.locale === "en" ? "Update" : "Оновлення");
 }
 function serviceUpdateDate(value) {
   return value
-    ? new Date(String(value).replace(" ", "T") + "Z").toLocaleDateString("uk-UA", {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})
+    ? new Date(String(value).replace(" ", "T") + "Z").toLocaleDateString(state.locale === "en" ? "en-US" : "uk-UA", {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})
     : "";
 }
 function updateServiceUpdatesBadge() {
@@ -734,6 +1523,7 @@ function applyLocaleChrome() {
   const searchSmall = document.querySelector("#searchButton small")?.outerHTML || "";
   document.querySelector("#searchButton").innerHTML = `<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 4 4"/></svg>${t("search")} ${searchSmall}`;
   document.querySelector("#createButton").textContent = t("create");
+  localizeDom(document.querySelector(".sidebar"));
 }
 async function applyLocationRoute({openDraft = true} = {}) {
   const route = readRouteState();
@@ -753,6 +1543,7 @@ async function applyLocationRoute({openDraft = true} = {}) {
 function renderCurrent() {
   if (!state.data || !state.company) return;
   ({home: renderHome, ideas: renderIdeas, plan: renderPlan, drafts: renderDrafts, calendar: renderCalendar, brand: renderBrand, analytics: renderAnalytics, settings: renderSettings, platform: renderPlatform}[state.view])();
+  localizeDom(document.querySelector(`#${state.view}View`) || document.body);
 }
 
 function applyIdentity() {
@@ -904,7 +1695,7 @@ function renderIdeas() {
   const items = (data.items || []).map(item => ({...item,...(liveIdeas.get(Number(item.id)) || {})}));
   target.innerHTML = `${bulkBar("ideas",[["create_drafts","Створити чернетки"],["assign_rubric","Призначити рубрику"],["delete","Видалити","danger"]])}${items.length ? `<div class="table-wrap"><table class="users-table content-table"><thead><tr><th><input type="checkbox" data-select-all="ideas" aria-label="Обрати всі ідеї на сторінці"></th><th>${sortHeader("title","Ідея","ideas",renderIdeas)}</th><th>Рубрика</th><th>${sortHeader("planned_for","Планова дата","ideas",renderIdeas)}</th><th>${sortHeader("status","Статус","ideas",renderIdeas)}</th><th>Дії</th></tr></thead><tbody>${items.map(item => {
     const generating = activeGenerationStatuses.has(item.status);
-    return `<tr class="${state.recentDraftIds.has(Number(item.draft_id)) ? "recent-row" : ""}"><td>${selectionCheckbox("ideas",item.id)}</td><td class="content-main"><strong>${esc(item.title_plain||plain(item.title))}</strong><small>${esc(plain(item.angle||"Перспективна тема для майбутньої публікації.").slice(0,150))}</small>${generating?`<div class="generation-progress"><span style="width:${Number(item.progress||12)}%"></span></div>`:""}</td><td><span class="pill idea">${esc((state.data.rubrics||[]).find(x=>x.slug===item.product)?.name||item.product)}</span></td><td>${item.planned_for?formatDate(item.planned_for):"Ще не заплановано"}</td><td>${generating?`<span class="progress-label"><span class="spinner"></span>${esc(item.progress_label||statusLabels[item.status])} · ${Number(item.progress||12)}%</span>`:pill(item.status)}</td><td><div class="table-actions">${can("content.create")?`<button class="dark-button" data-generate-idea="${item.id}" ${generating||item.draft_id?"disabled":""}>${generating?"Генерується…":item.draft_id?"Створено":"Чернетка"}</button>`:""}${item.draft_id?`<button data-open-draft="${item.draft_id}">Відкрити</button>`:""}${can("ideas.delete")?`<button class="ghost danger" data-delete-idea="${item.id}" ${generating?"disabled":""}>Видалити</button>`:""}</div></td></tr>`;
+    return `<tr class="${state.recentDraftIds.has(Number(item.draft_id)) ? "recent-row" : ""}"><td>${selectionCheckbox("ideas",item.id)}</td><td class="content-main"><strong>${esc(item.title_plain||plain(item.title))}</strong><small>${esc(plain(item.angle||"Перспективна тема для майбутньої публікації.").slice(0,150))}</small>${generating?`<div class="generation-progress"><span style="width:${Number(item.progress||12)}%"></span></div>`:""}</td><td><span class="pill idea">${esc((state.data.rubrics||[]).find(x=>x.slug===item.product)?.name||item.product)}</span></td><td>${item.planned_for?formatDate(item.planned_for):translateText("Ще не заплановано")}</td><td>${generating?`<span class="progress-label"><span class="spinner"></span>${esc(translateText(item.progress_label||statusLabel(item.status)))} · ${Number(item.progress||12)}%</span>`:pill(item.status)}</td><td><div class="table-actions">${can("content.create")?`<button class="dark-button" data-generate-idea="${item.id}" ${generating||item.draft_id?"disabled":""}>${generating?translateText("Генерується…"):item.draft_id?translateText("Створено"):translateText("Чернетка")}</button>`:""}${item.draft_id?`<button data-open-draft="${item.draft_id}">${translateText("Відкрити")}</button>`:""}${can("ideas.delete")?`<button class="ghost danger" data-delete-idea="${item.id}" ${generating?"disabled":""}>${translateText("Видалити")}</button>`:""}</div></td></tr>`;
   }).join("")}</tbody></table></div>` : empty("У вас ще немає ідей","Згенеруйте перші теми на основі бренду та рубрик.",can("ideas.create")?'<button class="primary" id="emptyGenerateIdeas">✦ Згенерувати ідеї</button>':"")}${pagination(data,"ideas",renderIdeas)}`;
   bindSelection("ideas",target,renderIdeas);
   target.querySelector("[data-clear-selection]")?.addEventListener("click",()=>{selected("ideas").clear();renderIdeas();});
@@ -984,7 +1775,7 @@ function generationCard(job, draft = null) {
     <div class="generation-body">
       ${pill(job.status)}
       <h3>${esc(plain(title))}</h3>
-      <p class="muted">${esc(job.progress_label || statusLabels[job.status] || "Генеруємо матеріал")}</p>
+      <p class="muted">${esc(translateText(job.progress_label || statusLabel(job.status) || "Генеруємо матеріал"))}</p>
       <div class="generation-progress"><span style="width:${progress}%"></span></div>
       <div class="generation-status"><span>${job.status === "queued_image" || job.status === "image_batch" ? "Текст уже готовий, створюємо зображення" : "Створюємо текст і структуру поста"}</span><strong>${progress}%</strong></div>
     </div>
@@ -1031,7 +1822,7 @@ function renderDrafts() {
   const generationStrip=generationCards?`<div class="generation-strip">${generationCards}</div>`:"";
   const bar=bulkBar("drafts",[["status","Змінити статус"],["assign_rubric","Призначити рубрику"],["delete","Видалити","danger"]]);
   if (kanban) {
-    target.innerHTML = `${bar}${generationStrip}<div class="kanban-board">${statusOrder.map(status => {const rows = status==="idea" ? [] : visibleDrafts.filter(x=>x.status===status);return `<section class="kanban-column"><div class="kanban-head"><span>${statusLabels[status]}</span><span>${rows.length}</span></div>${rows.map(item=>`<article class="kanban-card selectable-card">${selectionCheckbox("drafts",item.id)}<button class="kanban-open" data-open-draft="${item.id}">${pill(item.status)}<h4>${esc(item.title_plain||plain(item.title))}</h4><small class="muted">${formatDate(item.scheduled_at||item.created_at)}</small></button><div class="kanban-actions">${can("content.edit")?(statusActions[item.status]||[]).map(([next,label])=>`<button data-transition-draft="${item.id}" data-transition-status="${next}">${label}</button>`).join(""):""}</div></article>`).join("")}</section>`;}).join("")}</div>${pagination(data,"drafts",renderDrafts)}`;
+    target.innerHTML = `${bar}${generationStrip}<div class="kanban-board">${statusOrder.map(status => {const rows = status==="idea" ? [] : visibleDrafts.filter(x=>x.status===status);return `<section class="kanban-column"><div class="kanban-head"><span>${statusLabel(status)}</span><span>${rows.length}</span></div>${rows.map(item=>`<article class="kanban-card selectable-card">${selectionCheckbox("drafts",item.id)}<button class="kanban-open" data-open-draft="${item.id}">${pill(item.status)}<h4>${esc(item.title_plain||plain(item.title))}</h4><small class="muted">${formatDate(item.scheduled_at||item.created_at)}</small></button><div class="kanban-actions">${can("content.edit")?(statusActions[item.status]||[]).map(([next,label])=>`<button data-transition-draft="${item.id}" data-transition-status="${next}">${translateText(label)}</button>`).join(""):""}</div></article>`).join("")}</section>`;}).join("")}</div>${pagination(data,"drafts",renderDrafts)}`;
   } else {
     target.innerHTML = `${bar}${generationStrip}${visibleDrafts.length ? `<div class="table-wrap"><table class="users-table content-table"><thead><tr><th><input type="checkbox" data-select-all="drafts" aria-label="Обрати всі чернетки на сторінці"></th><th>${sortHeader("title","Чернетка","drafts",renderDrafts)}</th><th>Рубрика</th><th>${sortHeader("status","Статус","drafts",renderDrafts)}</th><th>Візуал</th><th>${sortHeader("scheduled_at","Дата","drafts",renderDrafts)}</th><th>Дії</th></tr></thead><tbody>${visibleDrafts.map(item => `<tr class="${state.recentDraftIds.has(Number(item.id)) ? "recent-row" : ""}"><td>${selectionCheckbox("drafts",item.id)}</td><td class="content-main"><strong>${esc(item.title_plain||plain(item.title))}</strong>${state.recentDraftIds.has(Number(item.id))?'<span class="fresh-chip">Щойно створено</span>':""}<small>${esc((item.caption_plain||plain(item.caption_html)).slice(0,155))}</small></td><td>${esc((state.data.rubrics||[]).find(x=>x.slug===item.product)?.name||item.product)}</td><td>${pill(item.status)}</td><td>${item.image_path?'<span class="success-text">Готовий</span>':'<span class="muted">Без зображення</span>'}</td><td>${item.scheduled_at?formatDate(item.scheduled_at):"Ще не заплановано"}</td><td><button data-open-draft="${item.id}">Відкрити</button></td></tr>`).join("")}</tbody></table></div>` : generationCards?"":empty("Чернеток ще немає","Створіть чернетку з ідеї або додайте матеріал вручну.")}${pagination(data,"drafts",renderDrafts)}`;
   }
@@ -1041,7 +1832,7 @@ function renderDrafts() {
   document.querySelectorAll("[data-open-draft]").forEach(node => node.onclick = () => openEditor(Number(node.dataset.openDraft)));
   document.querySelectorAll("[data-transition-draft]").forEach(node => node.onclick = async () => {
     await api(`api/drafts/${node.dataset.transitionDraft}/status`, {method:"POST",body:JSON.stringify({status:node.dataset.transitionStatus})});
-    toast(`Статус змінено: ${statusLabels[node.dataset.transitionStatus]}`);
+    toast(`${translateText("Статус змінено:")} ${statusLabel(node.dataset.transitionStatus)}`);
     await refresh();
   });
 }
@@ -1056,7 +1847,7 @@ async function runDraftBulk(action) {
 
 function renderCalendar() {
   const year = state.calendarDate.getFullYear(), month = state.calendarDate.getMonth();
-  document.querySelector("#calendarTitle").textContent = state.calendarDate.toLocaleDateString("uk-UA",{month:"long",year:"numeric"});
+  document.querySelector("#calendarTitle").textContent = state.calendarDate.toLocaleDateString(state.locale === "en" ? "en-US" : "uk-UA",{month:"long",year:"numeric"});
   const drafts = state.data.drafts || [];
   const schedulable = drafts.filter(x => x.status !== "published" && !x.scheduled_at);
   document.querySelector("#calendarReady").innerHTML = schedulable.length
@@ -1070,7 +1861,7 @@ function renderCalendar() {
     const key = localDateKey(day);
     const events = drafts.filter(x => x.scheduled_at && localDateKey(x.scheduled_at)===key);
     const socialEvents = (state.data.social_publish_jobs||[]).filter(x => x.scheduled_at && localDateKey(x.scheduled_at)===key);
-    cells.push(`<div class="calendar-day ${day.getMonth()!==month?"outside":""} ${key===localDateKey(new Date())?"today":""}"><strong>${day.getDate()}</strong>${events.map(x=>`<button class="calendar-event" data-open-draft="${x.id}">${new Date(x.scheduled_at).toLocaleTimeString("uk-UA",{hour:"2-digit",minute:"2-digit"})} · ${esc(plain(x.title))}</button>`).join("")}${socialEvents.map(job=>{const draft=drafts.find(item=>Number(item.id)===Number(job.draft_id));return `<button class="calendar-event instagram" data-open-draft="${job.draft_id}">${new Date(job.scheduled_at).toLocaleTimeString("uk-UA",{hour:"2-digit",minute:"2-digit"})} · Instagram · ${esc(plain(draft?.title||`Чернетка #${job.draft_id}`))}</button>`}).join("")}</div>`);
+    cells.push(`<div class="calendar-day ${day.getMonth()!==month?"outside":""} ${key===localDateKey(new Date())?"today":""}"><strong>${day.getDate()}</strong>${events.map(x=>`<button class="calendar-event" data-open-draft="${x.id}">${new Date(x.scheduled_at).toLocaleTimeString(state.locale === "en" ? "en-US" : "uk-UA",{hour:"2-digit",minute:"2-digit"})} · ${esc(plain(x.title))}</button>`).join("")}${socialEvents.map(job=>{const draft=drafts.find(item=>Number(item.id)===Number(job.draft_id));return `<button class="calendar-event instagram" data-open-draft="${job.draft_id}">${new Date(job.scheduled_at).toLocaleTimeString(state.locale === "en" ? "en-US" : "uk-UA",{hour:"2-digit",minute:"2-digit"})} · Instagram · ${esc(plain(draft?.title||`Чернетка #${job.draft_id}`))}</button>`}).join("")}</div>`);
   }
   document.querySelector("#calendarGrid").innerHTML = ["Пн","Вт","Ср","Чт","Пт","Сб","Нд"].map(x=>`<div class="calendar-weekday">${x}</div>`).join("")+cells.join("");
   document.querySelectorAll("[data-open-draft]").forEach(node => node.onclick = () => openEditor(Number(node.dataset.openDraft)));
@@ -1090,7 +1881,7 @@ function openScheduleForm(selectedId = null) {
   showForm(
     "Запланувати публікацію",
     `<div class="wide callout"><strong>Чернетка буде затверджена</strong><p>Після вибору дати матеріал отримає статус «Заплановано». Перед публікацією його ще можна відкрити, відредагувати або повернути в готові.</p></div>
-    <label class="wide">Матеріал<select name="draft_id" id="scheduleDraftSelect">${eligible.map(x=>`<option value="${x.id}" ${x.id===selectedId?"selected":""}>${esc(plain(x.title))} — ${esc(statusLabels[x.status]||x.status)}</option>`).join("")}</select></label>
+    <label class="wide">Матеріал<select name="draft_id" id="scheduleDraftSelect">${eligible.map(x=>`<option value="${x.id}" ${x.id===selectedId?"selected":""}>${esc(plain(x.title))} — ${esc(statusLabel(x.status))}</option>`).join("")}</select></label>
     <div class="wide schedule-preview" id="scheduleDraftPreview"></div>
     <label class="wide">Дата і час<input name="scheduled_at" type="datetime-local" min="${localDateTimeValue(new Date(Date.now()+60000))}" required></label>`,
     async form => {
@@ -1257,10 +2048,10 @@ const platformMeta = {
   expenses: ["Витрати","AI-витрати по компаніях, моделях і користувачах."],
 };
 const platformDate = value => value
-  ? new Date(value).toLocaleString("uk-UA",{dateStyle:"short",timeStyle:"short"})
+  ? new Date(value).toLocaleString(state.locale === "en" ? "en-US" : "uk-UA",{dateStyle:"short",timeStyle:"short"})
   : "—";
 function platformEmpty(title, text) {
-  return `<div class="empty-state"><h3>${esc(title)}</h3><p class="muted">${esc(text)}</p></div>`;
+  return `<div class="empty-state"><h3>${esc(translateText(title))}</h3><p class="muted">${esc(translateText(text))}</p></div>`;
 }
 async function openPlatformSection(section, {push = true, clientId = null, companyId = null} = {}) {
   state.platformSection = section;
@@ -1304,8 +2095,8 @@ function renderPlatform() {
   const target = document.querySelector("#platformContent");
   if (!target || !state.me?.is_super_admin) return;
   const [heading, description] = platformMeta[state.platformSection];
-  document.querySelector("#platformHeading").textContent = heading;
-  document.querySelector("#platformDescription").textContent = description;
+  document.querySelector("#platformHeading").textContent = translateText(heading);
+  document.querySelector("#platformDescription").textContent = translateText(description);
   document.querySelectorAll("[data-platform-section]").forEach(node => node.classList.toggle("active",node.dataset.platformSection===state.platformSection));
   const key = state.platformClientId
     ? `client-${state.platformClientId}`
@@ -1349,7 +2140,7 @@ function renderPlatform() {
     document.querySelectorAll("[data-client]").forEach(button=>button.onclick=()=>openPlatformSection("clients",{clientId:Number(button.dataset.client)}));
   } else if (state.platformSection === "companies" && state.platformCompanyId) {
     const company=data.company;
-    const roleLabels={owner:"Власник",admin:"Адміністратор",member:"Учасник",content_manager:"Контент-менеджер",editor:"Редактор",publisher:"Публікатор",viewer:"Переглядач"};
+    const roleLabels={owner:roleLabel("owner"),admin:roleLabel("admin"),member:roleLabel("member"),content_manager:roleLabel("content_manager"),editor:roleLabel("editor"),publisher:roleLabel("publisher"),viewer:roleLabel("viewer")};
     target.innerHTML=`<button id="backToCompanies">← До списку компаній</button>
     <article class="card panel client-profile"><div class="row between"><div><div class="eyebrow">Компанія #${company.id}</div><h2>${esc(company.name)}</h2><p class="muted">${esc(company.slug)} · створено ${platformDate(company.created_at)}</p></div><span class="pill ${company.active?"ready":"failed"}">${company.active?"Активна":"Вимкнена"}</span></div>
     <div class="platform-detail-grid">${[["Власник",company.owner_name||"—"],["Email власника",company.owner_email||"—"],["Workspace",company.workspace_count],["Користувачі",company.user_count],["Чернетки",company.draft_count],["Заплановано",company.scheduled_count],["Опубліковано",company.published_count],["AI-витрати",money(company.ai_cost)],["Остання активність",platformDate(company.last_activity_at)]].map(([label,value])=>`<div><small>${esc(label)}</small><strong>${esc(value)}</strong></div>`).join("")}</div></article>
@@ -1377,6 +2168,7 @@ function renderPlatform() {
   }
   target.querySelectorAll("[data-bulk-action]").forEach(button=>button.onclick=()=>runPlatformBulk(button.dataset.bulkAction));
   target.querySelectorAll("[data-clear-selection]").forEach(button=>button.onclick=()=>{for(const key of Object.keys(state.selected).filter(x=>x.startsWith("platform-")))selected(key).clear();renderPlatform();});
+  localizeDom(target);
 }
 async function runPlatformBulk(action){
   const key=`platform-${state.platformSection}`;
@@ -1462,7 +2254,7 @@ function renderSettings() {
   else if (state.settingsTab === "billing") {
     if(!state.plans){target.innerHTML='<span class="skeleton"></span>';api("api/plans").then(data=>{state.plans=data;renderSettings();}).catch(error=>toast(error.message,true));return;}
     const expires = state.plans.expires_at ? formatDate(state.plans.expires_at, "") : "";
-    target.innerHTML=`<article class="card settings-card pricing-panel"><div class="row between"><div><div class="eyebrow">Тарифи</div><h2>Оберіть план для workspace</h2><p class="muted">Публікації, користувачі, канали та AI-бюджет контролюються на рівні поточного workspace.</p></div><span class="pill ready">Поточний: ${esc(state.plans.current_plan||state.company.plan_code||"custom")}${expires?` · до ${esc(expires)}`:""}</span></div><div class="pricing-grid">${state.plans.plans.map(plan=>{const current=(state.plans.current_plan||state.company.plan_code)===plan.code;return `<article class="price-card ${plan.popular?"popular":""} ${current?"current":""}">${plan.popular?'<span class="popular-label">Найпопулярніший</span>':""}<h3>${esc(plan.name)}</h3><p class="tagline">${esc(plan.tagline)}</p><div class="price"><strong>${Number(plan.stars).toLocaleString("uk-UA")} ★</strong><span>/ 30 днів</span></div><div class="plan-limits"><div class="plan-limit"><strong>${plan.publications}</strong><span>публікацій</span></div><div class="plan-limit"><strong>${plan.users}</strong><span>користувачів</span></div><div class="plan-limit"><strong>${plan.channels}</strong><span>каналів</span></div><div class="plan-limit"><strong>${money(plan.ai_budget)}</strong><span>AI-бюджет</span></div></div><ul class="plan-features">${(plan.features||[]).map(item=>`<li>${esc(item)}</li>`).join("")}</ul>${current?'<button disabled class="current-plan">Поточний тариф</button>':`<button class="${plan.popular?"success":"primary"}" data-buy-plan="${esc(plan.code)}" ${can("billing.manage")?"":"disabled"}>${can("billing.manage")?"Оплатити в Telegram":"Доступно власнику"}</button>`}</article>`}).join("")}</div><div class="billing-note"><strong>Оплата через Telegram Stars</strong><span>Після оплати ліміти оновляться автоматично після підтвердження платежу.</span></div></article>`;
+    target.innerHTML=`<article class="card settings-card pricing-panel"><div class="row between"><div><div class="eyebrow">Тарифи</div><h2>Оберіть план для workspace</h2><p class="muted">Публікації, користувачі, канали та AI-бюджет контролюються на рівні поточного workspace.</p></div><span class="pill ready">Поточний: ${esc(state.plans.current_plan||state.company.plan_code||"custom")}${expires?` · до ${esc(expires)}`:""}</span></div><div class="pricing-grid">${state.plans.plans.map(plan=>{const current=(state.plans.current_plan||state.company.plan_code)===plan.code;return `<article class="price-card ${plan.popular?"popular":""} ${current?"current":""}">${plan.popular?'<span class="popular-label">Найпопулярніший</span>':""}<h3>${esc(plan.name)}</h3><p class="tagline">${esc(plan.tagline)}</p><div class="price"><strong>${Number(plan.stars).toLocaleString(state.locale === "en" ? "en-US" : "uk-UA")} ★</strong><span>/ 30 днів</span></div><div class="plan-limits"><div class="plan-limit"><strong>${plan.publications}</strong><span>публікацій</span></div><div class="plan-limit"><strong>${plan.users}</strong><span>користувачів</span></div><div class="plan-limit"><strong>${plan.channels}</strong><span>каналів</span></div><div class="plan-limit"><strong>${money(plan.ai_budget)}</strong><span>AI-бюджет</span></div></div><ul class="plan-features">${(plan.features||[]).map(item=>`<li>${esc(item)}</li>`).join("")}</ul>${current?'<button disabled class="current-plan">Поточний тариф</button>':`<button class="${plan.popular?"success":"primary"}" data-buy-plan="${esc(plan.code)}" ${can("billing.manage")?"":"disabled"}>${can("billing.manage")?"Оплатити в Telegram":"Доступно власнику"}</button>`}</article>`}).join("")}</div><div class="billing-note"><strong>Оплата через Telegram Stars</strong><span>Після оплати ліміти оновляться автоматично після підтвердження платежу.</span></div></article>`;
   }
   else if (state.settingsTab === "referral") {
     const referral = state.referral || {};
@@ -1491,8 +2283,8 @@ async function openEditor(id, push = true) {
     const latestInstagramJob = (state.currentPublishJobs||[]).find(job=>job.platform==="instagram");
     const instagramConnected = instagram?.connected;
     const instagramStatus = latestInstagramJob
-      ? `${statusLabels[latestInstagramJob.status] || latestInstagramJob.status}${latestInstagramJob.permalink ? " · є permalink" : ""}`
-      : instagramConnected ? "Готово до публікації у Feed" : "Не підключено";
+      ? `${statusLabel(latestInstagramJob.status)}${latestInstagramJob.permalink ? " · permalink ready" : ""}`
+      : instagramConnected ? translateText("Готово до публікації у Feed") : translateText("Не підключено");
     const publishChannels = `<section class="publish-channels"><div><h3>Канали публікації</h3><p class="muted">Telegram працює як раніше. Instagram — окрема публікація, яка не змінює статус Telegram-поста.</p></div><div class="channel-grid"><article class="channel-card active">${socialLogo("telegram")}<span>Telegram</span><strong>${esc(state.company.telegram?.channel_id||"Підключений канал")}</strong><small>Кнопки «Запланувати» та «Опублікувати» зверху керують Telegram.</small></article><article class="channel-card ${instagramConnected?"active":""}">${socialLogo("instagram")}<span>Instagram Feed</span><strong>${esc(instagramStatus)}</strong><small>${latestInstagramJob?.error?esc(latestInstagramJob.error):"Одиночне зображення + caption."}</small>${instagramConnected?`<div class="row"><button type="button" id="publishInstagram" ${draft.image_path?"":"disabled title=\"Спочатку потрібен візуал\""}>Опублікувати</button><button type="button" id="scheduleInstagram" ${draft.image_path?"":"disabled title=\"Спочатку потрібен візуал\""}>Запланувати</button></div>`:`<button type="button" disabled>Підключіть Instagram</button>`}</article><article class="channel-card soon">${socialLogo("instagram")}<span>Reels</span><strong>Скоро</strong><small>Потрібен відео-модуль.</small></article><article class="channel-card soon">${socialLogo("instagram")}<span>Carousel</span><strong>Скоро</strong><small>Потрібно кілька медіа в чернетці.</small></article></div></section>`;
     if (push) {
       history.pushState(
@@ -1504,6 +2296,7 @@ async function openEditor(id, push = true) {
     const target = document.querySelector("#editorContent");
     target.innerHTML = `<header class="editor-header"><div class="row editor-title-row"><button id="closeEditor">←</button><div>${pill(draft.status)} <strong style="margin-left:8px">${esc(plain(draft.title))}</strong></div></div><div class="row editor-actions"><button id="regenText">Перегенерувати текст</button><button id="saveDraft">Зберегти</button><button id="scheduleDraft" ${draft.image_path?"":"disabled title=\"Спочатку потрібен візуал\""}>Запланувати</button><button class="primary" id="publishDraft" ${["ready","scheduled"].includes(draft.status)?"":"disabled title=\"Спочатку погодьте матеріал\""}>Опублікувати</button></div></header><div class="editor-grid"><form class="editor-form" id="editorForm"><div class="status-actions">${(statusActions[draft.status]||[]).map(([next,label])=>`<button type="button" data-editor-status="${next}">${label}</button>`).join("")}</div><div class="form-grid"><label>Рубрика<input value="${esc(draft.product)}" disabled></label><label>Дата і час<input id="scheduleAt" type="datetime-local" value="${localDateTimeValue(draft.scheduled_at)}"></label></div><label>Заголовок для поста<input id="editorTitle" value="${esc(decodeHtmlMarkup(draft.title))}"></label><label>Заголовок на візуалі<input id="editorVisualTitle" value="${esc(decodeHtmlMarkup(draft.visual_title||draft.title))}"><small class="muted">Без emoji та зайвих символів.</small></label><label>Текст публікації<textarea id="editorCaption" style="min-height:330px">${esc(decodeHtmlMarkup(draft.caption_html))}</textarea></label><label>Посилання<input id="editorLink" value="${esc(draft.link_url||"")}"></label>${publishChannels}<div class="row editor-secondary-actions"><button type="button" id="cancelSchedule" ${draft.status==="scheduled"?"":"hidden"}>Повернути в готові</button></div></form><aside class="editor-preview"><div class="editor-preview-card"><div class="row"><span class="workspace-logo" style="width:30px;height:30px">${initials(state.company.name)}</span><div><strong>${esc(state.company.name)}</strong><small style="display:block;color:#94a3b8">Telegram</small></div></div><img src="${apiUrl(`api/drafts/${id}/image`)}" alt="" onerror="this.style.display='none'"><h2 id="previewTitle">${esc(plain(draft.visual_title||draft.title))}</h2><div id="previewText" class="telegram-preview-text">${safeHtml(draft.caption_html)}</div></div></aside></div>`;
     document.querySelector("#editorOverlay").hidden = false;
+    localizeDom(document.querySelector("#editorOverlay"));
     bindEditorActions();
   } catch (error) { toast(error.message,true); }
 }
@@ -1520,7 +2313,7 @@ function closeEditor() {
 }
 
 function showForm(title, fields, submit, options = {}) {
-  document.querySelector("#formTitle").textContent = title;
+  document.querySelector("#formTitle").textContent = translateText(title);
   document.querySelector("#formBody").innerHTML = `<div class="form-grid">${fields}</div><div class="form-error" id="dynamicError"></div>`;
   document.querySelector("#formOverlay .modal").className = `modal ${options.modalClass || ""}`.trim();
   document.querySelector("#formOverlay").hidden = false;
@@ -1528,9 +2321,10 @@ function showForm(title, fields, submit, options = {}) {
   const submitButton = form.querySelector('button[type="submit"]');
   const cancelButton = form.querySelector("[data-close-overlay]");
   submitButton.hidden = !submit;
-  submitButton.textContent = options.submitLabel || "Зберегти";
+  submitButton.textContent = translateText(options.submitLabel || "Зберегти");
   submitButton.classList.toggle("danger", Boolean(options.danger));
-  cancelButton.textContent = submit ? "Скасувати" : "Закрити";
+  cancelButton.textContent = translateText(submit ? "Скасувати" : "Закрити");
+  localizeDom(document.querySelector("#formOverlay"));
   form.onsubmit = async event => {
     event.preventDefault();
     if (!submit) return;
@@ -1539,7 +2333,7 @@ function showForm(title, fields, submit, options = {}) {
       await loading(
         submitButton,
         () => submit(new FormData(form)),
-        options.loadingLabel || "Зберігаємо…",
+        translateText(options.loadingLabel || "Зберігаємо…"),
       );
       document.querySelector("#formOverlay").hidden=true;
     }
@@ -1566,6 +2360,7 @@ function renderWorkspaceChooser(force = false) {
     </article>`;
   }).join("")+`<button class="card workspace-card workspace-create" id="createWorkspace"><span class="workspace-create-icon">＋</span><strong>${state.me.is_super_admin?"Створити компанію":"Створити workspace"}</strong><small class="muted">${state.me.is_super_admin?"Компанія, перший workspace і власник":"Окремі бренд, команда, канал і календар"}</small></button>`;
   document.querySelector("#workspaceOverlay").hidden = false;
+  localizeDom(document.querySelector("#workspaceOverlay"));
   document.querySelectorAll("[data-workspace]").forEach(button=>button.onclick=async()=>{await api("api/workspace/select",{method:"POST",body:JSON.stringify({organization_id:Number(button.dataset.workspace)})});location.href=`${basePath}/`;});
   document.querySelectorAll("[data-delete-workspace]").forEach(button=>button.onclick=()=>openWorkspaceDelete(Number(button.dataset.deleteWorkspace)));
   document.querySelector("#createWorkspace").onclick = () => {
@@ -1642,6 +2437,7 @@ function showOnboarding(step) {
   };
   document.querySelector("#onboardingBody").innerHTML = contents[state.onboardingStep];
   document.querySelector("#onboardingOverlay").hidden = false;
+  localizeDom(document.querySelector("#onboardingOverlay"));
   if (state.onboardingStep === 3) bindTelegramValidation("obChannel", "obToken", "obTelegramStatus", "obTestTelegram");
   if (state.onboardingStep === 4) {
     const container = document.querySelector("#obRubricRows");
@@ -1963,7 +2759,7 @@ function bindEditorActions() {
   document.querySelector("#editorVisualTitle").oninput=updatePreview;document.querySelector("#editorCaption").oninput=updatePreview;
   document.querySelectorAll("[data-editor-status]").forEach(button => button.onclick = async () => {
     const draft = await api(`api/drafts/${state.currentDraft.id}/status`, {method:"POST",body:JSON.stringify({status:button.dataset.editorStatus})});
-    toast(`Статус змінено: ${statusLabels[draft.status]}`);
+    toast(`${translateText("Статус змінено:")} ${statusLabel(draft.status)}`);
     await refresh(true);
     await openEditor(draft.id, false);
   });
@@ -2072,8 +2868,7 @@ document.querySelector("#logout").onclick=async()=>{await api("api/logout",{meth
 document.querySelector("#languageToggle").onclick=()=>{
   state.locale = state.locale === "uk" ? "en" : "uk";
   localStorage.setItem("content-studio:locale", state.locale);
-  applyLocaleChrome();
-  setView(state.view, {push:false});
+  location.reload();
 };
 document.querySelectorAll("[data-close-overlay]").forEach(node=>node.onclick=()=>node.closest(".overlay").hidden=true);
 document.querySelectorAll(".overlay").forEach(overlay=>overlay.addEventListener("click",event=>{
@@ -2222,6 +3017,7 @@ function renderGuide(){
   document.querySelector("#guideBack").disabled=state.guideStep===0;
   document.querySelector("#guideNext").textContent=state.guideStep===guideSteps.length-1?"Завершити":"Далі →";
   document.querySelectorAll("[data-guide-step]").forEach(button=>button.onclick=()=>{state.guideStep=Number(button.dataset.guideStep);renderGuide();});
+  localizeDom(document.querySelector("#guideOverlay"));
 }
 function openGuide(step=0){state.guideStep=Math.max(0,Math.min(guideSteps.length-1,step));renderGuide();document.querySelector("#guideOverlay").hidden=false;}
 document.querySelector("#openGuide").onclick=()=>openGuide();

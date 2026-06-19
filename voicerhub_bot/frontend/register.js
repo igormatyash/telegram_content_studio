@@ -8,7 +8,7 @@ const googleEnabled = document.body.dataset.googleEnabled === "true";
 document.querySelector("#oauthBlock").hidden = !googleEnabled;
 document.querySelector("#referralWelcome").hidden = !referralCode;
 if (referralRequested && !referralCode) {
-  error.textContent = "Реферальне посилання недійсне або вже вимкнене. Ви можете зареєструватися напряму.";
+  error.textContent = window.authT ? window.authT("Реферальне посилання недійсне або вже вимкнене. Ви можете зареєструватися напряму.") : "Реферальне посилання недійсне або вже вимкнене. Ви можете зареєструватися напряму.";
 }
 
 form.addEventListener("submit", async event => {
@@ -17,7 +17,7 @@ form.addEventListener("submit", async event => {
   const button = form.querySelector("button[type=submit]");
   const old = button.textContent;
   button.disabled = true;
-  button.innerHTML = '<span class="spinner"></span>Створюємо…';
+  button.innerHTML = `<span class="spinner"></span>${window.authT ? window.authT("Створюємо…") : "Створюємо…"}`;
   try {
     const response = await fetch(`${basePath}/api/register`, {
       method: "POST",
@@ -33,10 +33,10 @@ form.addEventListener("submit", async event => {
       }),
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || "Не вдалося зареєструватися");
+    if (!response.ok) throw new Error(data.detail || (window.authT ? window.authT("Не вдалося зареєструватися") : "Не вдалося зареєструватися"));
     location.href = `${basePath}/dashboard`;
   } catch (reason) {
-    error.textContent = reason.message;
+    error.textContent = window.authT ? window.authT(reason.message) : reason.message;
   } finally {
     button.disabled = false;
     button.textContent = old;
