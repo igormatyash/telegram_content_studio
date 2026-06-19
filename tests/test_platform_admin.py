@@ -79,7 +79,10 @@ def test_platform_admin_sees_clients_companies_referrals_and_activity(tmp_path) 
         "/api/platform/users?page=1&per_page=25&sort=created_at&direction=desc",
         headers=HEADERS,
     )
-    activity = platform.get("/api/platform/activity", headers=HEADERS)
+    activity = platform.get(
+        "/api/platform/activity?page=1&per_page=25&sort=created_at&direction=desc",
+        headers=HEADERS,
+    )
 
     assert overview.status_code == 200
     assert overview.json()["metrics"]["users_total"] == 2
@@ -94,6 +97,8 @@ def test_platform_admin_sees_clients_companies_referrals_and_activity(tmp_path) 
     assert users.status_code == 200
     assert users.json()["total"] == 2
     assert users.json()["users"][0]["username"]
+    assert activity.status_code == 200
+    assert "events" in activity.json()
     assert detail.json()["content_totals"] == {
         "ideas": 0,
         "drafts": 0,

@@ -2721,6 +2721,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         page: int = 1,
         per_page: int = 25,
         search: str = "",
+        sort: str = "created_at",
+        direction: str = "desc",
         _: dict = Depends(authorize_super_admin),
     ) -> dict:
         events = saas.list_audit_events(limit=min(2000, max(limit, page * per_page)))
