@@ -942,8 +942,8 @@ function renderBrand() {
     const rows=data.items||[];
     const builtInCards=builtIns.map(x=>`<article class="card asset-card"><img src="${apiUrl(`api/templates/${encodeURIComponent(x.id)}/preview`)}" alt="" loading="eager" decoding="async" fetchpriority="high"><div class="asset-body"><strong>${esc(x.name)}</strong><small>${esc(x.description)}</small><span class="pill ready">Системний</span></div></article>`).join("");
     const customCards=rows.map(x=>`<article class="card asset-card selectable-card">${selectionCheckbox("visuals",x.id)}<img src="${apiUrl(`api/templates/${encodeURIComponent(x.id)}/preview`)}" alt="" loading="eager" decoding="async" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'asset-placeholder',textContent:'Попередній перегляд'}))"><div class="asset-body"><strong>${esc(x.name)}</strong><small>${esc(x.description)}</small><div class="row"><button data-edit-style="${esc(x.id)}">Редагувати</button><button data-duplicate-style="${esc(x.id)}">Дублювати</button></div></div></article>`).join("");
-    const emptyStyles=can("visual_styles.manage")?`<button class="card visual-empty-card" id="addVisualStyleEmpty" type="button"><span class="ai-spark">AI</span><strong>Власних стилів ще немає</strong><small>Створіть стиль для генерації візуалів у впізнаваній манері бренду.</small><em>Створити стиль →</em></button>`:empty("Власних стилів ще немає","Створіть стиль для генерації візуалів у впізнаваній манері бренду.");
-    target.innerHTML=`<div class="row between brand-section-head"><div><h2>Візуальні стилі</h2><p class="muted">Збережіть правила кольорів, настрою та композиції, які AI використовуватиме для зображень.</p></div>${can("visual_styles.manage")&&rows.length?'<button class="primary" id="addVisualStyle">＋ Створити стиль</button>':""}</div>${rows.length?"":emptyStyles}<h3>Стилі workspace</h3>${bulkBar("visuals",[["activate","Активувати"],["deactivate","Деактивувати"],["delete","Видалити","danger"]])}<div class="asset-grid">${customCards||""}</div><div class="callout"><strong>Вбудовані стилі</strong><p>Глобальні шаблони доступні для використання, але не редагуються. Прев’ю завантажуються одразу, щоб швидше оцінити стиль.</p></div><div class="asset-grid">${builtInCards}</div>${pagination(data,"visuals",renderBrand)}`;
+    const emptyStyles=can("visual_styles.manage")?`<button class="visual-empty-card" id="addVisualStyleEmpty" type="button"><span class="visual-empty-icon">AI</span><span class="visual-empty-copy"><strong>Власних стилів ще немає</strong><small>Створіть стиль, щоб AI генерував візуали у впізнаваній манері вашого бренду: кольори, настрій, правила композиції та приклади промптів.</small></span><span class="visual-empty-action">Створити стиль</span></button>`:empty("Власних стилів ще немає","Створіть стиль для генерації візуалів у впізнаваній манері бренду.");
+    target.innerHTML=`<div class="row between brand-section-head"><div><h2>Візуальні стилі</h2><p class="muted">Збережіть правила кольорів, настрою та композиції, які AI використовуватиме для зображень.</p></div>${can("visual_styles.manage")&&rows.length?'<button class="primary" id="addVisualStyle">＋ Створити стиль</button>':""}</div>${rows.length?"":emptyStyles}<h3>Стилі workspace</h3>${rows.length?bulkBar("visuals",[["activate","Активувати"],["deactivate","Деактивувати"],["delete","Видалити","danger"]]):""}<div class="asset-grid">${customCards||""}</div><div class="callout visual-system-callout"><strong>Вбудовані стилі</strong><p>Глобальні шаблони доступні для використання, але не редагуються. Прев’ю завантажуються одразу, щоб швидше оцінити стиль.</p></div><div class="asset-grid">${builtInCards}</div>${pagination(data,"visuals",renderBrand)}`;
     bindSelection("visuals",target,renderBrand);target.querySelector("[data-clear-selection]")?.addEventListener("click",()=>{selected("visuals").clear();renderBrand();});
     target.querySelectorAll("[data-bulk-action]").forEach(button=>button.onclick=()=>runBrandBulk("visuals",button.dataset.bulkAction));
     target.querySelectorAll("[data-edit-style]").forEach(button=>button.onclick=()=>openVisualStyleForm(rows.find(x=>x.id===button.dataset.editStyle)));
@@ -992,10 +992,20 @@ function renderAnalytics() {
   document.querySelector("#usageChart").innerHTML = daily.length ? daily.map(x=>{
     const cost=Number(x.cost||0);
     const share=Math.round(cost/totalDaily*100);
-    return `<div class="chart-bar" style="height:${Math.max(3,cost/max*100)}%" aria-label="${esc(formatDate(x.day))}: ${esc(money(cost))}">
-      <span class="chart-tooltip"><strong>${esc(money(cost))}</strong><small>${esc(formatDate(x.day))} · ${share}% витрат періоду</small></span>
-    </div>`;
+    return `<button class="chart-bar" type="button" style="height:${Math.max(3,cost/max*100)}%" data-day="${esc(formatDate(x.day))}" data-cost="${esc(money(cost))}" data-share="${share}" aria-label="${esc(formatDate(x.day))}: ${esc(money(cost))}"></button>`;
   }).join("") : `<p class="muted">Дані з’являться після першої AI-генерації.</p>`;
+  const focus=document.querySelector("#usageChartFocus");
+  if(focus&&daily.length){
+    const setFocus=bar=>{
+      focus.classList.add("active");
+      focus.innerHTML=`<span>${esc(bar.dataset.day)}</span><strong>${esc(bar.dataset.cost)}</strong><small>${esc(bar.dataset.share)}% витрат обраного періоду</small>`;
+    };
+    document.querySelectorAll("#usageChart .chart-bar").forEach((bar,index)=>{
+      bar.addEventListener("mouseenter",()=>setFocus(bar));
+      bar.addEventListener("focus",()=>setFocus(bar));
+      if(index===daily.length-1)setFocus(bar);
+    });
+  }
   const models = state.usage?.models || [];
   document.querySelector("#modelUsage").innerHTML = models.map(row=>`<div class="usage-row"><span>${esc(row.model)}<small class="muted" style="display:block">${row.operations} операцій</small></span><strong>${money(row.cost)}</strong></div>`).join("")||'<p class="muted">Немає даних.</p>';
   const rubrics = state.usage?.rubrics || [];
@@ -1272,6 +1282,7 @@ function closeEditor() {
 function showForm(title, fields, submit, options = {}) {
   document.querySelector("#formTitle").textContent = title;
   document.querySelector("#formBody").innerHTML = `<div class="form-grid">${fields}</div><div class="form-error" id="dynamicError"></div>`;
+  document.querySelector("#formOverlay .modal").className = `modal ${options.modalClass || ""}`.trim();
   document.querySelector("#formOverlay").hidden = false;
   const form = document.querySelector("#dynamicForm");
   const submitButton = form.querySelector('button[type="submit"]');
@@ -1492,47 +1503,83 @@ function openMaterialForm(item) {
 function openAvatarCropper(file, uploadAppearanceAsset) {
   if(!file)return;
   const url=URL.createObjectURL(file);
-  const crop={x:0,y:0,zoom:1.08,dragging:false,lastX:0,lastY:0};
+  const crop={x:0,y:0,zoom:1,baseScale:1,stageW:0,stageH:0,diameter:0,dragging:false,lastX:0,lastY:0};
   const size=512;
   const image=new Image();
   image.src=url;
   showForm(
-    "Обрізати аватар workspace",
-    `<div class="wide avatar-cropper">
-      <div class="avatar-crop-frame" id="avatarCropFrame"><img id="avatarCropImage" src="${esc(url)}" alt=""></div>
-      <label>Масштаб<input id="avatarCropZoom" type="range" min="1" max="3" step="0.01" value="${crop.zoom}"></label>
-      <small class="field-help">Перетягніть фото всередині кола. Саме ця кругла зона буде аватаром у sidebar, перемикачі workspace та onboarding.</small>
+    "Установити фото workspace",
+    `<div class="wide telegram-cropper">
+      <div class="telegram-crop-stage" id="avatarCropFrame">
+        <img id="avatarCropImage" src="${esc(url)}" alt="">
+        <div class="telegram-crop-vignette" aria-hidden="true"></div>
+        <div class="telegram-crop-ring" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+      </div>
+      <div class="telegram-crop-controls">
+        <button type="button" id="avatarZoomOut" aria-label="Зменшити">−</button>
+        <input id="avatarCropZoom" type="range" min="1" max="3" step="0.01" value="1" aria-label="Масштаб фото">
+        <button type="button" id="avatarZoomIn" aria-label="Збільшити">+</button>
+      </div>
+      <small class="telegram-crop-help">Перетягніть фото та оберіть зону всередині кола. Після збереження аватар одразу застосовується у workspace.</small>
     </div>`,
     async()=>{
       if(!image.complete) await image.decode().catch(()=>{});
+      measure();
+      clamp();
       const canvas=document.createElement("canvas");
       canvas.width=size;canvas.height=size;
       const ctx=canvas.getContext("2d");
       ctx.clearRect(0,0,size,size);
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(size/2,size/2,size/2,0,Math.PI*2);
-      ctx.clip();
-      const baseScale=Math.max(size/image.naturalWidth,size/image.naturalHeight)*crop.zoom;
-      ctx.translate(size/2+crop.x*(size/280),size/2+crop.y*(size/280));
-      ctx.scale(baseScale,baseScale);
-      ctx.drawImage(image,-image.naturalWidth/2,-image.naturalHeight/2);
-      ctx.restore();
+      const scale=crop.baseScale*crop.zoom;
+      const imageLeft=crop.stageW/2+crop.x-image.naturalWidth*scale/2;
+      const imageTop=crop.stageH/2+crop.y-image.naturalHeight*scale/2;
+      const cropLeft=crop.stageW/2-crop.diameter/2;
+      const cropTop=crop.stageH/2-crop.diameter/2;
+      const sourceX=(cropLeft-imageLeft)/scale;
+      const sourceY=(cropTop-imageTop)/scale;
+      const sourceSize=crop.diameter/scale;
+      ctx.drawImage(image,sourceX,sourceY,sourceSize,sourceSize,0,0,size,size);
       const blob=await new Promise(resolve=>canvas.toBlob(resolve,"image/png",.95));
       if(!blob)throw new Error("Не вдалося підготувати аватар");
       await uploadAppearanceAsset("avatar",new File([blob],"workspace-avatar.png",{type:"image/png"}));
       URL.revokeObjectURL(url);
     },
-    {submitLabel:"Зберегти аватар",loadingLabel:"Завантажуємо…"},
+    {submitLabel:"Установити фото",loadingLabel:"Завантажуємо…",modalClass:"avatar-crop-modal"},
   );
   const frame=document.querySelector("#avatarCropFrame");
   const img=document.querySelector("#avatarCropImage");
   const zoom=document.querySelector("#avatarCropZoom");
-  const update=()=>{if(img)img.style.transform=`translate(calc(-50% + ${crop.x}px), calc(-50% + ${crop.y}px)) scale(${crop.zoom})`;};
+  const measure=()=>{
+    if(!frame||!image.naturalWidth)return;
+    const rect=frame.getBoundingClientRect();
+    crop.stageW=rect.width;crop.stageH=rect.height;
+    crop.diameter=Math.min(rect.width*.68,rect.height*.84,380);
+    crop.baseScale=Math.min(rect.width/image.naturalWidth,rect.height/image.naturalHeight);
+    const minZoom=Math.max(crop.diameter/(image.naturalWidth*crop.baseScale),crop.diameter/(image.naturalHeight*crop.baseScale),1);
+    zoom.min=String(minZoom);
+    if(crop.zoom<minZoom)crop.zoom=minZoom;
+    zoom.value=String(crop.zoom);
+    frame.style.setProperty("--crop-size",`${crop.diameter}px`);
+  };
+  const clamp=()=>{
+    const scale=crop.baseScale*crop.zoom;
+    const halfW=image.naturalWidth*scale/2;
+    const halfH=image.naturalHeight*scale/2;
+    const cropHalf=crop.diameter/2;
+    const maxX=Math.max(0,halfW-cropHalf);
+    const maxY=Math.max(0,halfH-cropHalf);
+    crop.x=Math.max(-maxX,Math.min(maxX,crop.x));
+    crop.y=Math.max(-maxY,Math.min(maxY,crop.y));
+  };
+  const update=()=>{measure();clamp();if(img){const w=image.naturalWidth*crop.baseScale;const h=image.naturalHeight*crop.baseScale;img.style.width=`${w}px`;img.style.height=`${h}px`;img.style.transform=`translate(calc(-50% + ${crop.x}px), calc(-50% + ${crop.y}px)) scale(${crop.zoom})`;}};
+  image.onload=update;
   zoom?.addEventListener("input",()=>{crop.zoom=Number(zoom.value);update();});
+  document.querySelector("#avatarZoomOut")?.addEventListener("click",()=>{crop.zoom=Math.max(Number(zoom.min),crop.zoom-.08);zoom.value=String(crop.zoom);update();});
+  document.querySelector("#avatarZoomIn")?.addEventListener("click",()=>{crop.zoom=Math.min(Number(zoom.max),crop.zoom+.08);zoom.value=String(crop.zoom);update();});
   frame?.addEventListener("pointerdown",event=>{crop.dragging=true;crop.lastX=event.clientX;crop.lastY=event.clientY;frame.setPointerCapture(event.pointerId);});
   frame?.addEventListener("pointermove",event=>{if(!crop.dragging)return;crop.x+=event.clientX-crop.lastX;crop.y+=event.clientY-crop.lastY;crop.lastX=event.clientX;crop.lastY=event.clientY;update();});
   frame?.addEventListener("pointerup",()=>{crop.dragging=false;});
+  window.addEventListener("resize",update,{once:true});
   update();
 }
 function bindBrandActions() {
@@ -1557,6 +1604,13 @@ function bindBrandActions() {
     hex?.addEventListener("change",()=>{if(/^#[0-9a-f]{6}$/i.test(hex.value)){picker.value=hex.value;updateAppearancePreview();}else hex.value=picker.value;});
   });
   document.querySelectorAll("[data-color-preset]").forEach(button=>button.onclick=()=>{const [primary,secondary]=button.dataset.colorPreset.split(",");document.querySelector("#appearancePrimary").value=primary;document.querySelector("#appearancePrimaryHex").value=primary;document.querySelector("#appearanceSecondary").value=secondary;document.querySelector("#appearanceSecondaryHex").value=secondary;updateAppearancePreview();});
+  const saveAppearanceSettings=async(showToast=true)=>{
+    const result=await api("api/workspace/appearance",{method:"PUT",body:JSON.stringify({name:document.querySelector("#appearanceName").value,slug:"",short_description:document.querySelector("#appearanceDescription").value,primary_color:document.querySelector("#appearancePrimary").value,secondary_color:document.querySelector("#appearanceSecondary").value,avatar_asset_id:Number(document.querySelector("#appearanceAvatar").value)||null,logo_asset_id:Number(document.querySelector("#appearanceLogo").value)||null,favicon_asset_id:null})});
+    state.company={...state.company,...result.company,settings:result.settings};
+    applyIdentity();
+    if(showToast)toast("Оформлення збережено");
+    return result;
+  };
   const uploadAppearanceAsset=async(kind,file)=>{
     if(!file)return;
     const form=new FormData();form.append("kind",kind);form.append("file",file);
@@ -1566,11 +1620,12 @@ function bindBrandActions() {
     const markup=`<img src="${apiUrl(result.url)}" alt="">`;
     document.querySelector(kind==="avatar"?"#appearanceAvatarPreview":"#appearanceLogoPreview").innerHTML=markup;
     document.querySelector(kind==="avatar"?"#workspacePreviewAvatar":"#workspacePreviewLogo").innerHTML=markup;
-    toast(kind==="avatar"?"Аватар завантажено":"Логотип завантажено");
+    await saveAppearanceSettings(false);
+    toast(kind==="avatar"?"Аватар встановлено":"Логотип збережено");
   };
   document.querySelector("#appearanceAvatarFile")?.addEventListener("change",event=>openAvatarCropper(event.target.files[0],uploadAppearanceAsset));
   document.querySelector("#appearanceLogoFile")?.addEventListener("change",event=>uploadAppearanceAsset("logo",event.target.files[0]).catch(error=>toast(error.message,true)));
-  document.querySelector("#saveAppearance")?.addEventListener("click",async()=>{const result=await api("api/workspace/appearance",{method:"PUT",body:JSON.stringify({name:document.querySelector("#appearanceName").value,slug:"",short_description:document.querySelector("#appearanceDescription").value,primary_color:document.querySelector("#appearancePrimary").value,secondary_color:document.querySelector("#appearanceSecondary").value,avatar_asset_id:Number(document.querySelector("#appearanceAvatar").value)||null,logo_asset_id:Number(document.querySelector("#appearanceLogo").value)||null,favicon_asset_id:null})});state.company={...state.company,...result.company,settings:result.settings};applyIdentity();toast("Оформлення збережено");renderBrand();});
+  document.querySelector("#saveAppearance")?.addEventListener("click",async()=>{await saveAppearanceSettings(true);renderBrand();});
 }
 function bindTelegramValidation(channelId, tokenId, statusId, buttonId) {
   const channel = document.querySelector(`#${channelId}`);
