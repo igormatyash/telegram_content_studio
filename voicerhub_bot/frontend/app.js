@@ -760,7 +760,8 @@ function renderPlan() {
   const target=document.querySelector("#planList");
   if(!data){target.innerHTML='<span class="skeleton"></span><span class="skeleton"></span>';return;}
   const planned=data.items||[];
-  target.innerHTML=`${bulkBar("plan",[["delete","Видалити","danger"]])}${planned.length?planned.map(item=>`<div class="plan-row plan-row-detailed">${selectionCheckbox("plan",item.id)}<strong>${formatDate(item.planned_for)}</strong><span><strong>${esc(item.title_plain||plain(item.title))}</strong>${item.error_message?`<small class="plan-error">${esc(item.error_message)}</small>`:""}</span>${pill(item.status)}${["failed","error","cancelled"].includes(item.status)?`<div class="row plan-actions">${item.job_id?`<button data-retry-job="${item.job_id}">Повторити</button><button data-job-details="${item.job_id}">Деталі</button><button class="danger" data-delete-job="${item.job_id}">Видалити</button>`:""}</div>`:""}</div>`).join(""):empty("Контент-план порожній","Виберіть параметри та створіть перший план.")}${pagination(data,"plan",renderPlan)}`;
+  const rubricName=item=>esc((state.data.rubrics||[]).find(x=>x.slug===item.product)?.name||item.rubric_name||item.product||"—");
+  target.innerHTML=`${bulkBar("plan",[["delete","Видалити","danger"]])}${planned.length?`<div class="table-wrap plan-table-wrap"><table class="users-table content-table plan-table"><thead><tr><th><input type="checkbox" data-select-all="plan" aria-label="Обрати всі пункти плану"></th><th>Дата</th><th>Тема</th><th>Рубрика</th><th>Статус</th><th>Дії</th></tr></thead><tbody>${planned.map(item=>`<tr><td>${selectionCheckbox("plan",item.id)}</td><td><strong>${formatDate(item.planned_for)}</strong></td><td class="content-main"><strong>${esc(item.title_plain||plain(item.title))}</strong>${item.error_message?`<small class="plan-error">${esc(item.error_message)}</small>`:""}</td><td>${rubricName(item)}</td><td>${pill(item.status)}</td><td>${["failed","error","cancelled"].includes(item.status)&&item.job_id?`<div class="row plan-actions"><button data-retry-job="${item.job_id}">Повторити</button><button data-job-details="${item.job_id}">Деталі</button><button class="danger" data-delete-job="${item.job_id}">Видалити</button></div>`:'<span class="muted">—</span>'}</td></tr>`).join("")}</tbody></table></div>`:empty("Контент-план порожній","Виберіть параметри та створіть перший план.")}${pagination(data,"plan",renderPlan)}`;
   bindSelection("plan",target,renderPlan);
   target.querySelector("[data-clear-selection]")?.addEventListener("click",()=>{selected("plan").clear();renderPlan();});
   target.querySelector("[data-bulk-action='delete']")?.addEventListener("click",async()=>{
@@ -939,7 +940,10 @@ function renderBrand() {
     if(!data){target.innerHTML='<span class="skeleton"></span>';return;}
     const builtIns=(state.data.templates||[]).filter(x=>!x.custom);
     const rows=data.items||[];
-    target.innerHTML=`<div class="row between brand-section-head"><div><h2>Візуальні стилі</h2><p class="muted">Збережіть правила кольорів, настрою та композиції, які AI використовуватиме для зображень.</p></div>${can("visual_styles.manage")?'<button class="primary" id="addVisualStyle">＋ Створити стиль</button>':""}</div><div class="callout"><strong>Вбудовані стилі</strong><p>Глобальні шаблони доступні для використання, але не редагуються.</p></div><div class="asset-grid">${builtIns.map(x=>`<article class="card asset-card"><img src="${apiUrl(`api/templates/${encodeURIComponent(x.id)}/preview`)}" alt=""><div class="asset-body"><strong>${esc(x.name)}</strong><small>${esc(x.description)}</small><span class="pill ready">Системний</span></div></article>`).join("")}</div><h3>Стилі workspace</h3>${bulkBar("visuals",[["activate","Активувати"],["deactivate","Деактивувати"],["delete","Видалити","danger"]])}<div class="asset-grid">${rows.map(x=>`<article class="card asset-card selectable-card">${selectionCheckbox("visuals",x.id)}${x.preview_path?`<img src="${apiUrl(`api/templates/${encodeURIComponent(x.id)}/preview`)}" alt="">`:'<div class="asset-placeholder">Попередній перегляд</div>'}<div class="asset-body"><strong>${esc(x.name)}</strong><small>${esc(x.description)}</small><div class="row"><button data-edit-style="${esc(x.id)}">Редагувати</button><button data-duplicate-style="${esc(x.id)}">Дублювати</button></div></div></article>`).join("")||empty("Власних стилів ще немає","Створіть стиль для генерації візуалів у впізнаваній манері бренду.")}</div>${pagination(data,"visuals",renderBrand)}`;
+    const builtInCards=builtIns.map(x=>`<article class="card asset-card"><img src="${apiUrl(`api/templates/${encodeURIComponent(x.id)}/preview`)}" alt="" loading="eager" decoding="async" fetchpriority="high"><div class="asset-body"><strong>${esc(x.name)}</strong><small>${esc(x.description)}</small><span class="pill ready">Системний</span></div></article>`).join("");
+    const customCards=rows.map(x=>`<article class="card asset-card selectable-card">${selectionCheckbox("visuals",x.id)}<img src="${apiUrl(`api/templates/${encodeURIComponent(x.id)}/preview`)}" alt="" loading="eager" decoding="async" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'asset-placeholder',textContent:'Попередній перегляд'}))"><div class="asset-body"><strong>${esc(x.name)}</strong><small>${esc(x.description)}</small><div class="row"><button data-edit-style="${esc(x.id)}">Редагувати</button><button data-duplicate-style="${esc(x.id)}">Дублювати</button></div></div></article>`).join("");
+    const emptyStyles=can("visual_styles.manage")?`<button class="card visual-empty-card" id="addVisualStyleEmpty" type="button"><span class="ai-spark">AI</span><strong>Власних стилів ще немає</strong><small>Створіть стиль для генерації візуалів у впізнаваній манері бренду.</small><em>Створити стиль →</em></button>`:empty("Власних стилів ще немає","Створіть стиль для генерації візуалів у впізнаваній манері бренду.");
+    target.innerHTML=`<div class="row between brand-section-head"><div><h2>Візуальні стилі</h2><p class="muted">Збережіть правила кольорів, настрою та композиції, які AI використовуватиме для зображень.</p></div>${can("visual_styles.manage")&&rows.length?'<button class="primary" id="addVisualStyle">＋ Створити стиль</button>':""}</div>${rows.length?"":emptyStyles}<h3>Стилі workspace</h3>${bulkBar("visuals",[["activate","Активувати"],["deactivate","Деактивувати"],["delete","Видалити","danger"]])}<div class="asset-grid">${customCards||""}</div><div class="callout"><strong>Вбудовані стилі</strong><p>Глобальні шаблони доступні для використання, але не редагуються. Прев’ю завантажуються одразу, щоб швидше оцінити стиль.</p></div><div class="asset-grid">${builtInCards}</div>${pagination(data,"visuals",renderBrand)}`;
     bindSelection("visuals",target,renderBrand);target.querySelector("[data-clear-selection]")?.addEventListener("click",()=>{selected("visuals").clear();renderBrand();});
     target.querySelectorAll("[data-bulk-action]").forEach(button=>button.onclick=()=>runBrandBulk("visuals",button.dataset.bulkAction));
     target.querySelectorAll("[data-edit-style]").forEach(button=>button.onclick=()=>openVisualStyleForm(rows.find(x=>x.id===button.dataset.editStyle)));
@@ -965,7 +969,7 @@ function renderBrand() {
         <label>Додатковий<div class="color-control"><input id="appearanceSecondary" type="color" value="${esc(settings.brand_secondary_color||"#a855f7")}"><input id="appearanceSecondaryHex" value="${esc(settings.brand_secondary_color||"#a855f7")}" maxlength="7"></div></label>
       </div><div class="color-presets">${[["#4f46e5","#a855f7"],["#0f766e","#22c55e"],["#0369a1","#38bdf8"],["#be123c","#fb7185"],["#111827","#6366f1"]].map(([a,b])=>`<button type="button" data-color-preset="${a},${b}" title="${a} / ${b}"><i style="--a:${a};--b:${b}"></i></button>`).join("")}</div></div>
       <div class="wide appearance-assets">
-        <label class="upload-tile"><span class="asset-preview avatar-preview" id="appearanceAvatarPreview">${avatarPreview}</span><strong>Аватар workspace</strong><small>PNG, JPG або WebP. Квадрат 1:1, рекомендовано 512×512 px, мінімум 256×256 px, до 5 MB.</small>${can("workspace.settings")?'<input id="appearanceAvatarFile" type="file" accept="image/png,image/jpeg,image/webp"><span class="button">Завантажити аватар</span>':""}</label>
+        <label class="upload-tile"><span class="asset-preview avatar-preview" id="appearanceAvatarPreview">${avatarPreview}</span><strong>Аватар workspace</strong><small>PNG, JPG або WebP до 5 MB. Після завантаження ви обріжете фото в круглу область.</small>${can("workspace.settings")?'<input id="appearanceAvatarFile" type="file" accept="image/png,image/jpeg,image/webp"><span class="button">Завантажити й обрізати</span>':""}</label>
         <label class="upload-tile"><span class="asset-preview logo-preview" id="appearanceLogoPreview">${logoPreview}</span><strong>Логотип компанії</strong><small>PNG/WebP з прозорим фоном рекомендовано. Оптимально 1200×400 px, пропорції від 1:2 до 8:1, до 5 MB.</small>${can("workspace.settings")?'<input id="appearanceLogoFile" type="file" accept="image/png,image/jpeg,image/webp"><span class="button">Завантажити логотип</span>':""}</label>
       </div><input id="appearanceAvatar" type="hidden" value="${avatarId||""}"><input id="appearanceLogo" type="hidden" value="${logoId||""}"></div>${can("workspace.settings")?'<button class="primary" id="saveAppearance">Зберегти оформлення</button>':""}</article><aside class="card workspace-preview" id="appearancePreview" style="--preview-primary:${esc(settings.brand_primary_color||"#6366f1")};--preview-secondary:${esc(settings.brand_secondary_color||"#a855f7")}"><div class="eyebrow">Так workspace виглядатиме в інтерфейсі</div><span class="workspace-logo" id="workspacePreviewAvatar">${avatarPreview}</span><div class="workspace-preview-logo" id="workspacePreviewLogo">${logoPreview}</div><h3>${esc(state.company.name)}</h3><p>${esc(settings.workspace_short_description||"Контент, бренд і публікації в одному просторі.")}</p><div class="preview-nav"><span>Головна</span><span>Ідеї</span><span>Чернетки</span></div></aside></div>`;
   }
@@ -984,7 +988,14 @@ function renderAnalytics() {
   ].map(([label,value],i)=>`<article class="${i===0?"usage-card":"card metric"}"><span>${label}</span><strong>${value}</strong></article>`).join("");
   const daily = [...(state.data.daily||[])].reverse();
   const max = Math.max(...daily.map(x=>Number(x.cost)),.01);
-  document.querySelector("#usageChart").innerHTML = daily.length ? daily.map(x=>`<div class="chart-bar" title="${x.day}: ${money(x.cost)}" style="height:${Math.max(3,Number(x.cost)/max*100)}%"></div>`).join("") : `<p class="muted">Дані з’являться після першої AI-генерації.</p>`;
+  const totalDaily = daily.reduce((sum,row)=>sum+Number(row.cost||0),0) || .01;
+  document.querySelector("#usageChart").innerHTML = daily.length ? daily.map(x=>{
+    const cost=Number(x.cost||0);
+    const share=Math.round(cost/totalDaily*100);
+    return `<div class="chart-bar" style="height:${Math.max(3,cost/max*100)}%" aria-label="${esc(formatDate(x.day))}: ${esc(money(cost))}">
+      <span class="chart-tooltip"><strong>${esc(money(cost))}</strong><small>${esc(formatDate(x.day))} · ${share}% витрат періоду</small></span>
+    </div>`;
+  }).join("") : `<p class="muted">Дані з’являться після першої AI-генерації.</p>`;
   const models = state.usage?.models || [];
   document.querySelector("#modelUsage").innerHTML = models.map(row=>`<div class="usage-row"><span>${esc(row.model)}<small class="muted" style="display:block">${row.operations} операцій</small></span><strong>${money(row.cost)}</strong></div>`).join("")||'<p class="muted">Немає даних.</p>';
   const rubrics = state.usage?.rubrics || [];
@@ -1172,10 +1183,17 @@ function renderSettings() {
   const target = document.querySelector("#settingsContent");
   const settings = state.company.settings || {};
   if (state.settingsTab === "workspace") {
-    const companyWorkspaces=Number(state.company.company?.workspace_count||1);
-    const canDeleteWorkspace=(state.me.is_super_admin||state.me.role==="owner")&&Number(state.company.id)!==1&&companyWorkspaces>1;
+    const currentCompanyId=Number(state.company.company?.id||state.company.company_id||0);
+    const companyWorkspaces=(state.me.workspaces||[]).filter(item=>Number(item.company_id)===currentCompanyId).length||Number(state.company.company?.workspace_count||1);
+    const isSystemWorkspace=Number(state.company.id)===1;
+    const canDeleteWorkspace=(state.me.is_super_admin||state.me.role==="owner")&&!isSystemWorkspace&&companyWorkspaces>1;
+    const deleteHint=isSystemWorkspace
+      ?"Цей workspace зберігає системні дані платформи, тому його не можна видалити напряму. Перейдіть в інший workspace цієї компанії та видаліть його там."
+      : companyWorkspaces>1
+        ?"Це назавжди видалить контент, файли, налаштування й доступи поточного workspace."
+        :"Не можна видалити єдиний workspace компанії. Спочатку створіть інший workspace.";
     target.innerHTML = `<article class="card settings-card"><div class="row"><span class="workspace-logo">${initials(state.company.name)}</span><div><h2 style="margin:0">${esc(state.company.name)}</h2><span class="muted">${esc(state.company.slug)}</span></div></div><div class="analytics-metrics" style="margin-top:20px"><div class="card metric"><span>Тариф</span><strong>${esc(state.company.plan_code||"custom")}</strong></div><div class="card metric"><span>Користувачі</span><strong>${state.company.user_count}/${state.company.max_users}</strong></div><div class="card metric"><span>Публікації</span><strong>${state.company.publication_count}/${state.company.monthly_publications}</strong></div><div class="card metric"><span>AI-бюджет</span><strong>${money(state.company.monthly_ai_budget)}</strong></div></div><button id="restartOnboarding">Повторити onboarding</button></article>
-      <article class="card settings-card danger-settings"><div><div class="eyebrow">Небезпечна зона</div><h2>Видалення workspace</h2><p class="muted">${canDeleteWorkspace?"Це назавжди видалить контент, файли, налаштування й доступи поточного workspace.":"Єдиний або системний workspace видалити не можна. Спочатку створіть інший workspace у цій компанії."}</p></div><button class="danger" id="deleteCurrentWorkspace" ${canDeleteWorkspace?"":"disabled"}>Видалити workspace</button></article>`;
+      <article class="card settings-card danger-settings"><div><div class="eyebrow">Небезпечна зона</div><h2>Видалення workspace</h2><p class="muted">${deleteHint}</p></div><button class="danger" id="deleteCurrentWorkspace" ${canDeleteWorkspace?"":"disabled"}>Видалити workspace</button></article>`;
   }
   else if (state.settingsTab === "mode") target.innerHTML = `<article class="card settings-card"><div class="eyebrow">Загальні</div><h2>Режим роботи workspace</h2><p class="muted">Оберіть, як ваша команда працює з контентом.</p><div class="mode-grid"><label class="card panel"><input type="radio" name="workspaceMode" value="pipeline" ${settings.workspace_mode==="pipeline"?"checked":""}> <strong>Редакційний pipeline</strong><p class="muted">Послідовний процес: ідеї → план → чернетки → календар.</p></label><label class="card panel"><input type="radio" name="workspaceMode" value="kanban" ${settings.workspace_mode==="kanban"?"checked":""}> <strong>Контент-дошка Kanban</strong><p class="muted">Усі матеріали за статусами на одній дошці.</p></label></div><button class="primary" id="saveWorkspaceMode">Зберегти режим</button></article>`;
   else if (state.settingsTab === "users") {
@@ -1471,6 +1489,52 @@ function openVisualStyleForm(item=null) {
 function openMaterialForm(item) {
   showForm("Редагувати матеріал",`<label>Назва<input name="name" value="${esc(item.name)}" required></label><label>Тип<select name="material_type">${["logo","brandbook","presentation","photo","reference_image","document","link","other"].map(type=>`<option value="${type}" ${item.material_type===type?"selected":""}>${type}</option>`).join("")}</select></label><label class="wide">URL<input name="source_url" value="${esc(item.source_url||"")}"></label><label class="wide">Опис<textarea name="description">${esc(item.description||"")}</textarea></label><label class="check-label wide"><input name="active" type="checkbox" ${item.active===0?"":"checked"}> Активний матеріал</label>`,async form=>{await api(`api/brand/materials/${item.id}`,{method:"PUT",body:JSON.stringify({name:form.get("name"),material_type:form.get("material_type"),source_url:form.get("source_url"),description:form.get("description"),active:form.get("active")==="on"})});delete state.lists.assets;toast("Матеріал збережено");renderBrand();});
 }
+function openAvatarCropper(file, uploadAppearanceAsset) {
+  if(!file)return;
+  const url=URL.createObjectURL(file);
+  const crop={x:0,y:0,zoom:1.08,dragging:false,lastX:0,lastY:0};
+  const size=512;
+  const image=new Image();
+  image.src=url;
+  showForm(
+    "Обрізати аватар workspace",
+    `<div class="wide avatar-cropper">
+      <div class="avatar-crop-frame" id="avatarCropFrame"><img id="avatarCropImage" src="${esc(url)}" alt=""></div>
+      <label>Масштаб<input id="avatarCropZoom" type="range" min="1" max="3" step="0.01" value="${crop.zoom}"></label>
+      <small class="field-help">Перетягніть фото всередині кола. Саме ця кругла зона буде аватаром у sidebar, перемикачі workspace та onboarding.</small>
+    </div>`,
+    async()=>{
+      if(!image.complete) await image.decode().catch(()=>{});
+      const canvas=document.createElement("canvas");
+      canvas.width=size;canvas.height=size;
+      const ctx=canvas.getContext("2d");
+      ctx.clearRect(0,0,size,size);
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(size/2,size/2,size/2,0,Math.PI*2);
+      ctx.clip();
+      const baseScale=Math.max(size/image.naturalWidth,size/image.naturalHeight)*crop.zoom;
+      ctx.translate(size/2+crop.x*(size/280),size/2+crop.y*(size/280));
+      ctx.scale(baseScale,baseScale);
+      ctx.drawImage(image,-image.naturalWidth/2,-image.naturalHeight/2);
+      ctx.restore();
+      const blob=await new Promise(resolve=>canvas.toBlob(resolve,"image/png",.95));
+      if(!blob)throw new Error("Не вдалося підготувати аватар");
+      await uploadAppearanceAsset("avatar",new File([blob],"workspace-avatar.png",{type:"image/png"}));
+      URL.revokeObjectURL(url);
+    },
+    {submitLabel:"Зберегти аватар",loadingLabel:"Завантажуємо…"},
+  );
+  const frame=document.querySelector("#avatarCropFrame");
+  const img=document.querySelector("#avatarCropImage");
+  const zoom=document.querySelector("#avatarCropZoom");
+  const update=()=>{if(img)img.style.transform=`translate(calc(-50% + ${crop.x}px), calc(-50% + ${crop.y}px)) scale(${crop.zoom})`;};
+  zoom?.addEventListener("input",()=>{crop.zoom=Number(zoom.value);update();});
+  frame?.addEventListener("pointerdown",event=>{crop.dragging=true;crop.lastX=event.clientX;crop.lastY=event.clientY;frame.setPointerCapture(event.pointerId);});
+  frame?.addEventListener("pointermove",event=>{if(!crop.dragging)return;crop.x+=event.clientX-crop.lastX;crop.y+=event.clientY-crop.lastY;crop.lastX=event.clientX;crop.lastY=event.clientY;update();});
+  frame?.addEventListener("pointerup",()=>{crop.dragging=false;});
+  update();
+}
 function bindBrandActions() {
   document.querySelector("#saveBrandProfile")?.addEventListener("click",async()=>{
     await api("api/onboarding/company",{method:"PUT",body:JSON.stringify({name:state.company.name,slug:state.company.slug,primary_language:state.company.settings.primary_language||"uk",brand_primary_color:document.querySelector("#brandColor").value,brand_logo_asset_id:state.company.settings.brand_logo_asset_id||null})});
@@ -1482,6 +1546,7 @@ function bindBrandActions() {
   document.querySelector("#addRubric")?.addEventListener("click",()=>openRubricForm());
   document.querySelector("#emptyAddRubric")?.addEventListener("click",()=>openRubricForm());
   document.querySelector("#addVisualStyle")?.addEventListener("click",()=>openVisualStyleForm());
+  document.querySelector("#addVisualStyleEmpty")?.addEventListener("click",()=>openVisualStyleForm());
   document.querySelector("#addMaterialLink")?.addEventListener("click",()=>showForm("Додати посилання",`<label>Назва<input name="name" required></label><label>Тип<select name="material_type"><option value="link">Посилання</option><option value="brandbook">Брендбук</option><option value="presentation">Презентація</option><option value="document">Документ</option><option value="other">Інше</option></select></label><label class="wide">URL<input name="source_url" type="url" required></label><label class="wide">Опис<textarea name="description"></textarea></label>`,async form=>{await api("api/brand/materials/link",{method:"POST",body:JSON.stringify({name:form.get("name"),material_type:form.get("material_type"),source_url:form.get("source_url"),description:form.get("description"),active:true})});delete state.lists.assets;toast("Посилання додано");renderBrand();}));
   document.querySelector("#uploadMaterial")?.addEventListener("click",()=>showForm("Завантажити матеріал",`<label>Назва<input name="name"></label><label>Тип<select name="material_type"><option value="logo">Логотип</option><option value="brandbook">Брендбук</option><option value="presentation">Презентація</option><option value="photo">Фото</option><option value="reference_image">Референс зображення</option><option value="document">Документ</option><option value="other">Інше</option></select></label><label class="wide">Файл<input name="file" type="file" accept="image/png,image/jpeg,image/webp,application/pdf,.docx,.pptx" required></label><label class="wide">Опис<textarea name="description"></textarea><small class="field-help">PNG, JPG, WebP, PDF, DOCX або PPTX до 20 MB.</small></label>`,async form=>{await api("api/references",{method:"POST",body:form});delete state.lists.assets;toast("Матеріал завантажено");await refresh(true);renderBrand();}));
   const updateAppearancePreview=()=>{const preview=document.querySelector("#appearancePreview");if(!preview)return;preview.style.setProperty("--preview-primary",document.querySelector("#appearancePrimary").value);preview.style.setProperty("--preview-secondary",document.querySelector("#appearanceSecondary").value);preview.querySelector("h3").textContent=document.querySelector("#appearanceName").value;preview.querySelector("p").textContent=document.querySelector("#appearanceDescription").value||"Контент, бренд і публікації в одному просторі.";};
@@ -1503,7 +1568,7 @@ function bindBrandActions() {
     document.querySelector(kind==="avatar"?"#workspacePreviewAvatar":"#workspacePreviewLogo").innerHTML=markup;
     toast(kind==="avatar"?"Аватар завантажено":"Логотип завантажено");
   };
-  document.querySelector("#appearanceAvatarFile")?.addEventListener("change",event=>uploadAppearanceAsset("avatar",event.target.files[0]).catch(error=>toast(error.message,true)));
+  document.querySelector("#appearanceAvatarFile")?.addEventListener("change",event=>openAvatarCropper(event.target.files[0],uploadAppearanceAsset));
   document.querySelector("#appearanceLogoFile")?.addEventListener("change",event=>uploadAppearanceAsset("logo",event.target.files[0]).catch(error=>toast(error.message,true)));
   document.querySelector("#saveAppearance")?.addEventListener("click",async()=>{const result=await api("api/workspace/appearance",{method:"PUT",body:JSON.stringify({name:document.querySelector("#appearanceName").value,slug:"",short_description:document.querySelector("#appearanceDescription").value,primary_color:document.querySelector("#appearancePrimary").value,secondary_color:document.querySelector("#appearanceSecondary").value,avatar_asset_id:Number(document.querySelector("#appearanceAvatar").value)||null,logo_asset_id:Number(document.querySelector("#appearanceLogo").value)||null,favicon_asset_id:null})});state.company={...state.company,...result.company,settings:result.settings};applyIdentity();toast("Оформлення збережено");renderBrand();});
 }

@@ -81,17 +81,18 @@
 
       <section class="view" id="planView">
         <div class="content-plan-layout">
-          <form class="card panel stack" id="planForm">
-            <div><div class="eyebrow">AI generator</div><h2>Параметри плану</h2></div>
-            <label>Період<select id="planPeriod"><option value="week">Тиждень</option><option value="month">Місяць</option></select></label>
-            <label>Дата початку<input id="planStart" type="date"></label>
-            <label>Кількість постів<input id="planPosts" type="number" min="1" max="31" value="7"></label>
-            <label>Рубрика<select id="planProduct"></select></label>
-            <label>Мета<textarea id="planFocus" placeholder="Що має дати цей контент-план"></textarea></label>
-            <label>Результат<select id="planCreateAs"><option value="ideas">Створити ідеї</option><option value="drafts">Поставити чернетки в чергу</option></select></label>
-            <button class="primary" type="submit">✦ Згенерувати план</button>
+          <form class="card panel plan-generator" id="planForm">
+            <div class="plan-generator-head"><div><div class="eyebrow">AI generator</div><h2>Параметри плану</h2><p class="muted">Швидко створіть тижневий або місячний план без довгого скролу.</p></div><button class="primary" type="submit">✦ Згенерувати план</button></div>
+            <div class="plan-generator-grid">
+              <label>Період<select id="planPeriod"><option value="week">Тиждень</option><option value="month">Місяць</option></select></label>
+              <label>Дата початку<input id="planStart" type="date"></label>
+              <label>Кількість постів<input id="planPosts" type="number" min="1" max="31" value="7"></label>
+              <label>Рубрика<select id="planProduct"></select></label>
+              <label>Результат<select id="planCreateAs"><option value="ideas">Створити ідеї</option><option value="drafts">Поставити чернетки в чергу</option></select></label>
+              <label class="wide">Мета<textarea id="planFocus" placeholder="Наприклад: пояснити користь продукту, зібрати заявки, прогріти аудиторію"></textarea></label>
+            </div>
           </form>
-          <article class="card panel">
+          <article class="card panel plan-board">
             <div class="row between"><div><div class="eyebrow">Редакційний календар</div><h2>Контент-план</h2></div><button id="exportPlan">Експортувати CSV</button></div>
             <div class="plan-list" id="planList"></div>
           </article>
@@ -168,6 +169,6 @@
 </div>
 <div class="toast" id="toast" hidden></div>
 <div hidden>CONTENT STUDIO · Налаштування workspace · Voicer Wave</div>
-  <script src="__BASE_PATH__/static/app.js?v=18" defer></script>
+  <script src="__BASE_PATH__/static/app.js?v=19" defer></script>
 </body>
 </html>
