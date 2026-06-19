@@ -2689,6 +2689,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         page: int = 1,
         per_page: int = 25,
         search: str = "",
+        sort: str = "created_at",
+        direction: str = "desc",
         _: dict = Depends(authorize_super_admin),
     ) -> dict:
         rows = platform_client_rows()

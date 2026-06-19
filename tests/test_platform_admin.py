@@ -75,6 +75,10 @@ def test_platform_admin_sees_clients_companies_referrals_and_activity(tmp_path) 
         "/api/platform/organizations/details",
         headers=HEADERS,
     )
+    users = platform.get(
+        "/api/platform/users?page=1&per_page=25&sort=created_at&direction=desc",
+        headers=HEADERS,
+    )
     activity = platform.get("/api/platform/activity", headers=HEADERS)
 
     assert overview.status_code == 200
@@ -87,6 +91,9 @@ def test_platform_admin_sees_clients_companies_referrals_and_activity(tmp_path) 
     assert detail.status_code == 200
     assert detail.json()["client"]["referral_code"] == referral["code"]
     assert detail.json()["client"]["last_login_at"]
+    assert users.status_code == 200
+    assert users.json()["total"] == 2
+    assert users.json()["users"][0]["username"]
     assert detail.json()["content_totals"] == {
         "ideas": 0,
         "drafts": 0,
