@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
   <title>Content Studio</title>
-  <link rel="stylesheet" href="__BASE_PATH__/static/styles.css?v=15">
+  <link rel="stylesheet" href="__BASE_PATH__/static/styles.css?v=16">
 </head>
 <body data-base-path="__BASE_PATH__">
 <div class="app-shell">
@@ -57,6 +57,7 @@
       </div>
       <div class="top-actions">
         <button class="button guide-header-button" id="openGuide"><svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11v17H6.5A2.5 2.5 0 0 0 4 22V5.5ZM20 5.5A2.5 2.5 0 0 0 17.5 3H13v17h4.5A2.5 2.5 0 0 1 20 22V5.5Z"/></svg>Гайд</button>
+        <button class="button language-toggle" id="languageToggle" aria-label="Змінити мову" title="Змінити мову"><span id="languageFlag">🇺🇦</span><strong id="languageCode">UA</strong></button>
         <button class="button updates-button" id="serviceUpdatesButton"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h16"/><path d="M17 10l3 2-3 2"/></svg>Оновлення<span id="serviceUpdatesCount" hidden>0</span></button>
         <button class="button search-button" id="searchButton"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 4 4"/></svg>Пошук <small style="margin-left:auto">⌘K</small></button>
         <button class="icon-button notification-button" id="notificationsButton" aria-label="Сповіщення" title="Сповіщення"><svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9ZM10 21h4"/></svg><span id="notificationCount" hidden>0</span></button>
@@ -93,7 +94,7 @@
             </div>
           </form>
           <article class="card panel plan-board">
-            <div class="row between"><div><div class="eyebrow">Редакційний календар</div><h2>Контент-план</h2></div><button id="exportPlan">Експортувати CSV</button></div>
+            <div class="row between"><div><div class="eyebrow">Редакційний календар</div><h2>Контент-план</h2></div><button id="exportPlan">Експорт</button></div>
             <div class="plan-list" id="planList"></div>
           </article>
         </div>
@@ -169,6 +170,6 @@
 </div>
 <div class="toast" id="toast" hidden></div>
 <div hidden>CONTENT STUDIO · Налаштування workspace · Voicer Wave</div>
-  <script src="__BASE_PATH__/static/app.js?v=20" defer></script>
+  <script src="__BASE_PATH__/static/app.js?v=21" defer></script>
 </body>
 </html>
