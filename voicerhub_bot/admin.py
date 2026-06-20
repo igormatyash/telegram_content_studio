@@ -283,6 +283,10 @@ class BulkActionRequest(BaseModel):
 class ServiceUpdateRequest(BaseModel):
     title: str = Field(min_length=3, max_length=160)
     body: str = Field(default="", max_length=3000)
+    title_uk: str = Field(default="", max_length=160)
+    body_uk: str = Field(default="", max_length=3000)
+    title_en: str = Field(default="", max_length=160)
+    body_en: str = Field(default="", max_length=3000)
     category: str = Field(
         default="release",
         pattern=r"^(release|fix|maintenance|announcement)$",
@@ -391,6 +395,8 @@ class OrganizationCreateRequest(BaseModel):
     max_channels: int = Field(default=1, ge=1, le=1)
     monthly_publications: int = Field(default=90, ge=1, le=10000)
     monthly_ai_budget: float = Field(default=50, ge=0, le=100000)
+    monthly_text_generations: int = Field(default=60, ge=0, le=100000)
+    monthly_image_generations: int = Field(default=30, ge=0, le=100000)
     max_workspaces: int = Field(default=10, ge=1, le=100)
 
 
@@ -482,7 +488,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         str(Path(__file__).parent / "assets" / "VoicerWave.jpg")
     )
     for existing_organization_id in saas.organization_ids():
-        repository.for_organization(existing_organization_id).repair_draft_markup()
+        tenant_repository = repository.for_organization(existing_organization_id)
+        tenant_repository.repair_draft_markup()
+        tenant_repository.repair_non_primary_legacy_rubrics()
     idea_generator = IdeaGenerator(settings)
     editorial_tools = EditorialTools(settings)
     billing = BillingService(saas, settings.telegram_bot_token)
@@ -783,40 +791,72 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if target_user_id not in saas.member_ids(organization_id(current)):
             raise HTTPException(status_code=404, detail="Користувача не знайдено")
 
-    def ensure_ai_budget() -> None:
-        company = saas.get_organization(repository.organization_id)
-        ensure_subscription(company)
-        budget = float(company["monthly_ai_budget"])
-        if budget > 0 and repository.current_month_cost() >= budget:
-            raise HTTPException(
-                status_code=402,
-                detail="Місячний AI-бюджет компанії вичерпано",
+    def quota_error(detail: str, reason: str) -> HTTPException:
+        return HTTPException(
+            status_code=402,
+            detail={
+                "detail": detail,
+                "reason": reason,
+                "billing_section": "/content-admin/settings?tab=plans",
+            },
+        )
+
+    def ensure_active_subscription(company: dict) -> None:
+        status = company.get("subscription_status") or company.get("plan_code") or "custom"
+        is_trial = status == "trial" or company.get("plan_code") == "trial"
+        expires_at = company.get("trial_ends_at") if is_trial else company.get("plan_expires_at")
+        if not expires_at:
+            return
+        expiration = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+        if expiration.tzinfo is None:
+            expiration = expiration.replace(tzinfo=timezone.utc)
+        if expiration <= datetime.now(timezone.utc):
+            reason = "trial_expired" if is_trial else "subscription_expired"
+            raise quota_error(
+                "Термін дії trial або тарифу завершився. Оновіть підписку в розділі «Тарифи».",
+                reason,
             )
+
+    def ensure_generation_quota(kind: str, required: int = 1) -> None:
+        company = saas.get_organization(repository.organization_id)
+        ensure_active_subscription(company)
+        column = (
+            "monthly_text_generations"
+            if kind == "text"
+            else "monthly_image_generations"
+        )
+        limit = int(company.get(column) or 0)
+        if limit <= 0:
+            return
+        used = repository.current_month_usage_units(kind)
+        if used + max(1, required) > limit:
+            label = "текстових генерацій" if kind == "text" else "генерацій зображень"
+            reason = "text_quota_exceeded" if kind == "text" else "image_quota_exceeded"
+            raise quota_error(
+                f"Місячний ліміт {label} вичерпано. Оновіть тариф, щоб продовжити.",
+                reason,
+            )
+
+    def ensure_text_generation_quota(required: int = 1) -> None:
+        ensure_generation_quota("text", required)
+
+    def ensure_image_generation_quota(required: int = 1) -> None:
+        ensure_generation_quota("image", required)
 
     def ensure_publication_quota() -> None:
         company = saas.get_organization(repository.organization_id)
-        ensure_subscription(company)
+        ensure_active_subscription(company)
         if (
             repository.current_month_publications()
             >= company["monthly_publications"]
         ):
-            raise HTTPException(
-                status_code=409,
-                detail="Місячний ліміт публікацій вичерпано",
+            raise quota_error(
+                "Місячний ліміт публікацій вичерпано. Оновіть тариф, щоб продовжити.",
+                "publication_quota_exceeded",
             )
 
     def ensure_subscription(company: dict) -> None:
-        expires_at = company.get("plan_expires_at")
-        if not expires_at:
-            return
-        expiration = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-        if expiration.tzinfo is None:
-            expiration = expiration.replace(tzinfo=timezone.utc)
-        if expiration <= datetime.now(timezone.utc):
-            raise HTTPException(
-                status_code=402,
-                detail="Термін дії тарифу завершився. Оновіть підписку в розділі «Тарифи».",
-            )
+        ensure_active_subscription(company)
 
     def active_rubrics() -> list[dict]:
         return repository.list_rubrics()
@@ -1973,9 +2013,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
         return parsed.strftime("%Y-%m-%d %H:%M:%S")
 
+    def localized_update_payload(payload: ServiceUpdateRequest) -> dict:
+        title = payload.title.strip()
+        body = payload.body.strip()
+        legacy_text = f"{title} {body}"
+        legacy_is_english = bool(re.search(r"[A-Za-z]", legacy_text)) and not bool(
+            re.search(r"[А-Яа-яІіЇїЄєҐґ]", legacy_text)
+        )
+        title_uk = payload.title_uk.strip()
+        body_uk = payload.body_uk.strip()
+        title_en = payload.title_en.strip()
+        body_en = payload.body_en.strip()
+        if not any((title_uk, body_uk, title_en, body_en)):
+            if legacy_is_english:
+                title_en, body_en = title, body
+            else:
+                title_uk, body_uk = title, body
+        canonical_title = title_uk or title_en or title
+        canonical_body = body_uk or body_en or body
+        return {
+            "title": canonical_title,
+            "body": canonical_body,
+            "title_uk": title_uk,
+            "body_uk": body_uk,
+            "title_en": title_en,
+            "body_en": body_en,
+        }
+
     @app.get("/api/service-updates")
-    def service_updates(_: dict = Depends(authorize), limit: int = 30) -> dict:
-        items = saas.list_service_updates(limit=limit)
+    def service_updates(
+        _: dict = Depends(authorize),
+        limit: int = 30,
+        locale: str = "uk",
+    ) -> dict:
+        items = saas.list_service_updates(limit=limit, locale=locale)
         return {
             "items": items,
             "latest_id": max((int(item["id"]) for item in items), default=0),
@@ -1997,9 +2068,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload: ServiceUpdateRequest,
         user: dict = Depends(authorize_super_admin),
     ) -> dict:
+        localized = localized_update_payload(payload)
         item = saas.create_service_update(
-            title=payload.title,
-            body=payload.body,
+            **localized,
             category=payload.category,
             importance=payload.importance,
             status=payload.status,
@@ -2023,10 +2094,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         user: dict = Depends(authorize_super_admin),
     ) -> dict:
         try:
+            localized = localized_update_payload(payload)
             item = saas.update_service_update(
                 update_id,
-                title=payload.title,
-                body=payload.body,
+                **localized,
                 category=payload.category,
                 importance=payload.importance,
                 status=payload.status,
@@ -2832,6 +2903,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 max_channels=payload.max_channels,
                 monthly_publications=payload.monthly_publications,
                 monthly_ai_budget=payload.monthly_ai_budget,
+                monthly_text_generations=payload.monthly_text_generations,
+                monthly_image_generations=payload.monthly_image_generations,
                 company_id=company["id"],
             )
             owner = auth.create_user(
@@ -2894,6 +2967,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         current_organization_id = organization_id(user)
         workspace = saas.get_organization(current_organization_id)
         company = saas.company_for_organization(current_organization_id)
+        now = datetime.now(timezone.utc)
+        subscription_status = workspace.get("subscription_status") or workspace.get("plan_code") or "custom"
+        if subscription_status == "custom" and workspace.get("plan_code") == "trial":
+            subscription_status = "trial"
+        elif subscription_status == "custom" and workspace.get("plan_code") in {"start", "growth", "scale"}:
+            subscription_status = "active"
+        is_trial = subscription_status == "trial" or workspace.get("plan_code") == "trial"
+        expires_value = workspace.get("trial_ends_at") if is_trial else workspace.get("plan_expires_at")
+        expires_at = None
+        days_left = None
+        if expires_value:
+            expires_at = datetime.fromisoformat(str(expires_value).replace("Z", "+00:00"))
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            seconds_left = (expires_at - now).total_seconds()
+            days_left = max(0, int((seconds_left + 86399) // 86400))
+        if expires_at and expires_at <= now:
+            subscription_status = "expired"
+        text_count = repository.current_month_usage_units("text")
+        image_count = repository.current_month_usage_units("image")
+        publication_count = repository.current_month_publications()
+        text_limit = int(workspace.get("monthly_text_generations") or 0)
+        image_limit = int(workspace.get("monthly_image_generations") or 0)
+        publication_limit = int(workspace.get("monthly_publications") or 0)
+        quota_state = {
+            "subscription_status": subscription_status,
+            "trial_ends_at": workspace.get("trial_ends_at"),
+            "plan_expires_at": workspace.get("plan_expires_at"),
+            "days_left": days_left,
+            "text": {"used": text_count, "limit": text_limit},
+            "image": {"used": image_count, "limit": image_limit},
+            "publications": {"used": publication_count, "limit": publication_limit},
+        }
         try:
             telegram_connection = saas.telegram_connection(
                 current_organization_id,
@@ -2927,7 +3033,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "telegram": telegram_connection,
             "user_count": len(saas.member_ids(current_organization_id)),
             "ai_spend": repository.current_month_cost(),
-            "publication_count": repository.current_month_publications(),
+            "publication_count": publication_count,
+            "text_generation_count": text_count,
+            "image_generation_count": image_count,
+            "monthly_text_generations": text_limit,
+            "monthly_image_generations": image_limit,
+            "trial_ends_at": workspace.get("trial_ends_at"),
+            "subscription_status": subscription_status,
+            "quota_state": quota_state,
         }
 
     @app.get("/api/plans")
@@ -3075,6 +3188,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             brand_logo_asset_id=payload.logo_asset_id,
             favicon_asset_id=payload.favicon_asset_id,
         )
+        company = {
+            **company,
+            "workspace_short_description": appearance.get("workspace_short_description"),
+            "workspace_avatar_asset_id": appearance.get("workspace_avatar_asset_id"),
+            "brand_logo_asset_id": appearance.get("brand_logo_asset_id"),
+            "brand_primary_color": appearance.get("brand_primary_color"),
+            "brand_secondary_color": appearance.get("brand_secondary_color"),
+        }
         return {"company": company, "settings": appearance}
 
     @app.post("/api/workspace/appearance/assets")
@@ -3755,7 +3876,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload: IdeaRequest,
         user: dict = Depends(require_permission("ideas.create")),
     ) -> dict:
-        ensure_ai_budget()
+        ensure_text_generation_quota()
         _validate_models(payload.text_model)
         _validate_tone(payload.tone)
         validate_rubric(payload.product, allow_all=True)
@@ -3812,7 +3933,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload: ContentPlanRequest,
         user: dict = Depends(require_permission("ideas.create")),
     ) -> dict:
-        ensure_ai_budget()
+        ensure_text_generation_quota()
+        if payload.create_as == "drafts":
+            ensure_text_generation_quota(payload.posts)
+            ensure_image_generation_quota(payload.posts)
         _validate_models(payload.text_model)
         validate_rubric(payload.product, allow_all=True)
         days = 7 if payload.period == "week" else 30
@@ -3864,7 +3988,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload: SeriesRequest,
         user: dict = Depends(require_permission("ideas.create")),
     ) -> dict:
-        ensure_ai_budget()
+        ensure_text_generation_quota()
         _validate_models(payload.text_model)
         _validate_tone(payload.tone)
         validate_rubric(payload.product)
@@ -3900,7 +4024,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload: MaterialRequest,
         user: dict = Depends(require_permission("ideas.create")),
     ) -> dict:
-        ensure_ai_budget()
+        ensure_text_generation_quota()
         _validate_models(payload.text_model)
         _validate_tone(payload.tone)
         validate_rubric(payload.product, allow_all=True)
@@ -3945,7 +4069,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload: GenerationRequest,
         user: dict = Depends(require_permission("content.create")),
     ) -> dict:
-        ensure_ai_budget()
+        ensure_text_generation_quota()
+        ensure_image_generation_quota()
         _validate_generation(payload, repository)
         try:
             job = repository.select_idea(
@@ -3973,7 +4098,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job_id: int,
         user: dict = Depends(require_permission("content.create")),
     ) -> dict:
-        ensure_ai_budget()
+        ensure_text_generation_quota()
+        ensure_image_generation_quota()
         try:
             job = repository.get_job(job_id)
         except KeyError as exc:
@@ -4256,7 +4382,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         template_id: str,
         user: dict = Depends(require_permission("visual_styles.manage")),
     ) -> dict:
-        ensure_ai_budget()
+        ensure_image_generation_quota()
         try:
             template = repository.get_custom_template(template_id)
         except KeyError as exc:
@@ -4555,7 +4681,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload: SocialVariantRequest,
         user: dict = Depends(require_permission("content.edit")),
     ) -> dict:
-        ensure_ai_budget()
+        ensure_text_generation_quota()
+        ensure_image_generation_quota()
         _validate_models(payload.text_model, payload.image_model)
         if payload.platform not in SOCIAL_PLATFORM_RULES:
             raise HTTPException(status_code=422, detail="Ця соцмережа не підтримується")
@@ -4741,7 +4868,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload: GenerationRequest,
         user: dict = Depends(require_permission("content.edit")),
     ) -> dict:
-        ensure_ai_budget()
+        ensure_image_generation_quota()
         _validate_generation(payload, repository)
         draft_record = repository.draft_record(draft_id)
         rubric = repository.get_rubric(draft_record["product"])
@@ -4768,7 +4895,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload: GenerationRequest,
         user: dict = Depends(require_permission("content.edit")),
     ) -> dict:
-        ensure_ai_budget()
+        ensure_text_generation_quota()
+        ensure_image_generation_quota()
         _validate_generation(payload, repository)
         draft = repository.draft_record(draft_id)
         job = repository.create_job(
@@ -4842,6 +4970,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         draft_id: int,
         user: dict = Depends(require_permission("content.publish")),
     ) -> dict:
+        ensure_publication_quota()
         setup = instagram_setup_status()
         if setup["setup_required"]:
             raise HTTPException(
@@ -4875,6 +5004,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload: InstagramScheduleRequest,
         user: dict = Depends(require_permission("content.schedule")),
     ) -> dict:
+        ensure_active_subscription(saas.get_organization(repository.organization_id))
         setup = instagram_setup_status()
         if setup["setup_required"]:
             raise HTTPException(
@@ -4913,6 +5043,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload: ScheduleRequest,
         user: dict = Depends(require_permission("content.schedule")),
     ) -> dict:
+        ensure_active_subscription(saas.get_organization(repository.organization_id))
         scheduled_at = payload.scheduled_at
         draft = repository.draft_record(draft_id)
         if draft["status"] == "published":
@@ -5381,8 +5512,8 @@ function statusActions(d){if(state.me?.role==="viewer")return "";return (draftTr
 function renderDrafts(drafts){const filtered=state.favoritesOnly?drafts.filter(d=>d.is_favorite):drafts;const kanban=state.company?.settings?.workspace_mode==="kanban";const container=document.querySelector("#drafts");container.className=kanban?"kanban":"drafts";if(kanban){const columns=["draft","review","needs_changes","ready","scheduled"];container.innerHTML=columns.map(status=>{const items=filtered.filter(d=>d.status===status);return `<section class="kanban-column"><h3>${esc(statusLabels[status])} · ${items.length}</h3>${items.map(d=>`<article class="kanban-card" data-draft-card="${d.id}"><span class="badge">${esc(rubricLabel(d.product))}</span><h4>${esc(d.title)}</h4><p>${esc(d.caption_html.replace(/<[^>]+>/g,""))}</p><div class="editor-actions"><button data-draft="${d.id}">Відкрити</button>${statusActions(d)}</div></article>`).join("")||`<div class="empty">Немає матеріалів</div>`}</section>`}).join("");document.querySelector("#draftsPagination").innerHTML=""}else{const page=paginate(filtered,state.draftPage,state.pageSize);container.innerHTML=page.length?page.map(d=>`<article class="draft" data-draft-card="${d.id}">${d.image_path?`<img src="api/drafts/${d.id}/image" alt="">`:`<div class="empty"><span class="spinner"></span>Зображення генерується</div>`}<div class="draft-body"><div class="draft-meta"><span class="badge">${esc(rubricLabel(d.product))}${d.is_favorite?" · ★":""}</span><span class="status ${esc(d.status)}">${esc(statusLabels[d.status]||d.status)}</span></div><h3>${esc(d.title)}</h3><p>${esc(d.caption_html.replace(/<[^>]+>/g,""))}</p><div class="editor-actions"><button data-draft="${d.id}">Відкрити редактор</button>${statusActions(d)}</div></div></article>`).join(""):`<div class="empty">${state.favoritesOnly?"Вдалих прикладів ще немає":"Чернеток ще немає. Створіть їх з бібліотеки ідей."}</div>`;pagination("draftsPagination",filtered.length,state.draftPage,p=>{state.draftPage=p;renderDrafts(drafts)})}document.querySelectorAll("[data-draft]").forEach(b=>b.onclick=()=>openDraft(b.dataset.draft));document.querySelectorAll("[data-status-draft]").forEach(b=>b.onclick=()=>changeDraftStatus(b.dataset.statusDraft,b.dataset.status))}
 function updateDraftStatuses(drafts){for(const d of drafts){const card=document.querySelector(`[data-draft-card="${d.id}"]`);if(card){const el=card.querySelector(".status");el.className=`status ${d.status}`;el.textContent=statusLabels[d.status]||d.status}}}
 function renderUsers(users){document.querySelector("#users").innerHTML=users.map(u=>`<tr><td><strong>${esc(u.username)}</strong></td><td>${u.is_admin?"Адміністратор":"Редактор"}</td><td class="status ${u.active?"ready":"failed"}">${u.active?"Активний":"Заблокований"}</td><td>${esc(new Date(`${u.created_at}Z`).toLocaleDateString("uk-UA"))}</td><td><div class="user-actions"><button data-role-user="${u.id}">${u.is_admin?"Зробити редактором":"Зробити адміністратором"}</button><button data-active-user="${u.id}" class="${u.active?"danger":""}">${u.active?"Заблокувати":"Активувати"}</button><button data-password-user="${u.id}">Новий пароль</button></div></td></tr>`).join("");document.querySelectorAll("[data-role-user]").forEach(b=>b.onclick=async()=>{const u=users.find(x=>x.id===Number(b.dataset.roleUser));await api(`api/users/${u.id}`,{method:"PATCH",body:JSON.stringify({is_admin:!u.is_admin})});refreshUsers()});document.querySelectorAll("[data-active-user]").forEach(b=>b.onclick=async()=>{const u=users.find(x=>x.id===Number(b.dataset.activeUser));await api(`api/users/${u.id}`,{method:"PATCH",body:JSON.stringify({active:!u.active})});refreshUsers()});document.querySelectorAll("[data-password-user]").forEach(b=>b.onclick=async()=>{const password=prompt("Новий пароль, мінімум 10 символів");if(!password)return;await api(`api/users/${b.dataset.passwordUser}/password`,{method:"PUT",body:JSON.stringify({password})});toast("Пароль змінено")})}
-function renderCompany(company){state.company=company;document.querySelector("#currentCompany").textContent=company.name;document.querySelector("#sidebarCompany").textContent=company.name;document.querySelector("#companyCards").innerHTML=`<div class="company-card"><span>Компанія</span><strong>${esc(company.name)}</strong></div><div class="company-card"><span>Користувачі</span><strong>${company.user_count} / ${company.max_users}</strong></div><div class="company-card"><span>Telegram-канали</span><strong>${company.telegram?.configured?"1 підключено":`0 / ${company.max_channels}`}</strong></div><div class="company-card"><span>Публікації цього місяця</span><strong>${company.publication_count} / ${company.monthly_publications}</strong></div><div class="company-card"><span>AI-витрати цього місяця</span><strong>${money(company.ai_spend)} / $${Number(company.monthly_ai_budget).toFixed(0)}</strong></div>`;document.querySelector("#companyChannel").value=company.telegram?.channel_id||"";applyWorkspaceMode()}
-function renderPricing(data){state.pricing=data;const expires=data.expires_at?new Date(data.expires_at).toLocaleDateString("uk-UA"):"";document.querySelector("#pricingGrid").innerHTML=data.plans.map(plan=>{const current=data.current_plan===plan.code;return `<article class="price-card ${plan.popular?"popular":""}">${plan.popular?`<span class="popular-label">Найпопулярніший</span>`:""}<h3>${esc(plan.name)}</h3><p class="tagline">${esc(plan.tagline)}</p><div class="price"><strong>${number(plan.stars)} ★</strong><span>/ 30 днів</span></div><div class="plan-limits"><div class="plan-limit"><strong>${number(plan.publications)}</strong><span>публікацій / місяць</span></div><div class="plan-limit"><strong>${number(plan.users)}</strong><span>користувачів</span></div><div class="plan-limit"><strong>${number(plan.channels)}</strong><span>Telegram-канал</span></div><div class="plan-limit"><strong>$${Number(plan.ai_budget).toFixed(0)}</strong><span>AI-бюджет / місяць</span></div></div><ul class="plan-features">${plan.features.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>${current?`<button disabled class="current-plan">Поточний тариф${expires?` · до ${expires}`:""}</button>`:`<button class="${plan.popular?"success":"primary"}" data-buy-plan="${esc(plan.code)}" ${state.me?.is_admin?"":"disabled"}>${state.me?.is_admin?"Оплатити в Telegram":"Доступно адміністратору"}</button>`}</article>`}).join("");document.querySelectorAll("[data-buy-plan]").forEach(button=>button.onclick=()=>buyPlan(button,button.dataset.buyPlan))}
+function renderCompany(company){state.company=company;document.querySelector("#currentCompany").textContent=company.name;document.querySelector("#sidebarCompany").textContent=company.name;document.querySelector("#companyCards").innerHTML=`<div class="company-card"><span>Компанія</span><strong>${esc(company.name)}</strong></div><div class="company-card"><span>Користувачі</span><strong>${company.user_count} / ${company.max_users}</strong></div><div class="company-card"><span>Telegram-канали</span><strong>${company.telegram?.configured?"1 підключено":`0 / ${company.max_channels}`}</strong></div><div class="company-card"><span>Публікації цього місяця</span><strong>${company.publication_count} / ${company.monthly_publications}</strong></div><div class="company-card"><span>Текстові генерації</span><strong>\${company.text_generation_count || 0} / \${company.monthly_text_generations || 0}</strong></div><div class="company-card"><span>Зображення</span><strong>\${company.image_generation_count || 0} / \${company.monthly_image_generations || 0}</strong></div>`;document.querySelector("#companyChannel").value=company.telegram?.channel_id||"";applyWorkspaceMode()}
+function renderPricing(data){state.pricing=data;const expires=data.expires_at?new Date(data.expires_at).toLocaleDateString("uk-UA"):"";document.querySelector("#pricingGrid").innerHTML=data.plans.map(plan=>{const current=data.current_plan===plan.code;return `<article class="price-card ${plan.popular?"popular":""}">${plan.popular?`<span class="popular-label">Найпопулярніший</span>`:""}<h3>${esc(plan.name)}</h3><p class="tagline">${esc(plan.tagline)}</p><div class="price"><strong>${number(plan.stars)} ★</strong><span>/ 30 днів</span></div><div class="plan-limits"><div class="plan-limit"><strong>${number(plan.publications)}</strong><span>публікацій / місяць</span></div><div class="plan-limit"><strong>${number(plan.users)}</strong><span>користувачів</span></div><div class="plan-limit"><strong>${number(plan.channels)}</strong><span>Telegram-канал</span></div><div class="plan-limit"><strong>\${number(plan.text_generations || 0)}</strong><span>текстів / місяць</span></div><div class="plan-limit"><strong>\${number(plan.image_generations || 0)}</strong><span>зображень / місяць</span></div></div><ul class="plan-features">${plan.features.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>${current?`<button disabled class="current-plan">Поточний тариф${expires?` · до ${expires}`:""}</button>`:`<button class="${plan.popular?"success":"primary"}" data-buy-plan="${esc(plan.code)}" ${state.me?.is_admin?"":"disabled"}>${state.me?.is_admin?"Оплатити в Telegram":"Доступно адміністратору"}</button>`}</article>`}).join("");document.querySelectorAll("[data-buy-plan]").forEach(button=>button.onclick=()=>buyPlan(button,button.dataset.buyPlan))}
 async function buyPlan(button,planCode){const popup=window.open("about:blank","_blank");const result=await loading(button,()=>api("api/billing/checkout",{method:"POST",body:JSON.stringify({plan_code:planCode})}),"Створюється рахунок");if(!result){popup?.close();return}if(popup)popup.location=result.invoice_url;else location.href=result.invoice_url;toast("Рахунок відкрито в Telegram")}
 function renderRubrics(items){const active=items.filter(r=>r.active);document.querySelector("#rubrics").innerHTML=items.map(r=>`<tr><td><strong>${esc(r.name)}</strong></td><td class="masked">${esc(r.slug)}</td><td>${esc(r.description.slice(0,160))}</td><td>${r.default_link?`<a href="${esc(r.default_link)}" target="_blank">Відкрити</a>`:"—"}</td><td class="status ${r.active?"ready":"failed"}">${r.active?"Активна":"Вимкнена"}</td><td><button data-toggle-rubric="${r.id}">${r.active?"Вимкнути":"Увімкнути"}</button></td></tr>`).join("")||`<tr><td colspan="6" class="empty">Створіть першу рубрику компанії</td></tr>`;const options=active.map(r=>`<option value="${esc(r.slug)}">${esc(r.name)}</option>`).join("");for(const id of ["ideaProduct","planProduct","materialProduct"]){const select=document.querySelector(`#${id}`),current=select.value;select.innerHTML=`<option value="all">Усі рубрики</option>${options}`;if([...select.options].some(o=>o.value===current))select.value=current}const series=document.querySelector("#seriesProduct"),seriesCurrent=series.value;series.innerHTML=options;if([...series.options].some(o=>o.value===seriesCurrent))series.value=seriesCurrent;syncRubricControls();document.querySelectorAll("[data-toggle-rubric]").forEach(b=>b.onclick=async()=>{const r=items.find(x=>x.id===Number(b.dataset.toggleRubric));await api(`api/rubrics/${r.id}`,{method:"PUT",body:JSON.stringify({name:r.name,description:r.description,instructions:r.instructions,default_link:r.default_link,active:!r.active})});await refresh()})}
 function renderOrganizations(items){state.organizations=items;document.querySelector("#organizations").innerHTML=items.map(o=>`<tr><td>${o.id}</td><td><strong>${esc(o.name)}</strong></td><td class="masked">${esc(o.slug)}</td><td>${o.monthly_publications} публікацій<br>$${Number(o.monthly_ai_budget).toFixed(0)} AI</td><td>${o.user_count} / ${o.max_users}</td><td class="status ${o.active?"ready":"failed"}">${o.active?"Активна":"Заблокована"}</td></tr>`).join("")}

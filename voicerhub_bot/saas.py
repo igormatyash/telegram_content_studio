@@ -11,6 +11,9 @@ from voicerhub_bot.permissions import WORKSPACE_ROLES
 from voicerhub_bot.slugs import generate_slug
 
 ROLES = WORKSPACE_ROLES
+TRIAL_TEXT_GENERATIONS = 60
+TRIAL_IMAGE_GENERATIONS = 30
+TRIAL_DAYS = 14
 
 
 class SecretCipher:
@@ -226,9 +229,33 @@ class SaasRepository:
             self._ensure_column(
                 connection,
                 "organizations",
+                "monthly_text_generations",
+                f"INTEGER NOT NULL DEFAULT {TRIAL_TEXT_GENERATIONS}",
+            )
+            self._ensure_column(
+                connection,
+                "organizations",
+                "monthly_image_generations",
+                f"INTEGER NOT NULL DEFAULT {TRIAL_IMAGE_GENERATIONS}",
+            )
+            self._ensure_column(connection, "organizations", "trial_started_at", "TEXT")
+            self._ensure_column(connection, "organizations", "trial_ends_at", "TEXT")
+            self._ensure_column(
+                connection,
+                "organizations",
+                "subscription_status",
+                "TEXT NOT NULL DEFAULT 'custom'",
+            )
+            self._ensure_column(
+                connection,
+                "organizations",
                 "referred_by_organization_id",
                 "INTEGER",
             )
+            for column in ("title_uk", "body_uk", "title_en", "body_en"):
+                definition = "TEXT NOT NULL DEFAULT ''"
+                self._ensure_column(connection, "service_updates", column, definition)
+            self._backfill_service_update_locales(connection)
             for column, definition in {
                 "brand_secondary_color": "TEXT NOT NULL DEFAULT ''",
                 "workspace_avatar_asset_id": "INTEGER",
@@ -290,6 +317,47 @@ class SaasRepository:
                 """
             )
             self._backfill_companies(connection)
+
+    @staticmethod
+    def _looks_english(title: str, body: str) -> bool:
+        text = f"{title} {body}"
+        has_cyrillic = bool(re.search(r"[А-Яа-яІіЇїЄєҐґ]", text))
+        has_latin = bool(re.search(r"[A-Za-z]", text))
+        return has_latin and not has_cyrillic
+
+    def _backfill_service_update_locales(
+        self,
+        connection: sqlite3.Connection,
+    ) -> None:
+        rows = connection.execute(
+            """
+            SELECT id, title, body, title_uk, body_uk, title_en, body_en
+            FROM service_updates
+            """
+        ).fetchall()
+        for row in rows:
+            if any(row[key] for key in ("title_uk", "body_uk", "title_en", "body_en")):
+                continue
+            title = str(row["title"] or "")
+            body = str(row["body"] or "")
+            if self._looks_english(title, body):
+                connection.execute(
+                    """
+                    UPDATE service_updates
+                    SET title_en = ?, body_en = ?
+                    WHERE id = ?
+                    """,
+                    (title, body, row["id"]),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE service_updates
+                    SET title_uk = ?, body_uk = ?
+                    WHERE id = ?
+                    """,
+                    (title, body, row["id"]),
+                )
 
     @staticmethod
     def _ensure_column(
@@ -405,8 +473,10 @@ class SaasRepository:
                     """
                     INSERT INTO organizations (
                         id, name, slug, max_users, max_channels,
-                        monthly_publications, monthly_ai_budget
-                    ) VALUES (1, ?, 'voicerhub', 50, 1, 90, 50)
+                        monthly_publications, monthly_ai_budget,
+                        monthly_text_generations, monthly_image_generations,
+                        subscription_status
+                    ) VALUES (1, ?, 'voicerhub', 50, 1, 90, 50, 0, 0, 'custom')
                     """,
                     (name,),
                 )
@@ -469,6 +539,8 @@ class SaasRepository:
         max_channels: int,
         monthly_publications: int,
         monthly_ai_budget: float,
+        monthly_text_generations: int = TRIAL_TEXT_GENERATIONS,
+        monthly_image_generations: int = TRIAL_IMAGE_GENERATIONS,
         company_id: int | None = None,
     ) -> dict:
         if company_id is None:
@@ -486,8 +558,9 @@ class SaasRepository:
                 """
                 INSERT INTO organizations (
                     company_id, name, slug, max_users, max_channels,
-                    monthly_publications, monthly_ai_budget
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    monthly_publications, monthly_ai_budget,
+                    monthly_text_generations, monthly_image_generations
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     company_id,
@@ -497,6 +570,8 @@ class SaasRepository:
                     max_channels,
                     monthly_publications,
                     monthly_ai_budget,
+                    monthly_text_generations,
+                    monthly_image_generations,
                 ),
             )
             organization_id = int(cursor.lastrowid)
@@ -525,15 +600,29 @@ class SaasRepository:
             monthly_ai_budget=8,
             company_id=company_id,
         )
-        expires_at = datetime.now(timezone.utc) + timedelta(days=14)
+        started_at = datetime.now(timezone.utc)
+        expires_at = started_at + timedelta(days=TRIAL_DAYS)
         with self._connect() as connection:
             connection.execute(
                 """
                 UPDATE organizations
-                SET plan_code = 'trial', plan_expires_at = ?
+                SET plan_code = 'trial',
+                    subscription_status = 'trial',
+                    plan_expires_at = ?,
+                    trial_started_at = ?,
+                    trial_ends_at = ?,
+                    monthly_text_generations = ?,
+                    monthly_image_generations = ?
                 WHERE id = ?
                 """,
-                (expires_at.isoformat(), organization["id"]),
+                (
+                    expires_at.isoformat(),
+                    started_at.isoformat(),
+                    expires_at.isoformat(),
+                    TRIAL_TEXT_GENERATIONS,
+                    TRIAL_IMAGE_GENERATIONS,
+                    organization["id"],
+                ),
             )
         return self.get_organization(organization["id"])
 
@@ -1649,6 +1738,10 @@ class SaasRepository:
         *,
         title: str,
         body: str = "",
+        title_uk: str = "",
+        body_uk: str = "",
+        title_en: str = "",
+        body_en: str = "",
         category: str = "release",
         importance: str = "info",
         status: str = "published",
@@ -1662,13 +1755,18 @@ class SaasRepository:
             cursor = connection.execute(
                 f"""
                 INSERT INTO service_updates (
-                    title, body, category, importance, status, pinned,
+                    title, body, title_uk, body_uk, title_en, body_en,
+                    category, importance, status, pinned,
                     visible_from, visible_until, created_by_user_id, published_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, {published_at})
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {published_at})
                 """,
                 (
                     title.strip(),
                     body.strip(),
+                    title_uk.strip(),
+                    body_uk.strip(),
+                    title_en.strip(),
+                    body_en.strip(),
                     category,
                     importance,
                     status,
@@ -1687,6 +1785,10 @@ class SaasRepository:
         *,
         title: str,
         body: str = "",
+        title_uk: str = "",
+        body_uk: str = "",
+        title_en: str = "",
+        body_en: str = "",
         category: str = "release",
         importance: str = "info",
         status: str = "published",
@@ -1704,7 +1806,9 @@ class SaasRepository:
             connection.execute(
                 """
                 UPDATE service_updates
-                SET title = ?, body = ?, category = ?, importance = ?,
+                SET title = ?, body = ?,
+                    title_uk = ?, body_uk = ?, title_en = ?, body_en = ?,
+                    category = ?, importance = ?,
                     status = ?, pinned = ?, visible_from = ?, visible_until = ?,
                     updated_at = CURRENT_TIMESTAMP, published_at = ?
                 WHERE id = ?
@@ -1712,6 +1816,10 @@ class SaasRepository:
                 (
                     title.strip(),
                     body.strip(),
+                    title_uk.strip(),
+                    body_uk.strip(),
+                    title_en.strip(),
+                    body_en.strip(),
                     category,
                     importance,
                     status,
@@ -1754,8 +1862,10 @@ class SaasRepository:
         *,
         limit: int = 50,
         include_drafts: bool = False,
+        locale: str | None = None,
     ) -> list[dict]:
         conditions = []
+        params: list[object] = []
         if not include_drafts:
             conditions.extend(
                 [
@@ -1764,7 +1874,11 @@ class SaasRepository:
                     "(su.visible_until IS NULL OR su.visible_until >= CURRENT_TIMESTAMP)",
                 ]
             )
+        locale = (locale or "").lower()
+        if locale in {"uk", "en"} and not include_drafts:
+            conditions.append(f"TRIM(COALESCE(su.title_{locale}, '')) != ''")
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.append(max(1, min(limit, 200)))
         with self._connect() as connection:
             if self._table_exists(connection, "users"):
                 select = """
@@ -1788,9 +1902,14 @@ class SaasRepository:
                     su.id DESC
                 LIMIT ?
                 """,
-                (max(1, min(limit, 200)),),
+                params,
             ).fetchall()
-        return [dict(row) for row in rows]
+        items = [dict(row) for row in rows]
+        if locale in {"uk", "en"}:
+            for item in items:
+                item["title"] = item.get(f"title_{locale}") or item.get("title") or ""
+                item["body"] = item.get(f"body_{locale}") or item.get("body") or ""
+        return items
 
     def last_activity_by_organization(self) -> dict[int, str]:
         with self._connect() as connection:
@@ -1897,7 +2016,10 @@ class SaasRepository:
                 UPDATE organizations
                 SET plan_code = ?, plan_expires_at = ?, max_users = ?,
                     max_channels = ?, monthly_publications = ?,
-                    monthly_ai_budget = ?
+                    monthly_ai_budget = ?,
+                    monthly_text_generations = ?,
+                    monthly_image_generations = ?,
+                    subscription_status = 'active'
                 WHERE id = ?
                 """,
                 (
@@ -1907,6 +2029,8 @@ class SaasRepository:
                     plan["channels"],
                     plan["publications"],
                     plan["ai_budget"],
+                    plan["text_generations"],
+                    plan["image_generations"],
                     order["organization_id"],
                 ),
             )

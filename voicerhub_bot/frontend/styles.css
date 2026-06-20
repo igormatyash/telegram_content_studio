@@ -843,3 +843,13 @@ textarea { min-height: 112px; resize: vertical; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
 }
+.quota-mini-list { display: grid; gap: 8px; margin-top: 14px; }
+.quota-mini-list span { display: flex; justify-content: space-between; gap: 12px; color: rgba(255,255,255,.82); font-size: 13px; }
+.quota-mini-list b { color: white; }
+.quota-mini-list i { display: block; height: 5px; overflow: hidden; border-radius: 99px; background: rgba(255,255,255,.14); }
+.quota-mini-list em { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg,#818cf8,#d946ef); }
+.two-language-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; }
+.two-language-grid label { display: grid; gap: 7px; }
+@media (max-width: 760px) {
+  .two-language-grid { grid-template-columns: 1fr; }
+}

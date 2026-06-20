@@ -119,6 +119,8 @@ def test_service_updates_are_idempotent_and_filter_public_feed(tmp_path) -> None
     published = saas.create_service_update(
         title="Нова лента оновлень",
         body="Тут будуть нові функції та важливі повідомлення.",
+        title_uk="Нова лента оновлень",
+        body_uk="Тут будуть нові функції та важливі повідомлення.",
         category="release",
         importance="success",
         status="published",
@@ -128,6 +130,8 @@ def test_service_updates_are_idempotent_and_filter_public_feed(tmp_path) -> None
     draft = saas.create_service_update(
         title="Чернетка",
         body="Користувачі цього не бачать.",
+        title_uk="Чернетка",
+        body_uk="Користувачі цього не бачать.",
         status="draft",
     )
 
@@ -142,6 +146,8 @@ def test_service_updates_are_idempotent_and_filter_public_feed(tmp_path) -> None
         draft["id"],
         title="Опублікована чернетка",
         body="Тепер видно всім.",
+        title_uk="Опублікована чернетка",
+        body_uk="Тепер видно всім.",
         category="announcement",
         importance="info",
         status="published",
@@ -155,6 +161,34 @@ def test_service_updates_are_idempotent_and_filter_public_feed(tmp_path) -> None
         "Нова лента оновлень",
         "Опублікована чернетка",
     }
+
+
+def test_service_updates_are_filtered_by_locale(tmp_path) -> None:
+    database = tmp_path / "localized-updates.sqlite3"
+    key = Fernet.generate_key().decode()
+    saas = SaasRepository(database, key)
+
+    saas.create_service_update(
+        title="Нове українське оновлення",
+        body="Тільки українська лента.",
+        title_uk="Нове українське оновлення",
+        body_uk="Тільки українська лента.",
+        status="published",
+    )
+    saas.create_service_update(
+        title="English update",
+        body="English feed only.",
+        title_en="English update",
+        body_en="English feed only.",
+        status="published",
+    )
+
+    assert [item["title"] for item in saas.list_service_updates(locale="uk")] == [
+        "Нове українське оновлення"
+    ]
+    assert [item["title"] for item in saas.list_service_updates(locale="en")] == [
+        "English update"
+    ]
 
 
 def test_trial_workspace_has_start_limits_and_expiration(tmp_path) -> None:
@@ -171,6 +205,10 @@ def test_trial_workspace_has_start_limits_and_expiration(tmp_path) -> None:
     assert organization["max_channels"] == 1
     assert organization["monthly_publications"] == 30
     assert organization["monthly_ai_budget"] == 8
+    assert organization["monthly_text_generations"] == 60
+    assert organization["monthly_image_generations"] == 30
+    assert organization["subscription_status"] == "trial"
+    assert organization["trial_ends_at"]
     assert datetime.fromisoformat(organization["plan_expires_at"]) > datetime.now(
         timezone.utc
     )
@@ -522,7 +560,7 @@ def test_viewer_is_read_only_and_foreign_draft_is_hidden(tmp_path) -> None:
     ).status_code == 403
 
 
-def test_ai_budget_blocks_new_generation_before_openai_call(tmp_path) -> None:
+def test_text_quota_blocks_new_generation_before_openai_call(tmp_path) -> None:
     settings = Settings(
         telegram_bot_token="telegram",
         openai_api_key="openai",
@@ -539,6 +577,10 @@ def test_ai_budget_blocks_new_generation_before_openai_call(tmp_path) -> None:
         "/api/login",
         json={"username": "platform.owner", "password": "initial-password"},
     )
+    with sqlite3.connect(settings.database_path) as connection:
+        connection.execute(
+            "UPDATE organizations SET monthly_text_generations = 1, subscription_status = 'custom' WHERE id = 1"
+        )
     repository = TenantRepository(settings.database_path, settings.organizations_dir)
     repository.for_organization(1).add_usage(
         job_id=0,
@@ -559,7 +601,7 @@ def test_ai_budget_blocks_new_generation_before_openai_call(tmp_path) -> None:
     )
 
     assert response.status_code == 402
-    assert "AI-бюджет" in response.json()["detail"]
+    assert response.json()["detail"]["reason"] == "text_quota_exceeded"
 
 
 def test_super_admin_sees_usage_by_company_and_user(tmp_path) -> None:

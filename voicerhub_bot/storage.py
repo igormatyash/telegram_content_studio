@@ -1053,6 +1053,64 @@ class DraftRepository:
             )
         return int(cursor.rowcount)
 
+    def repair_non_primary_legacy_rubrics(self) -> dict[str, int]:
+        if self.organization_id == 1:
+            return {"deleted": 0, "deactivated": 0}
+        legacy_slugs = ("tony", "voicer", "voicer-wave", "voicerhub")
+        deleted = 0
+        deactivated = 0
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT id, slug
+                FROM content_rubrics
+                WHERE organization_id = ?
+                  AND LOWER(slug) IN ({",".join("?" for _ in legacy_slugs)})
+                """,
+                (self.organization_id, *legacy_slugs),
+            ).fetchall()
+            for row in rows:
+                slug = str(row["slug"])
+                used = connection.execute(
+                    """
+                    SELECT
+                      (SELECT COUNT(*) FROM content_ideas
+                       WHERE organization_id = ? AND product = ?) +
+                      (SELECT COUNT(*) FROM drafts
+                       WHERE organization_id = ? AND product = ?) +
+                      (SELECT COUNT(*) FROM content_plans
+                       WHERE organization_id = ? AND rubric_slugs LIKE ?) AS refs
+                    """,
+                    (
+                        self.organization_id,
+                        slug,
+                        self.organization_id,
+                        slug,
+                        self.organization_id,
+                        f'%"{slug}"%',
+                    ),
+                ).fetchone()["refs"]
+                if int(used or 0) > 0:
+                    connection.execute(
+                        """
+                        UPDATE content_rubrics
+                        SET active = 0
+                        WHERE id = ? AND organization_id = ?
+                        """,
+                        (row["id"], self.organization_id),
+                    )
+                    deactivated += 1
+                else:
+                    connection.execute(
+                        """
+                        DELETE FROM content_rubrics
+                        WHERE id = ? AND organization_id = ?
+                        """,
+                        (row["id"], self.organization_id),
+                    )
+                    deleted += 1
+        return {"deleted": deleted, "deactivated": deactivated}
+
     def save_social_variant(
         self,
         *,
@@ -2059,6 +2117,21 @@ class DraftRepository:
                 (self.organization_id,),
             ).fetchone()
         return float(row[0] or 0)
+
+    def current_month_usage_units(self, kind: str) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COALESCE(SUM(CASE WHEN units > 0 THEN units ELSE 1 END), 0)
+                FROM usage_events
+                WHERE organization_id = ?
+                  AND kind = ?
+                  AND STRFTIME('%Y-%m', created_at) =
+                    STRFTIME('%Y-%m', 'now')
+                """,
+                (self.organization_id, kind),
+            ).fetchone()
+        return int(row[0] or 0)
 
     def current_month_publications(self) -> int:
         with self._connect() as connection:

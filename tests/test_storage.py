@@ -103,6 +103,22 @@ def test_ideas_editing_and_schedule(tmp_path: Path) -> None:
     assert record["link_url"] == "https://voicerhub.com/ua/products/tony"
 
 
+def test_non_primary_legacy_rubrics_are_repaired_safely(tmp_path: Path) -> None:
+    repository = DraftRepository(tmp_path / "rubric-repair.sqlite3", organization_id=5)
+    repository.add_rubric(slug="tony", name="TONY", description="Legacy rubric")
+    repository.add_rubric(slug="voicer", name="Voicer", description="Unused legacy")
+    repository.add_ideas(
+        [{"product": "tony", "title": "Використана рубрика", "angle": "Не видаляти."}]
+    )
+
+    result = repository.repair_non_primary_legacy_rubrics()
+    rubrics = repository.list_rubrics(include_inactive=True)
+
+    assert result == {"deleted": 1, "deactivated": 1}
+    assert {item["slug"] for item in rubrics} == {"tony"}
+    assert rubrics[0]["active"] == 0
+
+
 def test_content_status_transitions_and_plans_are_persisted(tmp_path: Path) -> None:
     repository = DraftRepository(tmp_path / "workflow.sqlite3", organization_id=4)
     draft = repository.create(

@@ -17,6 +17,8 @@ STAR_PLANS = {
         "channels": 1,
         "publications": 30,
         "ai_budget": 8.0,
+        "text_generations": 60,
+        "image_generations": 30,
         "features": [
             "AI-теми, тексти та зображення",
             "Контент-календар і відкладена публікація",
@@ -33,11 +35,13 @@ STAR_PLANS = {
         "channels": 1,
         "publications": 120,
         "ai_budget": 25.0,
+        "text_generations": 250,
+        "image_generations": 120,
         "popular": True,
         "features": [
             "Усе зі Start",
             "Серії постів і контент-плани на місяць",
-            "Розширений AI-бюджет для якісних моделей",
+            "250 текстових і 120 візуальних генерацій на місяць",
             "Аналітика використання за користувачами",
         ],
     },
@@ -50,6 +54,8 @@ STAR_PLANS = {
         "channels": 1,
         "publications": 300,
         "ai_budget": 60.0,
+        "text_generations": 700,
+        "image_generations": 300,
         "features": [
             "Усе з Growth",
             "До 300 публікацій на місяць",
@@ -61,7 +67,12 @@ STAR_PLANS = {
 
 
 def public_plans() -> list[dict]:
-    return [dict(plan) for plan in STAR_PLANS.values()]
+    plans = []
+    for plan in STAR_PLANS.values():
+        public = dict(plan)
+        public.pop("ai_budget", None)
+        plans.append(public)
+    return plans
 
 
 class BillingService:
@@ -92,6 +103,8 @@ class BillingService:
             title=f"Content Studio · {plan['name']}",
             description=(
                 f"Підписка на 30 днів: {plan['publications']} публікацій, "
+                f"{plan['text_generations']} текстових і "
+                f"{plan['image_generations']} image-генерацій, "
                 f"до {plan['users']} користувачів."
             ),
             payload=payload,

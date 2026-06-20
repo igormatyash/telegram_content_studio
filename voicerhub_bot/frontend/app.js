@@ -32,6 +32,7 @@ const state = {
   currentPublishJobs: [],
   guideStep: 0,
   locale: localStorage.getItem("content-studio:locale") || "uk",
+  appearanceDirty: false,
 };
 let generationPollTimer = null;
 let generationSignature = "";
@@ -267,7 +268,7 @@ const uiTextEn = {
   "Так workspace виглядатиме в інтерфейсі": "This is how the workspace will look in the interface",
   "Тариф": "Plan",
   "Публікації": "Publications",
-  "AI-бюджет": "AI budget",
+  "AI-бюджет": "Generation limits",
   "Повторити onboarding": "Restart onboarding",
   "Небезпечна зона": "Danger zone",
   "Видалення workspace": "Delete workspace",
@@ -451,11 +452,11 @@ Object.assign(uiTextEn, {
 });
 Object.assign(uiTextEn, {
   "AI generator": "AI generator",
-  "AI-витрати · місяць": "AI expenses · month",
+  "AI-витрати · місяць": "Generations · month",
   "AI запропонує теми на основі бренду": "AI will suggest topics based on the brand",
   "AI використає бренд-профіль і рубрики. План створиться як ідеї, які можна переглянути до генерації чернеток.": "AI will use the brand profile and rubrics. The plan will be created as ideas you can review before generating drafts.",
   "AI дивиться на листи і дзвінки без шуму": "AI reviews messages and calls without noise",
-  "AI-бюджет, $": "AI budget, $",
+  "AI-бюджет, $": "Internal AI cost budget, $",
   "Відключаємо…": "Disconnecting...",
   "Готуємо Meta Login…": "Preparing Meta Login...",
   "Business": "Business",
@@ -1034,7 +1035,7 @@ function translateText(value) {
       .replace(/(\d+)\s*каналів/g, "$1 channels")
       .replace(/(\d+)\s*користувачів/g, "$1 users")
       .replace(/публікацій\s*\/\s*місяць/g, "publications / month")
-      .replace(/AI-бюджет\s*\/\s*місяць/g, "AI budget / month")
+      .replace(/AI-бюджет\s*\/\s*місяць/g, "generation limits / month")
       .replace(/чернетки\s*\/\s*план\s*\/\s*публікації/g, "drafts / schedule / publications")
       .replace(/Без workspace/g, "No workspace")
       .replace(/користувачів/g, "users")
@@ -1182,6 +1183,19 @@ function statusLabel(status) {
 }
 const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
 const money = value => `$${Number(value || 0).toFixed(2)}`;
+const quotaLabel = (used, limit) => Number(limit || 0) <= 0 ? `${Number(used || 0).toLocaleString(state.locale === "en" ? "en-US" : "uk-UA")} / ∞` : `${Number(used || 0).toLocaleString(state.locale === "en" ? "en-US" : "uk-UA")} / ${Number(limit || 0).toLocaleString(state.locale === "en" ? "en-US" : "uk-UA")}`;
+const quotaPercent = (used, limit) => Number(limit || 0) <= 0 ? 0 : Math.min(100, Math.round(Number(used || 0) / Number(limit || 1) * 100));
+function workspaceAvatarUrl(workspace, kind = "avatar") {
+  const id = Number(kind === "logo" ? (workspace?.brand_logo_asset_id || workspace?.settings?.brand_logo_asset_id) : (workspace?.workspace_avatar_asset_id || workspace?.settings?.workspace_avatar_asset_id)) || 0;
+  if (!id) return "";
+  const version = encodeURIComponent(`${id}:${workspace?.updated_at || workspace?.settings?.updated_at || Date.now()}`);
+  if (workspace?.id) return apiUrl(`api/workspaces/${workspace.id}/appearance/avatar?v=${version}`);
+  return apiUrl(`api/references/${id}/image?v=${version}`);
+}
+function workspaceAvatarMarkup(workspace, className = "") {
+  const src = workspaceAvatarUrl(workspace);
+  return src ? `<img class="${esc(className)}" src="${src}" alt="">` : esc(initials(workspace?.name || state.company?.name || "CS"));
+}
 const roleLabelsUk = {
   platform_admin:"Platform Admin",owner:"Власник",admin:"Адміністратор",
   content_manager:"Контент-менеджер",editor:"Редактор",
@@ -1420,7 +1434,7 @@ function pagedData(key, endpoint, extra, rerender) {
   const query = pageParams(extra);
   const signature = `${endpoint}?${query}`;
   const current = state.lists[key];
-  if (current?.signature === signature) return current.data;
+  if (current?.signature === signature) return current.error ? {items:[], page:1, per_page:Number(query.get("per_page")||25), total:0, total_pages:0, error:current.error} : current.data;
   if (current?.loading === signature) return null;
   state.lists[key] = {loading: signature};
   api(signature).then(data => {
@@ -1512,7 +1526,18 @@ async function api(path, options = {}) {
   }
   const contentType = response.headers.get("content-type") || "";
   const data = contentType.includes("json") ? await response.json() : await response.text();
-  if (!response.ok) throw new Error(data.detail || data || "Помилка запиту");
+  if (!response.ok) {
+    const detail = data?.detail;
+    const message = typeof detail === "object" && detail
+      ? detail.detail || detail.message || "Помилка запиту"
+      : detail || data || "Помилка запиту";
+    const error = new Error(message);
+    if (typeof detail === "object" && detail) {
+      error.reason = detail.reason;
+      error.billingSection = detail.billing_section;
+    }
+    throw error;
+  }
   return data;
 }
 
@@ -1592,27 +1617,27 @@ function notificationItems({includeRead = false} = {}) {
     text: job.status === "failed" ? (job.error || "Meta повернула помилку без деталей.") : (job.permalink || `Чернетка #${job.draft_id}`),
     action: job.status === "failed" ? "Відкрийте чернетку, перевірте зображення та підключення Instagram." : "Публікація доступна у підключеному Instagram акаунті.",
   })));
-  const expiry = state.company?.plan_expires_at
-    ? Math.ceil((new Date(state.company.plan_expires_at) - new Date()) / 86400000)
-    : null;
+  const expiry = state.company?.quota_state?.days_left ?? null;
   if (state.company?.plan_code === "trial" && expiry !== null && expiry <= 7) {
     items.push({
-      key: `trial:${state.company.plan_expires_at}`,
+      key: `trial:${state.company.trial_ends_at || state.company.plan_expires_at}`,
       type: expiry <= 0 ? "error" : "warning",
       title: expiry <= 0 ? "Trial завершився" : "Trial скоро завершиться",
       text: expiry <= 0 ? "Оберіть тариф для продовження роботи." : `Залишилося ${expiry} дн.`,
       action: "Перевірте тариф у налаштуваннях workspace.",
     });
   }
-  const spend = Number(state.company?.ai_spend || state.data?.totals?.total_cost || 0);
-  const budget = Number(state.company?.monthly_ai_budget || 0);
-  if (budget && spend / budget >= .7) {
+  for (const [kind, title] of [["text","Ліміт текстових генерацій майже використано"],["image","Ліміт зображень майже використано"]]) {
+    const quota = state.company?.quota_state?.[kind] || {};
+    const used = Number(quota.used || 0);
+    const limit = Number(quota.limit || 0);
+    if (!limit || used / limit < .7) continue;
     items.push({
-      key: `budget:${new Date().toISOString().slice(0, 7)}:${budget}`,
-      type: spend >= budget ? "error" : "warning",
-      title: "AI-бюджет майже використано",
-      text: `${money(spend)} з ${money(budget)} (${Math.round(spend / budget * 100)}%).`,
-      action: "Відкрийте розділ «Витрати» для деталізації.",
+      key: `${kind}-quota:${new Date().toISOString().slice(0, 7)}:${limit}`,
+      type: used >= limit ? "error" : "warning",
+      title,
+      text: `${quotaLabel(used, limit)} (${Math.round(used / limit * 100)}%).`,
+      action: "Відкрийте розділ «Тарифи», якщо потрібно більше генерацій.",
     });
   }
   const readKeys = readNotificationKeys();
@@ -1812,10 +1837,10 @@ function applyIdentity() {
   avatar.alt = state.me.display_name || state.me.username;
   document.querySelector("#workspaceName").textContent = state.company.name;
   const workspaceLogo = document.querySelector("#workspaceLogo");
-  const avatarAssetId = state.company.settings?.workspace_avatar_asset_id;
-  workspaceLogo.innerHTML = avatarAssetId
-    ? `<img src="${apiUrl(`api/references/${avatarAssetId}/image`)}" alt="">`
-    : esc(initials(state.company.name));
+  workspaceLogo.innerHTML = workspaceAvatarMarkup({
+    ...state.company,
+    workspace_avatar_asset_id: state.company.settings?.workspace_avatar_asset_id,
+  });
   document.querySelector("#workspacePlan").textContent = `${roleLabel(role)} · ${state.company.plan_code || "custom"} plan`;
   document.querySelector("#ideasCount").textContent = (state.data.ideas || []).length;
   document.querySelector("#draftsCount").textContent = (state.data.drafts || []).filter(x => x.status !== "published").length;
@@ -1896,10 +1921,16 @@ function renderHome() {
   const upcoming = drafts.filter(x => x.scheduled_at).sort((a,b) => new Date(a.scheduled_at)-new Date(b.scheduled_at)).slice(0,6);
   document.querySelector("#upcomingList").innerHTML = upcoming.length ? upcoming.map(item => `<button class="quick-action" data-draft="${item.id}"><strong style="min-width:54px">${formatDate(item.scheduled_at)}</strong><span style="text-align:left">${esc(plain(item.title))}</span>${pill(item.status)}</button>`).join("") : empty("Публікацій ще немає","Підготуйте чернетку та додайте її до календаря.");
   document.querySelectorAll("[data-draft]").forEach(node => node.onclick = () => openEditor(Number(node.dataset.draft)));
-  const total = Number(state.data.totals?.total_cost || 0);
-  const budget = Number(state.company.monthly_ai_budget || 0);
-  const percent = budget ? Math.min(100, total / budget * 100) : 0;
-  document.querySelector("#usageCard").innerHTML = `<div class="eyebrow" style="color:#c4b5fd">AI-витрати · місяць</div><strong>${money(total)}</strong><small>${percent.toFixed(0)}% ліміту · бюджет ${money(budget)}</small><div style="height:4px;margin-top:18px;border-radius:9px;background:rgba(255,255,255,.12)"><div style="height:100%;width:${percent}%;border-radius:9px;background:linear-gradient(90deg,#818cf8,#d946ef)"></div></div>`;
+  const quota = state.company.quota_state || {};
+  const textQuota = quota.text || {used:state.company.text_generation_count,limit:state.company.monthly_text_generations};
+  const imageQuota = quota.image || {used:state.company.image_generation_count,limit:state.company.monthly_image_generations};
+  const publicationQuota = quota.publications || {used:state.company.publication_count,limit:state.company.monthly_publications};
+  const trialText = quota.subscription_status === "expired"
+    ? "Trial завершився · оновіть тариф"
+    : state.company.plan_code === "trial" && quota.days_left !== null
+      ? `Trial active · ${quota.days_left} дн.`
+      : "Ліміти поточного тарифу";
+  document.querySelector("#usageCard").innerHTML = `<div class="eyebrow" style="color:#c4b5fd">Генерації · місяць</div><strong>${esc(trialText)}</strong><div class="quota-mini-list"><span>Тексти <b>${quotaLabel(textQuota.used,textQuota.limit)}</b></span><i><em style="width:${quotaPercent(textQuota.used,textQuota.limit)}%"></em></i><span>Зображення <b>${quotaLabel(imageQuota.used,imageQuota.limit)}</b></span><i><em style="width:${quotaPercent(imageQuota.used,imageQuota.limit)}%"></em></i><span>Публікації <b>${quotaLabel(publicationQuota.used,publicationQuota.limit)}</b></span><i><em style="width:${quotaPercent(publicationQuota.used,publicationQuota.limit)}%"></em></i></div>`;
   const completion = brandCompletion();
   const missing = completion.sections.filter(section => section.score < section.weight).slice(0, 3);
   document.querySelector("#brandProgress").innerHTML = `<div class="eyebrow">Бренд-профіль</div><h2>${t("brandFilled")} ${completion.total}%</h2><div class="brand-completion-bar"><span style="width:${completion.total}%"></span></div><p class="muted">Заповнений бренд-профіль робить AI-результати точнішими.</p>${missing.length ? `<div class="mini-score-list">${missing.map(section=>`<span>${esc(section.label)} <strong>${section.score}/${section.weight}%</strong></span>`).join("")}</div>` : ""}<button data-open-view="brand">${t("fillBrand")}</button>`;
@@ -2202,6 +2233,7 @@ function renderBrand() {
   } else if (state.brandTab === "assets") {
     const data=pagedData("assets","api/brand/materials",{},renderBrand);
     if(!data){target.innerHTML='<span class="skeleton"></span>';return;}
+    if(data.error){target.innerHTML=`<div class="empty-state"><h3>Не вдалося завантажити матеріали бренду</h3><p class="muted">${esc(data.error.message||"Спробуйте ще раз.")}</p><button class="primary" id="retryBrandMaterials">Спробувати ще раз</button></div>`;target.querySelector("#retryBrandMaterials").onclick=()=>{delete state.lists.assets;renderBrand();};return;}
     const rows=data.items||[];
     target.innerHTML=`<div class="row between brand-section-head"><div><h2>Матеріали бренду</h2><p class="muted">Матеріали допомагають AI краще розуміти стиль компанії: логотипи, кольори, презентації, брендбук і референси.</p></div>${can("brand_materials.manage")?'<div class="row"><button id="addMaterialLink">Додати посилання</button><button class="primary" id="uploadMaterial">Завантажити матеріал</button></div>':""}</div>${bulkBar("assets",[["activate","Активувати"],["deactivate","Деактивувати"],["delete","Видалити","danger"]])}<div class="asset-grid">${rows.map(x=>`<article class="card asset-card selectable-card">${selectionCheckbox("assets",x.id)}${x.path&&x.media_type?.startsWith("image/")?`<img src="${apiUrl(`api/references/${x.id}/image`)}" alt="">`:`<div class="asset-placeholder">${x.source_url?"Посилання":esc((x.filename||"Файл").split(".").pop().toUpperCase())}</div>`}<div class="asset-body"><strong>${esc(x.name||x.filename||"Матеріал")}</strong><small>${esc(x.material_type)} · ${x.active?"Активний":"Неактивний"}</small>${x.source_url?`<a href="${esc(x.source_url)}" target="_blank" rel="noopener">Відкрити посилання</a>`:""}${can("brand_materials.manage")?`<div class="row"><button data-edit-material="${x.id}">Редагувати</button><button class="danger" data-delete-material="${x.id}">Видалити</button></div>`:""}</div></article>`).join("")||empty("Матеріалів ще немає","Завантажте логотип, фото, референс або додайте важливе посилання.")}</div>${pagination(data,"assets",renderBrand)}`;
     bindSelection("assets",target,renderBrand);
@@ -2490,7 +2522,8 @@ function renderSettings() {
       : companyWorkspaces>1
         ?"Це назавжди видалить контент, файли, налаштування й доступи поточного workspace."
         :"Не можна видалити єдиний workspace компанії. Спочатку створіть інший workspace.";
-    target.innerHTML = `<article class="card settings-card"><div class="row"><span class="workspace-logo">${initials(state.company.name)}</span><div><h2 style="margin:0">${esc(state.company.name)}</h2><span class="muted">${esc(state.company.slug)}</span></div></div><div class="analytics-metrics" style="margin-top:20px"><div class="card metric"><span>Тариф</span><strong>${esc(state.company.plan_code||"custom")}</strong></div><div class="card metric"><span>Користувачі</span><strong>${state.company.user_count}/${state.company.max_users}</strong></div><div class="card metric"><span>Публікації</span><strong>${state.company.publication_count}/${state.company.monthly_publications}</strong></div><div class="card metric"><span>AI-бюджет</span><strong>${money(state.company.monthly_ai_budget)}</strong></div></div><button id="restartOnboarding">Повторити onboarding</button></article>
+    const quota=state.company.quota_state||{};
+    target.innerHTML = `<article class="card settings-card"><div class="row"><span class="workspace-logo">${workspaceAvatarMarkup({...state.company,workspace_avatar_asset_id:state.company.settings?.workspace_avatar_asset_id})}</span><div><h2 style="margin:0">${esc(state.company.name)}</h2><span class="muted">${esc(state.company.slug)}</span></div></div><div class="analytics-metrics" style="margin-top:20px"><div class="card metric"><span>Тариф</span><strong>${esc(state.company.plan_code||"custom")}</strong></div><div class="card metric"><span>Користувачі</span><strong>${state.company.user_count}/${state.company.max_users}</strong></div><div class="card metric"><span>Тексти</span><strong>${quotaLabel(quota.text?.used ?? state.company.text_generation_count, quota.text?.limit ?? state.company.monthly_text_generations)}</strong></div><div class="card metric"><span>Зображення</span><strong>${quotaLabel(quota.image?.used ?? state.company.image_generation_count, quota.image?.limit ?? state.company.monthly_image_generations)}</strong></div><div class="card metric"><span>Публікації</span><strong>${quotaLabel(state.company.publication_count,state.company.monthly_publications)}</strong></div></div><button id="restartOnboarding">Повторити onboarding</button></article>
       <article class="card settings-card danger-settings"><div><div class="eyebrow">Небезпечна зона</div><h2>Видалення workspace</h2><p class="muted">${deleteHint}</p></div><button class="danger" id="deleteCurrentWorkspace" ${canDeleteWorkspace?"":"disabled"}>Видалити workspace</button></article>`;
   }
   else if (state.settingsTab === "mode") target.innerHTML = `<article class="card settings-card"><div class="eyebrow">Загальні</div><h2>Режим роботи workspace</h2><p class="muted">Оберіть, як ваша команда працює з контентом.</p><div class="mode-grid"><label class="card panel"><input type="radio" name="workspaceMode" value="pipeline" ${settings.workspace_mode==="pipeline"?"checked":""}> <strong>Редакційний pipeline</strong><p class="muted">Послідовний процес: ідеї → план → чернетки → календар.</p></label><label class="card panel"><input type="radio" name="workspaceMode" value="kanban" ${settings.workspace_mode==="kanban"?"checked":""}> <strong>Контент-дошка Kanban</strong><p class="muted">Усі матеріали за статусами на одній дошці.</p></label></div><button class="primary" id="saveWorkspaceMode">Зберегти режим</button></article>`;
@@ -2510,7 +2543,7 @@ function renderSettings() {
   else if (state.settingsTab === "billing") {
     if(!state.plans){target.innerHTML='<span class="skeleton"></span>';api("api/plans").then(data=>{state.plans=data;renderSettings();}).catch(error=>toast(error.message,true));return;}
     const expires = state.plans.expires_at ? formatDate(state.plans.expires_at, "") : "";
-    target.innerHTML=`<article class="card settings-card pricing-panel"><div class="row between"><div><div class="eyebrow">Тарифи</div><h2>Оберіть план для workspace</h2><p class="muted">Публікації, користувачі, канали та AI-бюджет контролюються на рівні поточного workspace.</p></div><span class="pill ready">Поточний: ${esc(state.plans.current_plan||state.company.plan_code||"custom")}${expires?` · до ${esc(expires)}`:""}</span></div><div class="pricing-grid">${state.plans.plans.map(plan=>{const current=(state.plans.current_plan||state.company.plan_code)===plan.code;return `<article class="price-card ${plan.popular?"popular":""} ${current?"current":""}">${plan.popular?'<span class="popular-label">Найпопулярніший</span>':""}<h3>${esc(plan.name)}</h3><p class="tagline">${esc(plan.tagline)}</p><div class="price"><strong>${Number(plan.stars).toLocaleString(state.locale === "en" ? "en-US" : "uk-UA")} ★</strong><span>/ 30 днів</span></div><div class="plan-limits"><div class="plan-limit"><strong>${plan.publications}</strong><span>публікацій</span></div><div class="plan-limit"><strong>${plan.users}</strong><span>користувачів</span></div><div class="plan-limit"><strong>${plan.channels}</strong><span>каналів</span></div><div class="plan-limit"><strong>${money(plan.ai_budget)}</strong><span>AI-бюджет</span></div></div><ul class="plan-features">${(plan.features||[]).map(item=>`<li>${esc(item)}</li>`).join("")}</ul>${current?'<button disabled class="current-plan">Поточний тариф</button>':`<button class="${plan.popular?"success":"primary"}" data-buy-plan="${esc(plan.code)}" ${can("billing.manage")?"":"disabled"}>${can("billing.manage")?"Оплатити в Telegram":"Доступно власнику"}</button>`}</article>`}).join("")}</div><div class="billing-note"><strong>Оплата через Telegram Stars</strong><span>Після оплати ліміти оновляться автоматично після підтвердження платежу.</span></div></article>`;
+    target.innerHTML=`<article class="card settings-card pricing-panel"><div class="row between"><div><div class="eyebrow">Тарифи</div><h2>Оберіть план для workspace</h2><p class="muted">Публікації, користувачі, канали та генерації контролюються на рівні поточного workspace.</p></div><span class="pill ready">Поточний: ${esc(state.plans.current_plan||state.company.plan_code||"custom")}${expires?` · до ${esc(expires)}`:""}</span></div><div class="pricing-grid">${state.plans.plans.map(plan=>{const current=(state.plans.current_plan||state.company.plan_code)===plan.code;return `<article class="price-card ${plan.popular?"popular":""} ${current?"current":""}">${plan.popular?'<span class="popular-label">Найпопулярніший</span>':""}<h3>${esc(plan.name)}</h3><p class="tagline">${esc(plan.tagline)}</p><div class="price"><strong>${Number(plan.stars).toLocaleString(state.locale === "en" ? "en-US" : "uk-UA")} ★</strong><span>/ 30 днів</span></div><div class="plan-limits"><div class="plan-limit"><strong>${plan.publications}</strong><span>публікацій</span></div><div class="plan-limit"><strong>${plan.text_generations}</strong><span>текстів</span></div><div class="plan-limit"><strong>${plan.image_generations}</strong><span>зображень</span></div><div class="plan-limit"><strong>${plan.users}</strong><span>користувачів</span></div><div class="plan-limit"><strong>${plan.channels}</strong><span>каналів</span></div></div><ul class="plan-features">${(plan.features||[]).map(item=>`<li>${esc(item)}</li>`).join("")}</ul>${current?'<button disabled class="current-plan">Поточний тариф</button>':`<button class="${plan.popular?"success":"primary"}" data-buy-plan="${esc(plan.code)}" ${can("billing.manage")?"":"disabled"}>${can("billing.manage")?"Оплатити в Telegram":"Доступно власнику"}</button>`}</article>`}).join("")}</div><div class="billing-note"><strong>Оплата через Telegram Stars</strong><span>Після оплати ліміти оновляться автоматично після підтвердження платежу.</span></div></article>`;
   }
   else if (state.settingsTab === "referral") {
     const referral = state.referral || {};
@@ -2602,8 +2635,7 @@ function renderWorkspaceChooser(force = false) {
   if (!force && workspaces.length < 2 && !state.me.is_super_admin) return;
   document.querySelector("#workspaceGrid").innerHTML = workspaces.map(x=>{
     const current=x.id===state.me.organization_id;
-    const assetId=Number(x.workspace_avatar_asset_id)||null;
-    const avatar=assetId?`<img src="${apiUrl(`api/workspaces/${x.id}/appearance/avatar`)}" alt="">`:esc(initials(x.name));
+    const avatar=workspaceAvatarMarkup(x);
     const companyWorkspaces=(state.me.companies||[]).find(company=>Number(company.id)===Number(x.company_id))?.workspace_count||1;
     const canDelete=(state.me.is_super_admin||x.role==="owner")&&Number(x.id)!==1&&companyWorkspaces>1;
     return `<article class="card workspace-card ${current?"active":""}">
@@ -2633,7 +2665,9 @@ function renderWorkspaceChooser(force = false) {
         <label>Тимчасовий пароль<input name="owner_password" type="password" minlength="10" required></label>
         <label>Ліміт користувачів<input name="max_users" type="number" min="1" max="50" value="3"></label>
         <label>Публікацій на місяць<input name="monthly_publications" type="number" min="1" value="30"></label>
-        <label>AI-бюджет, $<input name="monthly_ai_budget" type="number" min="0" step="0.01" value="8"></label>`,
+        <label>Текстових генерацій<input name="monthly_text_generations" type="number" min="0" value="60"></label>
+        <label>Генерацій зображень<input name="monthly_image_generations" type="number" min="0" value="30"></label>
+        <label>Внутрішній AI-cost budget, $<input name="monthly_ai_budget" type="number" min="0" step="0.01" value="8"><small class="field-help">Лише для platform-аналітики витрат, не для клієнтського ліміту.</small></label>`,
         async form => {
           const created = await api("api/organizations", {method:"POST", body:JSON.stringify({
             name: form.get("name"), slug: form.get("slug"),
@@ -2645,6 +2679,8 @@ function renderWorkspaceChooser(force = false) {
             owner_password: form.get("owner_password"),
             max_users: Number(form.get("max_users")), max_channels: 1,
             monthly_publications: Number(form.get("monthly_publications")),
+            monthly_text_generations: Number(form.get("monthly_text_generations")),
+            monthly_image_generations: Number(form.get("monthly_image_generations")),
             monthly_ai_budget: Number(form.get("monthly_ai_budget")),
             max_workspaces: 10,
           })});
@@ -2902,6 +2938,12 @@ function bindBrandActions() {
   const saveAppearanceSettings=async(showToast=true)=>{
     const result=await api("api/workspace/appearance",{method:"PUT",body:JSON.stringify({name:document.querySelector("#appearanceName").value,slug:"",short_description:document.querySelector("#appearanceDescription").value,primary_color:document.querySelector("#appearancePrimary").value,secondary_color:document.querySelector("#appearanceSecondary").value,avatar_asset_id:Number(document.querySelector("#appearanceAvatar").value)||null,logo_asset_id:Number(document.querySelector("#appearanceLogo").value)||null,favicon_asset_id:null})});
     state.company={...state.company,...result.company,settings:result.settings};
+    const patchWorkspace = workspace => Number(workspace.id) === Number(state.company.id)
+      ? {...workspace,...result.company,workspace_avatar_asset_id:result.settings.workspace_avatar_asset_id,brand_logo_asset_id:result.settings.brand_logo_asset_id,workspace_short_description:result.settings.workspace_short_description,updated_at:new Date().toISOString()}
+      : workspace;
+    if (state.me?.workspaces) state.me.workspaces = state.me.workspaces.map(patchWorkspace);
+    if (state.company?.company?.workspaces) state.company.company.workspaces = state.company.company.workspaces.map(patchWorkspace);
+    state.appearanceDirty = true;
     applyIdentity();
     if(showToast)toast("Оформлення збережено");
     return result;
@@ -2912,7 +2954,7 @@ function bindBrandActions() {
     const result=await api("api/workspace/appearance/assets",{method:"POST",body:form});
     const field=document.querySelector(kind==="avatar"?"#appearanceAvatar":"#appearanceLogo");
     field.value=result.id;
-    const markup=`<img src="${apiUrl(result.url)}" alt="">`;
+    const markup=`<img src="${apiUrl(`${result.url}?v=${result.id}`)}" alt="">`;
     document.querySelector(kind==="avatar"?"#appearanceAvatarPreview":"#appearanceLogoPreview").innerHTML=markup;
     document.querySelector(kind==="avatar"?"#workspacePreviewAvatar":"#workspacePreviewLogo").innerHTML=markup;
     await saveAppearanceSettings(false);
@@ -3047,7 +3089,7 @@ function bindEditorActions() {
 
 async function refresh(background = false) {
   try {
-    const [me, company, data, usage, referral, serviceUpdates, instagram] = await Promise.all([api("api/me"),api("api/company"),api("api/dashboard"),api("api/usage"),api("api/referrals/me"),api("api/service-updates"),api("api/integrations/instagram/status")]);
+    const [me, company, data, usage, referral, serviceUpdates, instagram] = await Promise.all([api("api/me"),api("api/company"),api("api/dashboard"),api("api/usage"),api("api/referrals/me"),api(`api/service-updates?locale=${encodeURIComponent(state.locale)}`),api("api/integrations/instagram/status")]);
     state.me=me;state.company=company;state.data=data;state.usage=usage;state.referral=referral;state.serviceUpdates=serviceUpdates;state.instagramIntegration=instagram;
     if (me.is_super_admin) state.platformUsage = await api(`api/platform/usage?period=${state.platformPeriod}`);
     if (me.is_admin) state.users=await api("api/users");
@@ -3055,7 +3097,10 @@ async function refresh(background = false) {
     updateGenerationPolling();
     if (!background) await applyLocationRoute();
     else renderCurrent();
-    if (!background && company.settings && !["completed","skipped"].includes(company.settings.onboarding_status) && ["owner","admin"].includes(me.role)) showOnboarding(Math.max(1,Number(company.settings.onboarding_step||0)+1));
+    if (!background && onboardingRequired()) {
+      if (!localStorage.getItem(guideStorageKey()) && !localStorage.getItem(guideDismissedKey())) openGuide();
+      else showOnboarding(Math.max(1,Number(company.settings.onboarding_step||0)+1));
+    }
   } catch (error) { if (!background) toast(error.message,true); }
 }
 
@@ -3119,7 +3164,16 @@ document.querySelectorAll("[data-platform-section]").forEach(node=>node.onclick=
 document.querySelector("#platformRefresh").onclick=()=>loadPlatformSection(true);
 document.querySelector("#mobileMenu").onclick=()=>document.body.classList.add("menu-open");
 document.addEventListener("click",event=>{if(document.body.classList.contains("menu-open")&&!event.target.closest(".sidebar")&&!event.target.closest("#mobileMenu"))document.body.classList.remove("menu-open");});
-document.querySelector("#workspaceButton").onclick=()=>renderWorkspaceChooser(true);
+document.querySelector("#workspaceButton").onclick=async()=>{
+  if (state.appearanceDirty) {
+    const [me, company] = await Promise.all([api("api/me"), api("api/company")]);
+    state.me = me;
+    state.company = company;
+    state.appearanceDirty = false;
+    applyIdentity();
+  }
+  renderWorkspaceChooser(true);
+};
 document.querySelector("#logout").onclick=async()=>{await api("api/logout",{method:"POST"});location.href=`${basePath}/`;};
 document.querySelector("#languageToggle").onclick=()=>{
   state.locale = state.locale === "uk" ? "en" : "uk";
@@ -3190,7 +3244,7 @@ document.querySelector("#calendarToday").onclick=()=>{state.calendarDate=new Dat
 document.querySelector("#onboardingBack").onclick=()=>showOnboarding(state.onboardingStep-1);
 document.querySelector("#onboardingNext").onclick=event=>loading(event.currentTarget,saveOnboarding,"Зберігаємо…");
 document.querySelector("#skipOnboarding").onclick=async()=>{await api("api/onboarding/skip",{method:"POST"});document.querySelector("#onboardingOverlay").hidden=true;};
-document.querySelectorAll("[data-brand-tab]").forEach(node=>node.onclick=()=>{state.brandTab=node.dataset.brandTab;const query=new URLSearchParams();if(state.brandTab!=="profile")query.set("tab",state.brandTab);history.pushState({view:"brand"},"",`${basePath}/brand${query.size?`?${query}`:""}`);document.querySelectorAll("[data-brand-tab]").forEach(x=>x.classList.toggle("active",x===node));renderBrand();});
+document.querySelectorAll("[data-brand-tab]").forEach(node=>node.onclick=()=>{state.brandTab=node.dataset.brandTab;if(state.brandTab==="assets"&&state.lists.assets?.error)delete state.lists.assets;const query=new URLSearchParams();if(state.brandTab!=="profile")query.set("tab",state.brandTab);history.pushState({view:"brand"},"",`${basePath}/brand${query.size?`?${query}`:""}`);document.querySelectorAll("[data-brand-tab]").forEach(x=>x.classList.toggle("active",x===node));renderBrand();});
 document.querySelectorAll("[data-settings]").forEach(node=>node.onclick=()=>{state.settingsTab=node.dataset.settings;const query=new URLSearchParams();if(state.settingsTab!=="workspace")query.set("tab",state.settingsTab);history.pushState({view:"settings"},"",`${basePath}/settings${query.size?`?${query}`:""}`);document.querySelectorAll("[data-settings]").forEach(x=>x.classList.toggle("active",x===node));renderSettings();});
 document.querySelector("#searchButton").onclick=()=>{
   showForm("Пошук",`<label class="wide">Ідеї, чернетки та розділи<input name="query" id="globalSearch" autofocus></label><div class="wide stack" id="searchResults"></div>`,async()=>{});
@@ -3265,37 +3319,45 @@ const guideVisualLabels = {
 };
 function guideStorageKey(){return `content-studio:guide:${state.me?.id||"guest"}:${state.me?.organization_id||"none"}`;}
 function guideDismissedKey(){return `${guideStorageKey()}:dismissed`;}
+function onboardingRequired(){
+  const settings = state.company?.settings;
+  return !!(settings && !["completed","skipped"].includes(settings.onboarding_status) && ["owner","admin"].includes(state.me?.role));
+}
 function renderGuide(){
   const step=guideSteps[state.guideStep];
   document.querySelector("#guideTitle").textContent=step.title;
   document.querySelector("#guideContent").innerHTML=`<div class="guide-stage"><div class="guide-copy"><div class="eyebrow">Крок ${state.guideStep+1} з ${guideSteps.length}</div><h3>${esc(step.title)}</h3><p>${esc(step.text)}</p><ul class="guide-points">${(step.points||[]).map(point=>`<li>${esc(point)}</li>`).join("")}</ul></div><div class="guide-illustration ${step.visual}"><span class="guide-orbit"></span><span class="guide-core">${esc(guideVisualLabels[step.visual]||step.title)}</span><i></i><i></i><i></i></div></div>`;
   document.querySelector("#guideDots").innerHTML=guideSteps.map((_,index)=>`<button class="${index===state.guideStep?"active":""}" data-guide-step="${index}" aria-label="Крок ${index+1}"></button>`).join("");
   document.querySelector("#guideBack").disabled=state.guideStep===0;
-  document.querySelector("#guideNext").textContent=state.guideStep===guideSteps.length-1?"Завершити":"Далі →";
+  document.querySelector("#guideNext").textContent=state.guideStep===guideSteps.length-1 && onboardingRequired() ? "Перейти до налаштування workspace" : state.guideStep===guideSteps.length-1 ? "Завершити" : "Далі →";
   document.querySelectorAll("[data-guide-step]").forEach(button=>button.onclick=()=>{state.guideStep=Number(button.dataset.guideStep);renderGuide();});
   localizeDom(document.querySelector("#guideOverlay"));
 }
 function openGuide(step=0){state.guideStep=Math.max(0,Math.min(guideSteps.length-1,step));renderGuide();document.querySelector("#guideOverlay").hidden=false;}
 document.querySelector("#openGuide").onclick=()=>openGuide();
 document.querySelector("#guideBack").onclick=()=>{if(state.guideStep>0){state.guideStep--;renderGuide();}};
-document.querySelector("#guideDismiss").onclick=()=>{localStorage.setItem(guideDismissedKey(),"1");localStorage.setItem(guideStorageKey(),"done");document.querySelector("#guideOverlay").hidden=true;toast("Гайд більше не буде відкриватися автоматично. Він доступний у хедері.");};
-document.querySelector("#guideNext").onclick=()=>{if(state.guideStep<guideSteps.length-1){state.guideStep++;renderGuide();return;}localStorage.setItem(guideStorageKey(),"done");document.querySelector("#guideOverlay").hidden=true;toast("Гайд завершено. Він завжди доступний у хедері.");};
+document.querySelector("#guideDismiss").onclick=()=>{localStorage.setItem(guideDismissedKey(),"1");localStorage.setItem(guideStorageKey(),"done");document.querySelector("#guideOverlay").hidden=true;toast("Гайд більше не буде відкриватися автоматично. Він доступний у хедері.");if(onboardingRequired())showOnboarding(Math.max(1,Number(state.company.settings.onboarding_step||0)+1));};
+document.querySelector("#guideNext").onclick=()=>{if(state.guideStep<guideSteps.length-1){state.guideStep++;renderGuide();return;}localStorage.setItem(guideStorageKey(),"done");document.querySelector("#guideOverlay").hidden=true;if(onboardingRequired())showOnboarding(Math.max(1,Number(state.company.settings.onboarding_step||0)+1));else toast("Гайд завершено. Він завжди доступний у хедері.");};
 
 function updateTimeInput(value) {
   return value ? String(value).replace(" ", "T").slice(0, 16) : "";
 }
 function serviceUpdateFormFields(item = {}) {
-  return `<label class="wide">Заголовок<input name="title" required maxlength="160" value="${esc(item.title||"")}" placeholder="Наприклад: Оновили календар і планування постів"></label>
+  return `<div class="wide two-language-grid"><label>Заголовок українською<input name="title_uk" maxlength="160" value="${esc(item.title_uk||(!item.title_en?item.title||"":""))}" placeholder="Наприклад: Оновили календар і планування постів"></label>
+    <label>English title<input name="title_en" maxlength="160" value="${esc(item.title_en||"")}" placeholder="Example: Calendar scheduling improved"></label>
+    <label>Текст українською<textarea name="body_uk" maxlength="3000" placeholder="Коротко напишіть, що змінилось і кого це стосується.">${esc(item.body_uk||(!item.body_en?item.body||"":""))}</textarea></label>
+    <label>English body<textarea name="body_en" maxlength="3000" placeholder="Briefly describe what changed and who it affects.">${esc(item.body_en||"")}</textarea></label></div>
+    <input name="title" type="hidden" value="${esc(item.title_uk||item.title_en||item.title||"Оновлення сервісу")}"><input name="body" type="hidden" value="${esc(item.body_uk||item.body_en||item.body||"")}">
     <label>Тип<select name="category">${[["release","Нова функція"],["fix","Виправлення"],["maintenance","Технічні роботи"],["announcement","Оголошення"]].map(([value,label])=>`<option value="${value}" ${item.category===value?"selected":""}>${label}</option>`).join("")}</select></label>
     <label>Важливість<select name="importance">${[["info","Інформація"],["success","Позитивне оновлення"],["warning","Важливо"],["maintenance","Технічні роботи"]].map(([value,label])=>`<option value="${value}" ${item.importance===value?"selected":""}>${label}</option>`).join("")}</select></label>
     <label>Статус<select name="status">${[["published","Опубліковано"],["draft","Чернетка"],["archived","Архів"]].map(([value,label])=>`<option value="${value}" ${item.status===value?"selected":""}>${label}</option>`).join("")}</select></label>
     <label class="check-label"><input name="pinned" type="checkbox" ${item.pinned?"checked":""}> Закріпити зверху</label>
     <label>Показувати з<input name="visible_from" type="datetime-local" value="${esc(updateTimeInput(item.visible_from))}"></label>
     <label>Показувати до<input name="visible_until" type="datetime-local" value="${esc(updateTimeInput(item.visible_until))}"></label>
-    <label class="wide">Текст повідомлення<textarea name="body" maxlength="3000" placeholder="Коротко напишіть, що змінилось, кого це стосується і що користувачу потрібно зробити.">${esc(item.body||"")}</textarea><small class="field-help">Це побачать користувачі сервісу в ленті оновлень. Без секретів, внутрішніх технічних деталей і токенів.</small></label>`;
+    <p class="wide field-help">Користувачі бачать тільки записи своєю мовою. Якщо заповнити лише українську, англійська лента не покаже це оновлення, і навпаки.</p>`;
 }
 async function reloadServiceUpdates({platform = false} = {}) {
-  state.serviceUpdates = await api(platform && state.me?.is_super_admin ? "api/platform/service-updates" : "api/service-updates");
+  state.serviceUpdates = await api(platform && state.me?.is_super_admin ? "api/platform/service-updates" : `api/service-updates?locale=${encodeURIComponent(state.locale)}`);
   updateServiceUpdatesBadge();
   return state.serviceUpdates;
 }
@@ -3305,8 +3367,12 @@ function openServiceUpdateEditor(item = null) {
     serviceUpdateFormFields(item || {status:"published",category:"release",importance:"info"}),
     async form => {
       const payload = {
-        title: form.get("title"),
-        body: form.get("body"),
+        title: form.get("title_uk") || form.get("title_en") || form.get("title"),
+        body: form.get("body_uk") || form.get("body_en") || form.get("body"),
+        title_uk: form.get("title_uk") || "",
+        body_uk: form.get("body_uk") || "",
+        title_en: form.get("title_en") || "",
+        body_en: form.get("body_en") || "",
         category: form.get("category"),
         importance: form.get("importance"),
         status: form.get("status"),
@@ -3386,7 +3452,7 @@ history.replaceState(
   initialRoute.draftId ? location.href : urlForView(initialRoute.view),
 );
 refresh().then(()=>{
-  if(!localStorage.getItem(guideStorageKey())&&!localStorage.getItem(guideDismissedKey())&&["completed","skipped"].includes(state.company?.settings?.onboarding_status)){
+  if(!onboardingRequired()&&!localStorage.getItem(guideStorageKey())&&!localStorage.getItem(guideDismissedKey())&&["completed","skipped"].includes(state.company?.settings?.onboarding_status)){
     setTimeout(()=>openGuide(),500);
   }
 });

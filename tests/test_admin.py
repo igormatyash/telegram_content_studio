@@ -1,4 +1,6 @@
 from io import BytesIO
+from datetime import datetime, timedelta, timezone
+import sqlite3
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 from io import BytesIO
@@ -185,6 +187,39 @@ def test_material_import_rejects_local_address(tmp_path) -> None:
 
     assert response.status_code == 422
     assert "локальні адреси" in response.json()["detail"].lower()
+
+
+def test_expired_trial_blocks_generation_before_openai(tmp_path) -> None:
+    client = make_client(tmp_path)
+    assert login(client).status_code == 200
+    expired = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    with sqlite3.connect(tmp_path / "admin.sqlite3") as connection:
+        connection.execute(
+            """
+            UPDATE organizations
+            SET plan_code = 'trial',
+                subscription_status = 'trial',
+                plan_expires_at = ?,
+                trial_ends_at = ?
+            WHERE id = 1
+            """,
+            (expired, expired),
+        )
+
+    response = client.post(
+        "/api/ideas/generate",
+        headers={"X-Requested-With": "VoicerHubAdmin"},
+        json={
+            "product": "all",
+            "count": 1,
+            "focus": "Тест",
+            "tone": "expert",
+            "text_model": "gpt-5.4-mini",
+        },
+    )
+
+    assert response.status_code == 402
+    assert response.json()["detail"]["reason"] == "trial_expired"
 
 
 def test_onboarding_mode_status_api_and_editor_route(tmp_path) -> None:
