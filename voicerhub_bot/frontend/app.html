@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
   <title>Content Studio</title>
-  <link rel="stylesheet" href="__BASE_PATH__/static/styles.css?v=18">
+  <link rel="stylesheet" href="__BASE_PATH__/static/styles.css?v=19">
 </head>
 <body data-base-path="__BASE_PATH__">
 <div class="app-shell">
@@ -76,11 +76,35 @@
       </section>
 
       <section class="view" id="ideasView">
+        <div class="workflow-explainer ideas-explainer">
+          <div>
+            <div class="eyebrow">Банк тем</div>
+            <h2>Ідеї — це ще не публікації</h2>
+            <p>Тут ви збираєте потенційні теми, відбираєте найсильніші й вирішуєте, що з ними робити далі: додати в контент-план або одразу створити чернетку.</p>
+          </div>
+          <div class="workflow-steps">
+            <span class="active">1. Відбір тем</span>
+            <span>2. Контент-план</span>
+            <span>3. Чернетка</span>
+          </div>
+        </div>
         <div class="page-actions"><div class="filters" id="ideaFilters"></div><div class="row"><button id="manualIdea">Створити вручну</button><button class="primary" id="generateIdeas">✦ Згенерувати ідеї</button></div></div>
         <div class="ideas-content" id="ideasGrid"></div>
       </section>
 
       <section class="view" id="planView">
+        <div class="workflow-explainer plan-explainer">
+          <div>
+            <div class="eyebrow">Редакційний план</div>
+            <h2>Контент-план — це що і коли виходить</h2>
+            <p>Сюди потрапляють тільки обрані теми з датою або AI-план на тиждень чи місяць. Це не банк ідей, а робочий розклад майбутніх публікацій.</p>
+          </div>
+          <div class="workflow-steps">
+            <span>1. Ідея</span>
+            <span class="active">2. Дата й план</span>
+            <span>3. Чернетка</span>
+          </div>
+        </div>
         <div class="content-plan-layout">
           <form class="card panel plan-generator" id="planForm">
             <div class="plan-generator-head"><div><div class="eyebrow">AI generator</div><h2>Параметри плану</h2><p class="muted">Швидко створіть тижневий або місячний план без довгого скролу.</p></div><button class="primary" type="submit">✦ Згенерувати план</button></div>
@@ -170,6 +194,6 @@
 </div>
 <div class="toast" id="toast" hidden></div>
 <div hidden>CONTENT STUDIO · Налаштування workspace · Voicer Wave</div>
-  <script src="__BASE_PATH__/static/app.js?v=25" defer></script>
+  <script src="__BASE_PATH__/static/app.js?v=26" defer></script>
 </body>
 </html>

@@ -93,6 +93,10 @@ class ManualIdeaRequest(BaseModel):
     planned_for: date | None = None
 
 
+class IdeaPlanRequest(BaseModel):
+    planned_for: date
+
+
 class ManualDraftRequest(BaseModel):
     title: str = Field(min_length=3, max_length=120)
     visual_title: str = Field(default="", max_length=120)
@@ -4092,6 +4096,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 detail="Створіть хоча б одну активну рубрику перед генерацією.",
             ) from exc
         return {"job_id": job.id}
+
+    @app.post("/api/ideas/{idea_id}/plan")
+    def add_idea_to_plan(
+        idea_id: int,
+        payload: IdeaPlanRequest,
+        _: dict = Depends(require_permission("ideas.create")),
+    ) -> dict:
+        try:
+            item = repository.add_idea_to_plan(
+                idea_id,
+                payload.planned_for.isoformat(),
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Тему не знайдено") from exc
+        return {
+            **item,
+            "title_plain": strip_formatting(item.get("title", "")),
+            "angle_preview": sanitize_preview_html(item.get("angle", "")),
+        }
 
     @app.post("/api/jobs/{job_id}/retry-fast")
     async def retry_job_fast(

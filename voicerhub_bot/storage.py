@@ -1543,6 +1543,21 @@ class DraftRepository:
                 (idea_id, self.organization_id),
             )
 
+    def add_idea_to_plan(self, idea_id: int, planned_for: str) -> dict:
+        idea = self.get_idea(idea_id)
+        plan_id = idea.get("plan_id") or f"manual-plan-{planned_for}"
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE content_ideas
+                SET planned_for = ?, plan_id = ?, status = 'idea'
+                WHERE id = ? AND organization_id = ?
+                """,
+                (planned_for, plan_id, idea_id, self.organization_id),
+            )
+            row = self._ensure_owned(connection, "content_ideas", idea_id)
+        return dict(row)
+
     def delete_ideas(self, idea_ids: list[int]) -> int:
         if not idea_ids:
             return 0
