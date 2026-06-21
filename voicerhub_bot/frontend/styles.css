@@ -466,9 +466,20 @@ textarea { min-height: 112px; resize: vertical; }
 .content-main small { margin-top: 5px; color: var(--muted); line-height: 1.4; }
 .table-actions { display: flex; gap: 6px; }
 .table-actions button { min-height: 31px; padding: 0 9px; font-size: 10px; }
+.rubric-name { max-width: 180px; display: inline-flex; align-items: center; gap: 6px; color: #6d28d9; font-weight: 850; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rubric-name::before { content: ""; width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #7c3aed; box-shadow: 0 0 0 4px #f3e8ff; }
+.create-draft-button { min-width: 132px; border: 0; color: white; background: linear-gradient(135deg,#059669,#22c55e); box-shadow: 0 10px 22px rgba(5,150,105,.22); white-space: nowrap; }
+.create-draft-button:hover { transform: translateY(-1px); box-shadow: 0 14px 30px rgba(5,150,105,.28); }
+.created-draft-button { color: white; border-color: #9ca3af; background: #9ca3af; box-shadow: none; }
+.draft-thumb-cell { width: 82px; }
+.draft-thumb { width: 64px; height: 44px; display: grid; place-items: center; overflow: hidden; border-radius: 12px; object-fit: cover; background: linear-gradient(135deg,#eef2ff,#f8fafc); box-shadow: 0 8px 20px rgba(15,23,42,.08); }
+.empty-thumb { color: #64748b; font-size: 11px; font-weight: 900; letter-spacing: .08em; border: 1px dashed #cbd5e1; box-shadow: none; }
 .recent-row { background: linear-gradient(90deg,rgba(99,102,241,.09),transparent 45%); }
 .fresh-chip { width: max-content; margin: 5px 0 2px; padding: 3px 7px; display: inline-block; border-radius: 99px; color: #4338ca; background: #eef2ff; font-size: 10px; font-weight: 850; }
 .progress-label { display: inline-flex; align-items: center; gap: 6px; color: var(--primary); font-size: 10px; font-weight: 650; }
+.rubric-form-intro { padding: 14px 16px; border: 1px solid #c7d2fe; border-radius: 16px; background: radial-gradient(circle at 96% 0,rgba(168,85,247,.15),transparent 26%),linear-gradient(135deg,#fff,#f8f7ff); }
+.rubric-form-intro strong { display: block; margin-bottom: 4px; color: #312e81; }
+.rubric-form-intro p { margin: 0; color: var(--muted); line-height: 1.5; }
 .rubric-builder { display: grid; gap: 10px; margin-bottom: 12px; }
 .rubric-row { padding: 12px; display: grid; grid-template-columns: minmax(150px,.8fr) minmax(240px,1.5fr) auto; align-items: start; gap: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
 .rubric-row textarea { min-height: 76px; }
