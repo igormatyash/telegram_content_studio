@@ -224,6 +224,8 @@ const uiTextEn = {
   "Коли ця тема має вийти?": "When should this topic go out?",
   "Після вибору дати ідея з’явиться в розділі «Контент-план». Там її можна буде перетворити на чернетку або перенести на інший день.": "After choosing a date, the idea will appear in the Content Plan. There you can turn it into a draft or move it to another day.",
   "Ідею додано до контент-плану": "Idea added to the content plan",
+  "Додати ідеї до контент-плану": "Add ideas to content plan",
+  "Виберіть дату, з якої ці теми мають потрапити в редакційний план. Після цього ви побачите їх у розділі «Контент-план».": "Choose the date these topics should enter the editorial plan. After that, you will see them in the Content Plan section.",
   "Чернетка створена": "Draft created",
   "Тема в плані": "Topic in plan",
   "Запланована тема": "Planned topic",
@@ -1506,7 +1508,27 @@ function selected(key) {
 function selectionCheckbox(key, id) {
   return `<input class="row-check" type="checkbox" aria-label="Обрати" data-select-key="${key}" data-select-id="${esc(id)}" ${selected(key).has(String(id))?"checked":""}>`;
 }
+function actionButton({className = "", dataset = "", label, iconName, disabled = false}) {
+  const uiLabel = translateText(label);
+  return `<button class="table-icon-action ${className}" ${dataset} ${disabled ? "disabled" : ""} title="${esc(uiLabel)}" aria-label="${esc(uiLabel)}">${actionIcon(iconName)}<span>${esc(uiLabel)}</span></button>`;
+}
+function actionIcon(name) {
+  return ({
+    draft: '<svg viewBox="0 0 24 24"><path d="M5 4h10l4 4v12H5z"/><path d="M14 4v5h5M8 14h8M8 17h5"/></svg>',
+    plan: '<svg viewBox="0 0 24 24"><path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5"/><path d="M16 2v4M8 2v4"/></svg>',
+    open: '<svg viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/><path d="M5 5h6M5 5v14h14v-6"/></svg>',
+    delete: '<svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 14h10l1-14M9 7V4h6v3"/></svg>',
+  }[name] || '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>');
+}
 function bindSelection(key, target, renderBar) {
+  const syncAll = () => {
+    const rows = [...target.querySelectorAll(`[data-select-key="${key}"]`)];
+    const checked = rows.filter(row => row.checked).length;
+    target.querySelectorAll(`[data-select-all="${key}"]`).forEach(input => {
+      input.checked = rows.length > 0 && checked === rows.length;
+      input.indeterminate = checked > 0 && checked < rows.length;
+    });
+  };
   target.querySelectorAll(`[data-select-key="${key}"]`).forEach(input => input.onchange = () => {
     if (input.checked) selected(key).add(String(input.dataset.selectId));
     else selected(key).delete(String(input.dataset.selectId));
@@ -1520,6 +1542,7 @@ function bindSelection(key, target, renderBar) {
     });
     renderBar();
   });
+  syncAll();
 }
 function bulkBar(key, actions) {
   const count = selected(key).size;
@@ -2009,13 +2032,13 @@ function renderIdeas() {
   }
   const liveIdeas = new Map((state.data.ideas || []).map(item => [Number(item.id), item]));
   const items = (data.items || []).map(item => ({...item,...(liveIdeas.get(Number(item.id)) || {})}));
-  target.innerHTML = `${bulkBar("ideas",[["create_drafts","Створити чернетки"],["assign_rubric","Призначити рубрику"],["delete","Видалити","danger"]])}${items.length ? `<div class="table-wrap"><table class="users-table content-table"><thead><tr><th><input type="checkbox" data-select-all="ideas" aria-label="Обрати всі ідеї на сторінці"></th><th>${sortHeader("title","Ідея","ideas",renderIdeas)}</th><th>Рубрика</th><th>${sortHeader("status","Статус","ideas",renderIdeas)}</th><th>Наступний крок</th><th>Дії</th></tr></thead><tbody>${items.map(item => {
+  target.innerHTML = `${bulkBar("ideas",[["add_to_plan","Додати до плану"],["create_drafts","Створити чернетки"],["assign_rubric","Призначити рубрику"],["delete","Видалити","danger"]])}${items.length ? `<div class="table-wrap"><table class="users-table content-table"><thead><tr><th><input type="checkbox" data-select-all="ideas" aria-label="Обрати всі ідеї на сторінці"></th><th>${sortHeader("title","Ідея","ideas",renderIdeas)}</th><th>Рубрика</th><th>${sortHeader("status","Статус","ideas",renderIdeas)}</th><th>Наступний крок</th><th>Дії</th></tr></thead><tbody>${items.map(item => {
     const generating = activeGenerationStatuses.has(item.status);
     const fullRubricName = (state.data.rubrics||[]).find(x=>x.slug===item.product)?.name||item.product;
     const planChip = item.plan_id
       ? `<span class="plan-step-chip ready">${translateText("У контент-плані")}${item.planned_for?` · ${formatDate(item.planned_for)}`:""}</span>`
       : `<span class="plan-step-chip">${translateText("Банк ідей")}</span>`;
-    return `<tr class="${state.recentDraftIds.has(Number(item.draft_id)) ? "recent-row" : ""}"><td>${selectionCheckbox("ideas",item.id)}</td><td class="content-main"><strong>${esc(item.title_plain||plain(item.title))}</strong><small>${esc(plain(item.angle||"Перспективна тема для майбутньої публікації.").slice(0,150))}</small>${generating?`<div class="generation-progress"><span style="width:${Number(item.progress||12)}%"></span></div>`:""}</td><td><span class="rubric-name" title="${esc(fullRubricName)}">${esc(rubricDisplayName(item.product))}</span></td><td>${generating?`<span class="progress-label"><span class="spinner"></span>${esc(translateText(item.progress_label||statusLabel(item.status)))} · ${Number(item.progress||12)}%</span>`:pill(item.status)}</td><td>${planChip}</td><td><div class="table-actions idea-actions">${can("content.create")?`<button class="${item.draft_id?"created-draft-button":"create-draft-button"}" data-generate-idea="${item.id}" ${generating||item.draft_id?"disabled":""}>${generating?translateText("Генерується…"):item.draft_id?translateText("Створено"):translateText("Створити чернетку")}</button>`:""}${can("ideas.create")&&!item.plan_id?`<button class="plan-button" data-plan-idea="${item.id}">${translateText("Додати до плану")}</button>`:""}${item.draft_id?`<button data-open-draft="${item.draft_id}">${translateText("Відкрити")}</button>`:""}${can("ideas.delete")?`<button class="ghost danger" data-delete-idea="${item.id}" ${generating?"disabled":""}>${translateText("Видалити")}</button>`:""}</div></td></tr>`;
+    return `<tr class="${state.recentDraftIds.has(Number(item.draft_id)) ? "recent-row" : ""}"><td>${selectionCheckbox("ideas",item.id)}</td><td class="content-main"><strong>${esc(item.title_plain||plain(item.title))}</strong><small>${esc(plain(item.angle||"Перспективна тема для майбутньої публікації.").slice(0,150))}</small>${generating?`<div class="generation-progress"><span style="width:${Number(item.progress||12)}%"></span></div>`:""}</td><td><span class="rubric-name" title="${esc(fullRubricName)}">${esc(rubricDisplayName(item.product))}</span></td><td>${generating?`<span class="progress-label"><span class="spinner"></span>${esc(translateText(item.progress_label||statusLabel(item.status)))} · ${Number(item.progress||12)}%</span>`:pill(item.status)}</td><td>${planChip}</td><td><div class="table-actions idea-actions">${can("content.create")?actionButton({className:item.draft_id?"created-draft-button":"create-draft-button",dataset:`data-generate-idea="${item.id}"`,label:generating?translateText("Генерується…"):item.draft_id?translateText("Створено"):translateText("Створити чернетку"),iconName:"draft",disabled:generating||item.draft_id}):""}${can("ideas.create")&&!item.plan_id?actionButton({className:"plan-button",dataset:`data-plan-idea="${item.id}"`,label:translateText("Додати до плану"),iconName:"plan"}):""}${item.draft_id?actionButton({dataset:`data-open-draft="${item.draft_id}"`,label:translateText("Відкрити"),iconName:"open"}):""}${can("ideas.delete")?actionButton({className:"ghost danger",dataset:`data-delete-idea="${item.id}"`,label:translateText("Видалити"),iconName:"delete",disabled:generating}):""}</div></td></tr>`;
   }).join("")}</tbody></table></div>` : empty("У вас ще немає ідей","Згенеруйте перші теми на основі бренду та рубрик.",can("ideas.create")?'<button class="primary" id="emptyGenerateIdeas">✦ Згенерувати ідеї</button>':"")}${pagination(data,"ideas",renderIdeas)}`;
   bindSelection("ideas",target,renderIdeas);
   target.querySelector("[data-clear-selection]")?.addEventListener("click",()=>{selected("ideas").clear();renderIdeas();});
@@ -2035,6 +2058,10 @@ async function runIdeaBulk(action) {
   const ids=[...selected("ideas")].map(Number);
   if (!ids.length) return;
   let value="";
+  if (action==="add_to_plan") {
+    openBulkPlanIdeasForm(ids);
+    return;
+  }
   if (action==="delete"&&!confirm(`Видалити ${ids.length} елементів?\nЦю дію не можна буде скасувати.`)) return;
   if (action==="assign_rubric") {
     value=prompt(`Slug рубрики:\n${(state.data.rubrics||[]).map(x=>x.slug).join(", ")}`)||"";
@@ -2052,6 +2079,28 @@ async function runIdeaBulk(action) {
     return;
   }
   selected("ideas").clear();delete state.lists.ideas;toast("Масову дію виконано");await refresh(true);renderIdeas();
+}
+function openBulkPlanIdeasForm(ids) {
+  showForm(
+    "Додати ідеї до контент-плану",
+    `<div class="wide callout info"><strong>Обрано: ${ids.length}</strong><p>${translateText("Виберіть дату, з якої ці теми мають потрапити в редакційний план. Після цього ви побачите їх у розділі «Контент-план».")}</p></div><label class="wide">${translateText("Обрати дату для плану")}<input name="planned_for" type="date" required value="${localDateKey(new Date())}"></label>`,
+    async form => {
+      const plannedFor = form.get("planned_for");
+      for (const id of ids) {
+        await api(`api/ideas/${id}/plan`, {
+          method: "POST",
+          body: JSON.stringify({planned_for: plannedFor}),
+        });
+      }
+      selected("ideas").clear();
+      delete state.lists.ideas;
+      delete state.lists.plan;
+      toast(`Додано до контент-плану: ${ids.length}`);
+      await refresh(true);
+      renderIdeas();
+    },
+    {submitLabel:"Додати до плану", loadingLabel:"Додаємо…"},
+  );
 }
 async function generateIdea(button) {
   await loading(button, async () => {
@@ -2098,11 +2147,11 @@ function renderPlan() {
     const hasDraft = Boolean(item.draft_id);
     const failed = ["failed","error","cancelled"].includes(item.status);
     const nextStep = failed && item.job_id
-      ? `<div class="row plan-actions"><button data-retry-job="${item.job_id}">Повторити</button><button data-job-details="${item.job_id}">Деталі</button><button class="danger" data-delete-job="${item.job_id}">Видалити</button></div>`
+      ? `<div class="row plan-actions">${actionButton({dataset:`data-retry-job="${item.job_id}"`,label:"Повторити",iconName:"draft"})}${actionButton({dataset:`data-job-details="${item.job_id}"`,label:"Деталі",iconName:"open"})}${actionButton({className:"danger",dataset:`data-delete-job="${item.job_id}"`,label:"Видалити",iconName:"delete"})}</div>`
       : hasDraft
-        ? `<button data-open-draft="${item.draft_id}">Відкрити чернетку</button>`
+        ? actionButton({dataset:`data-open-draft="${item.draft_id}"`,label:"Відкрити чернетку",iconName:"open"})
         : can("content.create")
-          ? `<button class="create-draft-button" data-generate-idea="${item.id}">Створити чернетку</button>`
+          ? actionButton({className:"create-draft-button",dataset:`data-generate-idea="${item.id}"`,label:"Створити чернетку",iconName:"draft"})
           : `<span class="muted">Очікує чернетку</span>`;
     return `<tr><td>${selectionCheckbox("plan",item.id)}</td><td><strong>${formatDate(item.planned_for)}</strong><small>${item.planned_for?translateText("Запланована тема"):translateText("Без дати")}</small></td><td class="content-main"><strong>${esc(item.title_plain||plain(item.title))}</strong><small>${esc(plain(item.angle||"Тема з контент-плану.").slice(0,135))}</small>${item.error_message?`<small class="plan-error">${esc(item.error_message)}</small>`:""}</td><td>${rubricName(item)}</td><td>${hasDraft?`<span class="plan-step-chip ready">${translateText("Чернетка створена")}</span>`:`<span class="plan-step-chip">${translateText("Тема в плані")}</span>`}</td><td>${nextStep}</td></tr>`;
   }).join("")}</tbody></table></div>`:empty("Контент-план порожній","Додайте ідею до плану або згенеруйте редакційний план на тиждень чи місяць.")}${pagination(data,"plan",renderPlan)}`;
@@ -2176,7 +2225,7 @@ function renderDrafts() {
   if (kanban) {
     target.innerHTML = `${bar}${generationStrip}<div class="kanban-board">${statusOrder.map(status => {const rows = status==="idea" ? [] : visibleDrafts.filter(x=>x.status===status);return `<section class="kanban-column"><div class="kanban-head"><span>${statusLabel(status)}</span><span>${rows.length}</span></div>${rows.map(item=>`<article class="kanban-card selectable-card">${selectionCheckbox("drafts",item.id)}<button class="kanban-open" data-open-draft="${item.id}">${pill(item.status)}<h4>${esc(item.title_plain||plain(item.title))}</h4><small class="muted">${formatDate(item.scheduled_at||item.created_at)}</small></button><div class="kanban-actions">${can("content.edit")?(statusActions[item.status]||[]).map(([next,label])=>`<button data-transition-draft="${item.id}" data-transition-status="${next}">${translateText(label)}</button>`).join(""):""}</div></article>`).join("")}</section>`;}).join("")}</div>${pagination(data,"drafts",renderDrafts)}`;
   } else {
-    target.innerHTML = `${bar}${generationStrip}${visibleDrafts.length ? `<div class="table-wrap"><table class="users-table content-table"><thead><tr><th><input type="checkbox" data-select-all="drafts" aria-label="Обрати всі чернетки на сторінці"></th><th>Зображення</th><th>${sortHeader("title","Чернетка","drafts",renderDrafts)}</th><th>Рубрика</th><th>${sortHeader("status","Статус","drafts",renderDrafts)}</th><th>${sortHeader("scheduled_at","Дата","drafts",renderDrafts)}</th><th>Дії</th></tr></thead><tbody>${visibleDrafts.map(item => `<tr class="${state.recentDraftIds.has(Number(item.id)) ? "recent-row" : ""}"><td>${selectionCheckbox("drafts",item.id)}</td><td class="draft-thumb-cell">${item.image_path?`<img class="draft-thumb" src="${apiUrl(`api/drafts/${item.id}/image`)}" alt="">`:'<span class="draft-thumb empty-thumb">AI</span>'}</td><td class="content-main"><strong>${esc(item.title_plain||plain(item.title))}</strong>${state.recentDraftIds.has(Number(item.id))?'<span class="fresh-chip">Щойно створено</span>':""}<small>${esc((item.caption_plain||plain(item.caption_html)).slice(0,155))}</small></td><td>${esc(rubricDisplayName(item.product))}</td><td>${pill(item.status)}</td><td>${item.scheduled_at?formatDate(item.scheduled_at):"Ще не заплановано"}</td><td><button data-open-draft="${item.id}">Відкрити</button></td></tr>`).join("")}</tbody></table></div>` : generationCards?"":empty("Чернеток ще немає","Створіть чернетку з ідеї або додайте матеріал вручну.")}${pagination(data,"drafts",renderDrafts)}`;
+    target.innerHTML = `${bar}${generationStrip}${visibleDrafts.length ? `<div class="table-wrap"><table class="users-table content-table"><thead><tr><th><input type="checkbox" data-select-all="drafts" aria-label="Обрати всі чернетки на сторінці"></th><th>Зображення</th><th>${sortHeader("title","Чернетка","drafts",renderDrafts)}</th><th>Рубрика</th><th>${sortHeader("status","Статус","drafts",renderDrafts)}</th><th>${sortHeader("scheduled_at","Дата","drafts",renderDrafts)}</th><th>Дії</th></tr></thead><tbody>${visibleDrafts.map(item => `<tr class="${state.recentDraftIds.has(Number(item.id)) ? "recent-row" : ""}"><td>${selectionCheckbox("drafts",item.id)}</td><td class="draft-thumb-cell">${item.image_path?`<img class="draft-thumb" src="${apiUrl(`api/drafts/${item.id}/image`)}" alt="">`:'<span class="draft-thumb empty-thumb">AI</span>'}</td><td class="content-main"><strong>${esc(item.title_plain||plain(item.title))}</strong>${state.recentDraftIds.has(Number(item.id))?'<span class="fresh-chip">Щойно створено</span>':""}<small>${esc((item.caption_plain||plain(item.caption_html)).slice(0,155))}</small></td><td>${esc(rubricDisplayName(item.product))}</td><td>${pill(item.status)}</td><td>${item.scheduled_at?formatDate(item.scheduled_at):"Ще не заплановано"}</td><td><div class="table-actions">${actionButton({dataset:`data-open-draft="${item.id}"`,label:"Відкрити",iconName:"open"})}</div></td></tr>`).join("")}</tbody></table></div>` : generationCards?"":empty("Чернеток ще немає","Створіть чернетку з ідеї або додайте матеріал вручну.")}${pagination(data,"drafts",renderDrafts)}`;
   }
   bindSelection("drafts",target,renderDrafts);
   target.querySelector("[data-clear-selection]")?.addEventListener("click",()=>{selected("drafts").clear();renderDrafts();});

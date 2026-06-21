@@ -472,10 +472,15 @@ textarea { min-height: 112px; resize: vertical; }
 .content-main small { margin-top: 5px; color: var(--muted); line-height: 1.4; }
 .table-actions { display: flex; gap: 6px; }
 .table-actions button { min-height: 31px; padding: 0 9px; font-size: 10px; }
+.table-icon-action { position: relative; width: 38px; min-width: 38px; height: 38px; min-height: 38px; padding: 0; display: inline-grid; place-items: center; border-radius: 13px; color: #334155; background: white; }
+.table-icon-action svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.table-icon-action span { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+.table-icon-action:hover { transform: translateY(-1px); box-shadow: 0 10px 22px rgba(15,23,42,.12); }
+.table-icon-action.danger, .table-icon-action.ghost.danger { color: #dc2626; border-color: #fecaca; background: #fff7f7; }
 .idea-actions { flex-wrap: wrap; justify-content: flex-end; }
 .rubric-name { max-width: 180px; display: inline-flex; align-items: center; gap: 6px; color: #6d28d9; font-weight: 850; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rubric-name::before { content: ""; width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #7c3aed; box-shadow: 0 0 0 4px #f3e8ff; }
-.create-draft-button { min-width: 132px; border: 0; color: white; background: linear-gradient(135deg,#059669,#22c55e); box-shadow: 0 10px 22px rgba(5,150,105,.22); white-space: nowrap; }
+.create-draft-button { border: 0; color: white; background: linear-gradient(135deg,#059669,#22c55e); box-shadow: 0 10px 22px rgba(5,150,105,.22); white-space: nowrap; }
 .create-draft-button:hover { transform: translateY(-1px); box-shadow: 0 14px 30px rgba(5,150,105,.28); }
 .created-draft-button { color: white; border-color: #9ca3af; background: #9ca3af; box-shadow: none; }
 .plan-button { color: #4338ca; border-color: #c7d2fe; background: #eef2ff; }
