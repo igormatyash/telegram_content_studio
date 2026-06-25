@@ -972,15 +972,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "/workspace/{org_slug}/drafts/{draft_id}",
         response_class=HTMLResponse,
     )
+    @app.get("/drafts/{draft_id}", response_class=HTMLResponse)
     def draft_editor_page(
-        org_slug: str,
         draft_id: int,
+        org_slug: str = "",
         voicerhub_session: str | None = Cookie(default=None),
     ) -> str:
         user = auth.session_user(voicerhub_session)
         if user is None:
             return frontend_html("login.html")
-        if user.get("organization_slug") != org_slug:
+        if org_slug and user.get("organization_slug") != org_slug:
             raise HTTPException(status_code=404, detail="Чернетку не знайдено")
         repository.for_organization(organization_id(user)).draft_record(draft_id)
         return frontend_html("app.html")

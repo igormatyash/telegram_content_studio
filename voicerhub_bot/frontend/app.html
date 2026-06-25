@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
   <title>Content Studio</title>
-  <link rel="stylesheet" href="__BASE_PATH__/static/styles.css?v=20">
+  <link rel="stylesheet" href="__BASE_PATH__/static/styles.css?v=21">
 </head>
 <body data-base-path="__BASE_PATH__">
 <div class="app-shell">
@@ -67,11 +67,12 @@
     <main class="content">
       <div class="system-banner" id="systemBanner" hidden></div>
       <section class="view active" id="homeView">
-        <div class="metrics" id="homeMetrics"><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span></div>
+        <section class="home-hero card" id="homeHero"><span class="skeleton"></span></section>
+        <div class="dashboard-action-grid" id="quickActions"></div>
+        <article class="card panel pipeline-card"><h2>Content pipeline</h2><div class="pipeline-strip" id="homeMetrics"><span class="skeleton"></span></div></article>
         <div class="dashboard-grid">
-          <article class="card panel"><div class="eyebrow">Що зробити зараз</div><h2>Швидкі дії</h2><div class="stack" id="quickActions"></div></article>
-          <article class="card panel"><div class="row between"><div><div class="eyebrow">Наступні публікації</div><h2>Заплановано</h2></div><button class="ghost" data-open-view="calendar">Календар →</button></div><div class="stack" id="upcomingList"></div></article>
-          <div class="stack"><article class="usage-card" id="usageCard"></article><article class="card panel" id="brandProgress"></article></div>
+          <article class="card panel upcoming-panel"><div class="row between"><div><div class="eyebrow">Найближчі публікації</div><h2>Заплановано</h2></div><button class="ghost" data-open-view="calendar">Календар →</button></div><div id="upcomingList"></div></article>
+          <div class="stack dashboard-side"><article class="usage-card" id="usageCard"></article><article class="card panel" id="brandProgress"></article></div>
         </div>
       </section>
 
@@ -194,6 +195,6 @@
 </div>
 <div class="toast" id="toast" hidden></div>
 <div hidden>CONTENT STUDIO · Налаштування workspace · Voicer Wave</div>
-  <script src="__BASE_PATH__/static/app.js?v=27" defer></script>
+  <script src="__BASE_PATH__/static/app.js?v=28" defer></script>
 </body>
 </html>

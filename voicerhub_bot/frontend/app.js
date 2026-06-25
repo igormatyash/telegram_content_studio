@@ -1756,6 +1756,9 @@ function routeFromLocation() {
       : null;
     return {view:"platform",draftId:null};
   }
+  if (parts[0] === "drafts" && Number(parts[1])) {
+    return {view: history.state?.fromView || "drafts", draftId: Number(parts[1])};
+  }
   const workspaceIndex = parts.indexOf("workspace");
   if (
     workspaceIndex >= 0
@@ -1952,26 +1955,37 @@ function renderHome() {
     idea: ideas.filter(x => ["idea","suggested"].includes(x.status)).length,
     draft: drafts.filter(x => x.status === "draft").length,
     review: drafts.filter(x => x.status === "review").length,
+    needs_changes: drafts.filter(x => x.status === "needs_changes").length,
     ready: drafts.filter(x => x.status === "ready").length,
     scheduled: drafts.filter(x => x.status === "scheduled").length,
     published: drafts.filter(x => x.status === "published").length,
   };
+  document.querySelector("#homeHero").innerHTML = `<div><h2>${translateText("Вітаємо")}, ${esc(state.company.name)}</h2><p class="muted">${translateText("Ось що відбувається з вашим контентом цього тижня.")}</p></div>`;
   document.querySelector("#homeMetrics").innerHTML = [
-    ["idea","Ідеї",counts.idea,"Нові теми"],
-    ["draft","Чернетки",counts.draft,"У роботі"],
-    ["review","На перевірці",counts.review,"Потребують уваги"],
-    ["ready","Готово",counts.ready,"Очікують публікації"],
-    ["scheduled","Заплановано",counts.scheduled,"У календарі"],
-    ["published","Опубліковано",counts.published,"За весь час"],
-  ].map(([status,label,value,note]) => `<article class="card metric">${pill(status)}<strong>${value}</strong><small>${note}</small></article>`).join("");
+    ["idea","Ідеї",counts.idea],
+    ["draft","Чернетки",counts.draft],
+    ["review","На перевірці",counts.review],
+    ["needs_changes","Потрібні правки",counts.needs_changes],
+    ["ready","Готово",counts.ready],
+    ["scheduled","Заплановано",counts.scheduled],
+    ["published","Опубліковано",counts.published],
+  ].map(([status,label,value]) => `<button class="pipeline-chip ${esc(status)}" data-pipeline-status="${esc(status)}"><span>${esc(translateText(label))}</span><strong>${value}</strong></button>`).join("");
   document.querySelector("#quickActions").innerHTML = `
-    <div class="quick-action featured" data-action="ideas"><span class="action-icon">${icon("ideas")}</span><div><strong>Згенерувати ідеї</strong><small style="display:block;color:#c7d2fe">AI запропонує теми на основі бренду</small></div></div>
-    <div class="quick-action" data-action="plan"><span class="action-icon">${icon("plan")}</span><div><strong>Створити контент-план</strong><small class="muted">На тиждень або місяць</small></div></div>
-    <div class="quick-action" data-action="drafts"><span class="action-icon">${icon("drafts")}</span><div><strong>Створити чернетку</strong><small class="muted">З ідеї або з нуля</small></div></div>
-    <div class="quick-action" data-action="calendar"><span class="action-icon">${icon("calendar")}</span><div><strong>Запланувати пост</strong><small class="muted">Чернетка з візуалом → календар</small></div></div>`;
+    <button class="home-action-card" data-action="ideas"><span class="action-icon tone-idea">${icon("ideas")}</span><strong>Згенерувати ідеї</strong><small>Створіть нові теми</small></button>
+    <button class="home-action-card" data-action="plan"><span class="action-icon tone-plan">${icon("plan")}</span><strong>Створити контент-план</strong><small>Плануйте публікації</small></button>
+    <button class="home-action-card" data-action="drafts"><span class="action-icon tone-draft">${icon("drafts")}</span><strong>Створити чернетку</strong><small>Почніть писати</small></button>
+    <button class="home-action-card" data-action="calendar"><span class="action-icon tone-calendar">${icon("calendar")}</span><strong>Запланувати пост</strong><small>Виберіть дату та час</small></button>`;
   document.querySelectorAll(".quick-action").forEach(node => node.onclick = () => setView(node.dataset.action));
+  document.querySelectorAll(".home-action-card").forEach(node => node.onclick = () => setView(node.dataset.action));
+  document.querySelectorAll("[data-pipeline-status]").forEach(node => node.onclick = () => {
+    const status = node.dataset.pipelineStatus;
+    if (status === "idea") setView("ideas");
+    else { state.draftFilter = status; updateViewUrl("drafts"); setView("drafts", {push:false}); }
+  });
   const upcoming = drafts.filter(x => x.scheduled_at).sort((a,b) => new Date(a.scheduled_at)-new Date(b.scheduled_at)).slice(0,6);
-  document.querySelector("#upcomingList").innerHTML = upcoming.length ? upcoming.map(item => `<button class="quick-action" data-draft="${item.id}"><strong style="min-width:54px">${formatDate(item.scheduled_at)}</strong><span style="text-align:left">${esc(plain(item.title))}</span>${pill(item.status)}</button>`).join("") : empty("Публікацій ще немає","Підготуйте чернетку та додайте її до календаря.");
+  document.querySelector("#upcomingList").innerHTML = upcoming.length
+    ? `<div class="table-wrap compact-table-wrap"><table class="users-table compact-table"><thead><tr><th>Дата</th><th>Канал</th><th>Пост</th><th>Статус</th></tr></thead><tbody>${upcoming.map(item => `<tr data-draft="${item.id}"><td>${formatDate(item.scheduled_at)}</td><td>${socialLogo("telegram")} Telegram</td><td><strong>${esc(plain(item.title))}</strong></td><td>${pill(item.status)}</td></tr>`).join("")}</tbody></table></div>`
+    : empty("Публікацій ще немає","Підготуйте чернетку та додайте її до календаря.");
   document.querySelectorAll("[data-draft]").forEach(node => node.onclick = () => openEditor(Number(node.dataset.draft)));
   const quota = state.company.quota_state || {};
   const textQuota = quota.text || {used:state.company.text_generation_count,limit:state.company.monthly_text_generations};
@@ -2223,7 +2237,19 @@ function renderDrafts() {
   const generationStrip=generationCards?`<div class="generation-strip">${generationCards}</div>`:"";
   const bar=bulkBar("drafts",[["status","Змінити статус"],["assign_rubric","Призначити рубрику"],["delete","Видалити","danger"]]);
   if (kanban) {
-    target.innerHTML = `${bar}${generationStrip}<div class="kanban-board">${statusOrder.map(status => {const rows = status==="idea" ? [] : visibleDrafts.filter(x=>x.status===status);return `<section class="kanban-column"><div class="kanban-head"><span>${statusLabel(status)}</span><span>${rows.length}</span></div>${rows.map(item=>`<article class="kanban-card selectable-card">${selectionCheckbox("drafts",item.id)}<button class="kanban-open" data-open-draft="${item.id}">${pill(item.status)}<h4>${esc(item.title_plain||plain(item.title))}</h4><small class="muted">${formatDate(item.scheduled_at||item.created_at)}</small></button><div class="kanban-actions">${can("content.edit")?(statusActions[item.status]||[]).map(([next,label])=>`<button data-transition-draft="${item.id}" data-transition-status="${next}">${translateText(label)}</button>`).join(""):""}</div></article>`).join("")}</section>`;}).join("")}</div>${pagination(data,"drafts",renderDrafts)}`;
+    const boardIdeas = (state.data.ideas || []).filter(item => !item.draft_id).slice(0, 12);
+    const cardImage = item => item.image_path
+      ? `<img class="kanban-card-image" src="${apiUrl(`api/drafts/${item.id}/image`)}" alt="">`
+      : `<div class="kanban-card-image gradient-${Number(item.id || 0) % 5}"></div>`;
+    target.innerHTML = `${bar}${generationStrip}<div class="kanban-board premium-kanban">${statusOrder.map(status => {
+      const rows = status === "idea" ? boardIdeas : visibleDrafts.filter(x=>x.status===status);
+      return `<section class="kanban-column ${esc(status)}"><div class="kanban-head"><span><i></i>${statusLabel(status)}</span><strong>${rows.length}</strong></div>${rows.map(item => {
+        if (status === "idea") {
+          return `<article class="kanban-card idea-kanban-card">${cardImage(item)}<h4>${esc(item.title_plain||plain(item.title))}</h4><p>${esc(plain(item.angle||"").slice(0,70))}</p><div class="kanban-meta"><span>${esc(rubricDisplayName(item.product))}</span><small>${formatDate(item.planned_for||item.created_at)}</small></div>${can("content.create")?`<button class="kanban-create" data-generate-idea="${item.id}">Створити чернетку</button>`:""}</article>`;
+        }
+        return `<article class="kanban-card selectable-card">${selectionCheckbox("drafts",item.id)}<button class="kanban-open" data-open-draft="${item.id}">${cardImage(item)}<h4>${esc(item.title_plain||plain(item.title))}</h4><p>${esc((item.caption_plain||plain(item.caption_html)).slice(0,78))}</p><div class="kanban-meta"><span>${esc(rubricDisplayName(item.product))}</span><small>${formatDate(item.scheduled_at||item.created_at)}</small></div></button><div class="kanban-actions">${can("content.edit")?(statusActions[item.status]||[]).map(([next,label])=>`<button data-transition-draft="${item.id}" data-transition-status="${next}">${translateText(label)}</button>`).join(""):""}</div></article>`;
+      }).join("") || `<div class="kanban-empty">${translateText("Немає матеріалів")}</div>`}</section>`;
+    }).join("")}</div>${pagination(data,"drafts",renderDrafts)}`;
   } else {
     target.innerHTML = `${bar}${generationStrip}${visibleDrafts.length ? `<div class="table-wrap"><table class="users-table content-table"><thead><tr><th><input type="checkbox" data-select-all="drafts" aria-label="Обрати всі чернетки на сторінці"></th><th>Зображення</th><th>${sortHeader("title","Чернетка","drafts",renderDrafts)}</th><th>Рубрика</th><th>${sortHeader("status","Статус","drafts",renderDrafts)}</th><th>${sortHeader("scheduled_at","Дата","drafts",renderDrafts)}</th><th>Дії</th></tr></thead><tbody>${visibleDrafts.map(item => `<tr class="${state.recentDraftIds.has(Number(item.id)) ? "recent-row" : ""}"><td>${selectionCheckbox("drafts",item.id)}</td><td class="draft-thumb-cell">${item.image_path?`<img class="draft-thumb" src="${apiUrl(`api/drafts/${item.id}/image`)}" alt="">`:'<span class="draft-thumb empty-thumb">AI</span>'}</td><td class="content-main"><strong>${esc(item.title_plain||plain(item.title))}</strong>${state.recentDraftIds.has(Number(item.id))?'<span class="fresh-chip">Щойно створено</span>':""}<small>${esc((item.caption_plain||plain(item.caption_html)).slice(0,155))}</small></td><td>${esc(rubricDisplayName(item.product))}</td><td>${pill(item.status)}</td><td>${item.scheduled_at?formatDate(item.scheduled_at):"Ще не заплановано"}</td><td><div class="table-actions">${actionButton({dataset:`data-open-draft="${item.id}"`,label:"Відкрити",iconName:"open"})}</div></td></tr>`).join("")}</tbody></table></div>` : generationCards?"":empty("Чернеток ще немає","Створіть чернетку з ідеї або додайте матеріал вручну.")}${pagination(data,"drafts",renderDrafts)}`;
   }
@@ -2236,6 +2262,7 @@ function renderDrafts() {
     toast(`${translateText("Статус змінено:")} ${statusLabel(node.dataset.transitionStatus)}`);
     await refresh();
   });
+  target.querySelectorAll("[data-generate-idea]").forEach(button => button.onclick = () => generateIdea(button));
 }
 async function runDraftBulk(action) {
   const ids=[...selected("drafts")].map(Number);if(!ids.length)return;
@@ -2693,11 +2720,11 @@ async function openEditor(id, push = true) {
       history.pushState(
         {draftId:id,fromView:state.view,pushed:true},
         "",
-        `${basePath}/workspace/${state.me.organization_slug}/drafts/${id}`,
+        `${basePath}/drafts/${id}`,
       );
     }
     const target = document.querySelector("#editorContent");
-    target.innerHTML = `<header class="editor-header"><div class="row editor-title-row"><button id="closeEditor">←</button><div>${pill(draft.status)} <strong style="margin-left:8px">${esc(plain(draft.title))}</strong></div></div><div class="row editor-actions"><button id="regenText">Перегенерувати текст</button><button id="saveDraft">Зберегти</button><button id="scheduleDraft" ${draft.image_path?"":"disabled title=\"Спочатку потрібен візуал\""}>Запланувати</button><button class="primary" id="publishDraft" ${["ready","scheduled"].includes(draft.status)?"":"disabled title=\"Спочатку погодьте матеріал\""}>Опублікувати</button></div></header><div class="editor-grid"><form class="editor-form" id="editorForm"><div class="status-actions">${(statusActions[draft.status]||[]).map(([next,label])=>`<button type="button" data-editor-status="${next}">${label}</button>`).join("")}</div><div class="form-grid"><label>Рубрика<input value="${esc(draft.product)}" disabled></label><label>Дата і час<input id="scheduleAt" type="datetime-local" value="${localDateTimeValue(draft.scheduled_at)}"></label></div><label>Заголовок для поста<input id="editorTitle" value="${esc(decodeHtmlMarkup(draft.title))}"></label><label>Заголовок на візуалі<input id="editorVisualTitle" value="${esc(decodeHtmlMarkup(draft.visual_title||draft.title))}"><small class="muted">Без emoji та зайвих символів.</small></label><label>Текст публікації<textarea id="editorCaption" style="min-height:330px">${esc(decodeHtmlMarkup(draft.caption_html))}</textarea></label><label>Посилання<input id="editorLink" value="${esc(draft.link_url||"")}"></label>${publishChannels}<div class="row editor-secondary-actions"><button type="button" id="cancelSchedule" ${draft.status==="scheduled"?"":"hidden"}>Повернути в готові</button></div></form><aside class="editor-preview"><div class="editor-preview-card"><div class="row"><span class="workspace-logo" style="width:30px;height:30px">${initials(state.company.name)}</span><div><strong>${esc(state.company.name)}</strong><small style="display:block;color:#94a3b8">Telegram</small></div></div><img src="${apiUrl(`api/drafts/${id}/image`)}" alt="" onerror="this.style.display='none'"><h2 id="previewTitle">${esc(plain(draft.visual_title||draft.title))}</h2><div id="previewText" class="telegram-preview-text">${safeHtml(draft.caption_html)}</div></div></aside></div>`;
+    target.innerHTML = `<div class="editor-shell"><section class="editor-main"><header class="editor-page-head"><button class="ghost" id="closeEditor">← Чернетки</button><div class="editor-breadcrumb">Чернетки / Редактор</div><h1>Редактор поста</h1><p class="muted">Підготуйте публікацію для підключених каналів</p><div class="row editor-head-row">${pill(draft.status)}<div class="row editor-actions"><button id="publishDraft" class="success-action" ${["ready","scheduled"].includes(draft.status)?"":"disabled title=\"Спочатку погодьте матеріал\""}>Опублікувати</button><button id="scheduleDraft" ${draft.image_path?"":"disabled title=\"Спочатку потрібен візуал\""}>Запланувати</button><button id="saveDraft">Зберегти</button><button id="regenText" class="icon-button" title="Перегенерувати текст">✦</button></div></div></header><form class="editor-form" id="editorForm"><div class="status-actions">${(statusActions[draft.status]||[]).map(([next,label])=>`<button type="button" data-editor-status="${next}">${label}</button>`).join("")}</div><label>Заголовок поста<input id="editorTitle" placeholder="Заголовок поста" value="${esc(decodeHtmlMarkup(draft.title))}"></label><label>Заголовок на візуалі<input id="editorVisualTitle" placeholder="Заголовок на візуалі" value="${esc(decodeHtmlMarkup(draft.visual_title||draft.title))}"><small class="muted">Emoji автоматично прибираються з зображення.</small></label><label>Текст публікації<span class="editor-toolbar" aria-hidden="true"><b>B</b><i>I</i><span>↗</span><span>☷</span></span><textarea id="editorCaption">${esc(decodeHtmlMarkup(draft.caption_html))}</textarea></label><div class="form-grid editor-meta-grid"><label>Рубрика<input value="${esc(rubricDisplayName(draft.product))}" disabled></label><label>Канал<select disabled><option>${esc(state.company.telegram?.channel_id||"Telegram")}</option></select></label><label>Дата та час<input id="scheduleAt" type="datetime-local" value="${localDateTimeValue(draft.scheduled_at)}"></label></div><label>Посилання<input id="editorLink" value="${esc(draft.link_url||"")}"></label>${publishChannels}<div class="row editor-secondary-actions"><button type="button" id="cancelSchedule" ${draft.status==="scheduled"?"":"hidden"}>Повернути в готові</button></div></form></section><aside class="editor-preview"><h2>Перегляд</h2><div class="preview-tabs"><span class="active">${socialLogo("telegram")} Telegram</span><span>${socialLogo("linkedin")} LinkedIn</span><span>${socialLogo("instagram")} Instagram</span><span>${socialLogo("facebook")} Facebook</span></div><div class="editor-preview-card"><div class="row preview-author"><span class="workspace-logo" style="width:42px;height:42px">${workspaceAvatarMarkup({...state.company,workspace_avatar_asset_id:state.company.settings?.workspace_avatar_asset_id})}</span><div><strong>${esc(state.company.name)}</strong><small>@${esc((state.company.slug||"content").replace(/[^a-z0-9_]/gi,"_"))}</small></div></div><img src="${apiUrl(`api/drafts/${id}/image`)}" alt="" onerror="this.classList.add('missing');this.removeAttribute('src')"><h2 id="previewTitle">${esc(plain(draft.visual_title||draft.title))}</h2><div id="previewText" class="telegram-preview-text">${safeHtml(draft.caption_html)}</div><div class="preview-meta">1.2K ◉ 10:30 edited</div></div></aside></div>`;
     document.querySelector("#editorOverlay").hidden = false;
     localizeDom(document.querySelector("#editorOverlay"));
     bindEditorActions();
